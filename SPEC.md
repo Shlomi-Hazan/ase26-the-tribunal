@@ -1,40 +1,48 @@
-# The Tribunal System Specification
+# The Tribunal — System Specification
 
-## 0. Document Purpose and Precedence
+> **Course:** Agentic Software Engineering (ASE-26)  
+> **Status:** V1 engineering contract  
+> **Purpose:** Define precise, testable product behaviour before implementation.
 
-`INTENT.md` answers why The Tribunal exists and preserves durable product direction.
+## 0. Document Role and Precedence
 
-`SPEC.md` defines precise, checkable behaviour for the system. It describes what must be true from the user's and system's observable perspective: inputs, outputs, states, failures, constraints, and acceptance criteria.
+`INTENT.md` is the source of truth for **why** The Tribunal exists and for durable product direction.
 
-Future `ARCHITECTURE.md` will define how the system is structurally implemented. Future `AGENTS.md` will define operational rules for coding agents working in this repository.
+This file defines **what observable behaviour must be true**: inputs, outputs, states, failure behaviour, limits, execution rules, and acceptance criteria.
 
-If `SPEC.md` and `INTENT.md` ever appear to conflict, an agent must stop and report the conflict rather than silently choose one.
+`ARCHITECTURE.md` defines **how the system is structurally implemented**. `AGENTS.md` defines standing operating rules for coding agents.
 
-This specification is living. It should evolve deliberately when implementation or verification exposes a requirement problem. A test passing does not override a conflicting written requirement.
+If this specification appears to conflict with `INTENT.md`, implementation must stop until the conflict is resolved. Architecture may refine implementation details, but may not weaken a requirement in this file without an approved specification change.
 
-## 1. Goal and Reason
+This is a living specification. Intended behaviour changes here before code changes when practical.
 
-The Tribunal exists to make AI deliberation observable. A user submits a debatable case, configures seven distinct AI participants, runs a structured deliberation, and inspects arguments, verdicts, reasoning, protocol, and model-call economics.
+---
 
-The system must not present itself as real legal advice or legal authority. It is an educational and demonstrative product for observing how differently configured AI participants argue and judge the same dispute.
+## 1. Product Goal
 
-## 2. Canonical Tribunal Terminology
+The Tribunal makes AI deliberation observable.
+
+A user submits one disputed case, configures seven distinct AI participants, and observes how opposing advocates argue and how independent judges reach reasoned verdicts. The application must also expose the token, latency, and cost economics of the deliberation.
+
+The application is educational and demonstrative. It has no legal authority and must not present itself as legal advice.
+
+---
+
+## 2. Canonical Terminology
 
 ### 2.1 Charge Sheet
 
-The canonical Charge Sheet has exactly three logical parts:
+A Charge Sheet has exactly three authoritative fields:
 
-1. Defendant
-2. Act
-3. Exact Question
+1. **Defendant**
+2. **Act**
+3. **Exact Question**
 
-The application may serialize these together when sending them to a model, but they remain distinct authoritative fields.
+The application may serialize those fields for prompts, but they remain distinct application data.
 
 ### 2.2 Participant
 
-A participant is one configured AI role in one Tribunal run.
-
-Exactly seven participants exist:
+One configured AI role in one run. V1 has exactly seven participants:
 
 - Advocate PRO 1
 - Advocate PRO 2
@@ -44,99 +52,143 @@ Exactly seven participants exist:
 - Judge 2
 - Judge 3
 
-### 2.3 Logical Model Call
+### 2.3 Logical model call
 
-A logical model call is the required AI execution for one participant.
+The required AI execution for one participant. A successful no-retry run has exactly seven logical model calls.
 
-A successful normal Tribunal deliberation consists of exactly seven logical participant calls. Retries are attempts of an existing logical call, not additional participants.
+Retries are attempts of an existing logical call; they do not create additional participants.
 
-### 2.4 Run
+### 2.4 Provider attempt
 
-A run is one complete attempt to deliberate one configured case.
+One actual outbound request to OpenRouter for one logical call. Each logical call may have one initial attempt and at most one retry.
 
-## 3. Charge Sheet Requirements
+### 2.5 Run
 
-The manual Charge Sheet form must collect:
+One complete attempt to deliberate one configured case.
 
-- Defendant
-- Act
-- Exact Question
+---
 
-All three fields are required.
+## 3. Charge Sheet Input
 
-After trimming whitespace, fields must satisfy these limits:
+### 3.1 Manual entry
 
-- Defendant: 1-200 characters
-- Act: 1-6000 characters
-- Exact Question: 1-1000 characters
+The manual form must collect all three fields.
 
-An empty or invalid field must prevent the run from starting. Validation failure must identify the offending field.
+After trimming surrounding whitespace:
 
-The application must not use an LLM to determine whether a required field exists.
+- Defendant: **1–200 characters**
+- Act: **1–6000 characters**
+- Exact Question: **1–1000 characters**
 
-## 4. Charge Sheet File Input
+An invalid field prevents run creation and identifies the offending field to the user.
 
-V1 supports Charge Sheet import from:
+Required-field validation is deterministic and must not use an LLM.
+
+### 3.2 Charge Sheet file import
+
+V1 supports:
 
 - `.txt`
 - `.md`
 
-Only UTF-8 text files are supported. The maximum uploaded Charge Sheet file size is `64 KiB`.
+Requirements:
 
-The file format uses three labelled sections:
+- UTF-8 text only
+- maximum raw file size: **64 KiB**
+- deterministic parsing
+- no LLM call for parsing
 
-- `DEFENDANT:`
-- `ACT:`
-- `QUESTION:`
+The file must contain exactly one of each marker:
 
-Each marker must appear exactly once. Each section must contain non-empty content after trimming.
+```text
+DEFENDANT:
+ACT:
+QUESTION:
+```
 
-Parsing must be deterministic. The application must not call an LLM merely to parse the Charge Sheet file.
+Each section must contain non-empty content after trimming. Parsed content must also satisfy the canonical field limits.
 
-Parsed content must still satisfy the canonical field length limits.
+The following must be rejected visibly:
 
-Unsupported type, invalid encoding, oversized input, missing section, duplicate section, or empty section must produce a visible validation error.
+- unsupported extension/type
+- invalid UTF-8
+- oversized file
+- missing required marker
+- duplicated required marker
+- empty required section
+- parsed field exceeding its limit
 
-## 5. Participant Personality Input
+The raw uploaded file does not need to be retained after successful parsing in V1.
 
-Each of the seven participants has independently configurable personality/instruction context.
+---
 
-Personality may be provided by:
+## 4. Participant Personality Input
 
-- manually entered or pasted text
+Every participant has independent behavioural/personality context.
+
+Personality may be supplied by:
+
+- manual text/paste
 - `.txt`
 - `.md`
 
-Personality files are UTF-8 only. The maximum personality file size is `16 KiB`.
+Requirements:
 
-After normalization, personality text must be:
+- UTF-8 only
+- maximum raw personality file size: **16 KiB**
+- normalized text must be non-empty
+- normalized text maximum: **4000 characters**
 
-- non-empty
-- no more than 4000 characters
+Personality is behavioural context, not merely a label. It supplements but never replaces the participant's fixed role instructions.
 
-Personality is behavioural context. It is not merely a participant display name, and it must not replace the participant's fixed role instructions.
+User-provided personality text is untrusted input. It cannot change participant identity, advocate side, output contract, cost/security rules, or backend authority.
 
-## 6. Advocate Configuration
+---
+
+## 5. Participant Configuration
+
+### 5.1 Advocates
 
 Every run contains exactly:
 
 - 2 PRO advocates
 - 2 CON advocates
 
-The participant count and sides are fixed product rules. A user may configure personality and model selection as permitted by the chosen execution mode, but may not add or remove advocates or change their assigned sides.
+Users cannot add/remove advocates or change their assigned side in V1.
 
 Each advocate receives:
 
 - the same canonical Charge Sheet
-- its assigned side
-- its personality
-- the version-controlled base advocate instructions
+- fixed side (`PRO` or `CON`)
+- that advocate's personality
+- version-controlled base advocate instructions
+- assigned model according to execution mode
 
-Each advocate produces exactly one logical speech output.
+### 5.2 Judges
 
-## 7. Advocate Output Contract
+Every run contains exactly three judges.
 
-The machine-consumed advocate output must conform conceptually to:
+Each judge receives:
+
+- the original canonical Charge Sheet
+- all four validated advocate speeches
+- that judge's personality
+- version-controlled base judge instructions
+- assigned model according to execution mode
+
+A judge must never deliberate using only a subset of the intended four speeches.
+
+---
+
+## 6. Strict Model Output Contracts
+
+Model output is untrusted until parsed and validated server-side.
+
+V1 does **not** accept arbitrary prose as machine-consumed output and does not use regex/keyword guessing to convert prose into valid application data.
+
+### 6.1 Advocate response
+
+A successful advocate response must parse as a JSON object containing:
 
 ```json
 {
@@ -144,49 +196,15 @@ The machine-consumed advocate output must conform conceptually to:
 }
 ```
 
-`speech` must:
+`speech` must be a non-empty string after trimming.
 
-- exist
-- be a string
-- be non-empty after trimming
+Malformed JSON, missing `speech`, a non-string `speech`, or an empty `speech` is an invalid attempt.
 
-The model must not be trusted merely because it returned valid JSON. The backend must validate the output contract before accepting it as a successful advocate result.
+Maximum requested advocate output: **1000 output tokens per attempt**.
 
-The maximum requested output generation is 1000 output tokens per advocate attempt.
+### 6.2 Judge response
 
-Exact schema-library implementation belongs to architecture and code, not this specification.
-
-## 8. Judge Configuration
-
-Every run contains exactly three judges.
-
-Each judge has independently configurable personality.
-
-Each judge receives:
-
-- the original canonical Charge Sheet
-- all four validated advocate speeches
-- the judge's personality
-- version-controlled base judge instructions
-
-A judge must never run using only a subset of the four intended advocate speeches.
-
-## 9. Verdict Vocabulary
-
-For V1, the canonical judge verdict vocabulary is exactly:
-
-- `GUILTY`
-- `NOT_GUILTY`
-
-No third normal verdict value exists in V1. A model response outside this vocabulary is invalid.
-
-Do not silently map arbitrary prose to one of these values unless the future implementation has an explicitly specified deterministic parser that can do so without ambiguity.
-
-The preferred model response is structured output.
-
-## 10. Judge Output Contract
-
-The machine-consumed judge output must conform conceptually to:
+A successful judge response must parse as a JSON object containing:
 
 ```json
 {
@@ -200,244 +218,202 @@ The machine-consumed judge output must conform conceptually to:
 - `GUILTY`
 - `NOT_GUILTY`
 
-`reasoning` must:
+`reasoning` must be a non-empty string after trimming.
 
-- exist
-- be a string
-- be non-empty after trimming
+Malformed JSON, a missing/unsupported verdict, or missing/empty reasoning is an invalid attempt.
 
-The maximum requested output generation is 1200 output tokens per judge attempt.
+A prose sentence containing the word “guilty” is not a valid verdict response.
 
-An invalid verdict or missing/empty reasoning is a failed model attempt, not a valid judgement.
+Maximum requested judge output: **1200 output tokens per attempt**.
 
-## 11. Execution Configurations
+Additional JSON properties may be ignored or rejected by the implementation schema, but they must never change the meaning of required fields.
 
-V1 must support two execution configurations.
+---
 
-### 11.1 Shared-Model Mode
+## 7. Execution Modes
+
+### 7.1 Shared-Model Mode
 
 One selected OpenRouter model is used for all seven participants.
 
-Participant differences still come from:
+Participants remain distinct through role, side, personality, and prompt context.
 
-- role
-- side
-- personality
-- prompt context
+### 7.2 Separate-Model Mode
 
-### 11.2 Separate-Model Mode
+Each participant may be assigned an individual OpenRouter model.
 
-Each of the seven participants may be assigned an individual OpenRouter model.
+The orchestration, validation, retry, economics, and failure rules are identical to Shared-Model Mode.
 
-The same orchestration and validation rules apply in both modes.
+### 7.3 Agent Execution
 
-### 11.3 Agent Execution
+A genuinely agentic execution mode remains unresolved course scope and is not a V1 acceptance criterion.
 
-A true agent-execution configuration remains unresolved course scope. It is not a V1 acceptance criterion at this time.
+Ordinary model calls must not be renamed or marketed as “agents.” The architecture should avoid blocking a later strategy addition, but V1 must not contain speculative fake-agent complexity.
 
-Do not create fake agent semantics. Future architecture should avoid making a genuine agent execution strategy impossible, but V1 must not pretend normal model calls are agents.
+---
 
-## 12. OpenRouter Requirement
+## 8. OpenRouter Requirement
 
-OpenRouter is the required model gateway for V1.
+OpenRouter is the required V1 model gateway.
 
-Exact model IDs are not permanent product requirements. They must remain configurable because:
+Exact model IDs are runtime configuration, not permanent product requirements, because availability and pricing can change.
 
-- availability can change
-- free models can change
-- pricing can change
+The system may expose only models that meet the capabilities needed for the current execution contract, including reliable structured output and sufficient context capacity.
 
-The application must not silently substitute a different paid model when a selected model fails.
+No silent paid-model fallback is permitted when the selected model/provider fails.
 
-## 13. Deliberation Orchestration
+---
 
-A normal successful run occurs in exactly two dependency phases.
+## 9. Deliberation Orchestration
 
-### 13.1 Phase A: Advocates
+A successful Tribunal run has two dependency phases.
 
-The four advocate logical calls are independent and should execute concurrently.
+### 9.1 Phase A — Advocates
 
-No advocate depends on another advocate's output.
+The four advocate logical calls **must be initiated as one concurrent phase**.
 
-### 13.2 Advocate Barrier
+The application must not intentionally serialize Advocate 1 → Advocate 2 → Advocate 3 → Advocate 4.
 
-Judge execution does not begin until all four advocate speeches have been successfully validated.
+Low-level provider/runtime limits may affect actual network scheduling, but the application must express the four advocates as independent concurrent work.
 
-### 13.3 Phase B: Judges
+### 9.2 Advocate barrier
 
-Once all four advocate speeches exist, the three judge logical calls are independent and should execute concurrently.
+Judge execution must not begin until all four advocate outputs have passed server-side structured validation.
 
-Every judge receives all four validated speeches.
+### 9.3 Phase B — Judges
 
-The expected normal successful run contains:
+After the advocate barrier succeeds, the three judge logical calls **must be initiated as one concurrent phase**.
+
+The application must not intentionally serialize the judges.
+
+Every judge receives the same four validated speeches.
+
+### 9.4 Call geometry
+
+Successful no-retry run:
 
 - 4 advocate logical calls
 - 3 judge logical calls
-- 7 total logical calls
+- **7 logical calls total**
 
-There is no eighth required LLM call.
+There is no required eighth LLM call.
 
-## 14. Retry Policy
+---
 
-Each logical participant call may be attempted at most two times total:
+## 10. Retry and Timeout Policy
 
-- 1 initial attempt
-- at most 1 retry
+### 10.1 Retry limit
 
-The maximum theoretical provider-request attempts in one run is 14.
+Each logical participant call may have at most:
+
+- 1 initial provider attempt
+- 1 retry
+
+Maximum theoretical provider attempts per run: **14**.
 
 A retry may occur only for a retryable failure such as:
 
-- transient provider failure
-- timeout
-- malformed or invalid model output
-
-A retry must not silently change:
-
-- participant
-- role
-- personality
-- side
-- selected model
+- transient provider/network failure
+- application-enforced timeout
+- malformed/invalid structured model output
 
 Do not retry:
 
 - invalid user input
 - unsupported upload
 - invalid configuration
-- budget rejection
-- missing or unknown required pricing information
+- budget preflight rejection
+- missing/unsafe pricing information
 
-Every attempt must be observable in audit data.
+A retry must not silently change participant, side, personality, selected model, or role instructions.
 
-## 15. Advocate Failure Behaviour
+### 10.2 Timeout
 
-If an advocate attempt fails, the system may perform its one allowed retry if the failure is retryable and budget policy permits.
+Every provider attempt must have an **application-enforced timeout no greater than 60 seconds**.
 
-If the retry also fails, the logical advocate call is `FAILED`. The run becomes `FAILED`. Judge execution must not begin.
+Architecture may choose a shorter timeout to fit runtime constraints.
 
-Already completed advocate outputs may be retained for diagnostic and audit inspection, but the application must not present an incomplete run as a valid Tribunal result.
+When the timeout is reached before a valid response is accepted, the attempt is timed out and may consume the one permitted retry if retry and budget rules allow.
 
-## 16. Judge Failure Behaviour
+---
 
-If a judge attempt fails, the system may perform its one allowed retry if the failure is retryable and budget policy permits.
+## 11. Failure Behaviour
 
-If the retry also fails, that logical judge call is `FAILED`. The full run becomes `FAILED`.
+Failure must look like failure, never like a verdict.
 
-A majority verdict must not be produced from only one or two valid judges.
+### 11.1 Advocate terminal failure
 
-Completed speeches and judge outputs may remain inspectable, but the UI must clearly state that the Tribunal did not complete successfully.
+If an advocate's second permitted attempt also fails:
 
-Failure must never be represented as `NOT_GUILTY`, `GUILTY`, an empty verdict, or another default-looking result.
+- that logical call is terminally failed
+- the run becomes `FAILED`
+- judge phase must not start
 
-## 17. Deterministic Majority
+Other completed advocate outputs may remain available for diagnostics, but the run is not a valid Tribunal result.
 
-Only after exactly three valid judge verdicts exist may the system calculate a Tribunal majority.
+### 11.2 Judge terminal failure
 
-Majority calculation is deterministic ordinary code.
+If a judge's second permitted attempt also fails:
 
-With three binary verdicts, the only valid majority outcomes are:
+- that logical call is terminally failed
+- the run becomes `FAILED`
+- no majority is produced
+
+A majority may not be calculated from one or two judges.
+
+### 11.3 Forbidden failure defaults
+
+No error path may silently become:
 
 - `GUILTY`
 - `NOT_GUILTY`
+- empty verdict
+- fabricated speech/reasoning
+- `COMPLETED`
+
+---
+
+## 12. Deterministic Majority
+
+Majority calculation occurs only after exactly three valid judge verdicts exist.
+
+It is ordinary deterministic application code.
 
 Examples:
 
-- `GUILTY` / `GUILTY` / `NOT_GUILTY` -> `GUILTY`
-- `GUILTY` / `NOT_GUILTY` / `NOT_GUILTY` -> `NOT_GUILTY`
-- three equal verdicts -> that verdict
+- GUILTY / GUILTY / NOT_GUILTY → GUILTY
+- GUILTY / NOT_GUILTY / NOT_GUILTY → NOT_GUILTY
+- three identical verdicts → that verdict
 
-No LLM call may be used to calculate or reinterpret the majority.
+No model call may calculate, reinterpret, summarize, or “confirm” the majority.
 
-## 18. Full Protocol
+---
 
-V1 resolves the previous protocol-composition assumption as follows: the full Tribunal protocol is assembled deterministically from already stored data.
+## 13. Full Protocol
 
-It must include or reference:
+V1 resolves protocol composition as deterministic assembly.
+
+The full protocol must include or reference:
 
 - canonical Charge Sheet
-- participant configuration relevant to the run
+- execution mode
+- frozen participant configuration
+- model assignment and prompt version per participant
 - four advocate speeches
 - three judge verdicts
 - three judge reasonings
-- deterministic majority verdict
-- model-call economics
+- deterministic majority
+- model-call economics/audit data
 
-Protocol generation must not require an eighth LLM call.
+Protocol generation must not call an LLM.
 
-The protocol is an assembled record, not a new AI opinion.
+Reopening a stored protocol must not rerun models.
 
-## 19. Economics and Model-Call Audit
+---
 
-Every model-call attempt must record, where available or reliably derivable:
+## 14. Run States
 
-- participant identity
-- participant role
-- participant side if applicable
-- selected provider/model ID
-- attempt number
-- status
-- input tokens
-- output tokens
-- total tokens
-- applicable input-token price
-- applicable output-token price
-- calculated or observed cost in USD
-- latency
-- failure/error category where applicable
-
-The run must deterministically aggregate:
-
-- logical calls
-- provider attempts
-- input tokens
-- output tokens
-- total tokens
-- advocate cost
-- judge cost
-- total cost
-- relevant timing/latency summary
-
-Pricing used for a call must be auditable.
-
-Exact persistence schema and provider-metadata implementation belong to later architecture.
-
-## 20. Hard Cost Policy
-
-Maximum model spend policy for one complete run: `$5 USD`.
-
-This ceiling includes retries.
-
-The design target is substantially below `$5 USD` and should prefer free or very-low-cost OpenRouter models.
-
-Before starting a run, the backend must perform a conservative budget preflight using:
-
-- selected model pricing known at that time
-- configured output-token ceilings
-- normalized input size or estimated input-token exposure
-- all seven required logical calls
-
-If required pricing information cannot be established reliably, the run must not begin with that configuration.
-
-Before any retry or additional provider attempt, the backend must verify that performing the attempt remains within the run budget policy.
-
-No silent paid fallback is permitted.
-
-Budget rejection is a visible system state, not a model failure and not a verdict.
-
-The exact pricing-fetch, cache, and reservation algorithm belongs to `ARCHITECTURE.md` and the future economics specification.
-
-## 21. Request Timeout Policy
-
-Each individual model-provider attempt has a V1 timeout target of 60 seconds.
-
-A timed-out attempt is a failed attempt and may consume its one retry if retry policy and budget policy permit.
-
-The eventual architecture must choose a runtime/deployment design capable of supporting the required two-phase deliberation without falsely reporting success after infrastructure timeouts.
-
-## 22. Run States
-
-At minimum, the product must distinguish these conceptual states:
+The product must distinguish at least these user-observable meanings:
 
 - `DRAFT`
 - `READY`
@@ -447,342 +423,401 @@ At minimum, the product must distinguish these conceptual states:
 - `FAILED`
 - `BLOCKED_BUDGET`
 
-The exact internal enum names may differ, but these user-observable meanings must remain distinguishable.
+The internal enum may add substates (for example retrying), but it may not collapse failures or budget rejection into a completed result.
 
-`FAILED` must not look like `COMPLETED`.
+A run becomes immutable in its participant/model/prompt configuration once execution starts.
 
-`BLOCKED_BUDGET` must not look like a model verdict.
+---
 
-## 23. Result Information Hierarchy
+## 15. Economics and Audit Requirements
 
-For a `COMPLETED` run, the result experience must prioritize information in this order:
+### 15.1 Successful provider attempt
 
-1. Tribunal majority verdict
-2. The three individual judge verdicts shown together
-3. Judge reasoning
-4. Full advocate speeches
-5. Deliberation economics and detailed call audit
+Every successful attempt must persist:
 
-A concise economics summary may be shown earlier as supporting metadata, but it must not displace the verdict hierarchy.
+- participant identity
+- role
+- side if applicable
+- provider/model ID
+- attempt number
+- successful status
+- input tokens
+- output tokens
+- total tokens
+- pricing snapshot sufficient to audit the calculation
+- actual OpenRouter cost when supplied
+- derived comparison cost where useful
+- latency
+- provider request/generation identifier when available
 
-The user must not have to infer disagreement by searching through three separate unrelated screens.
+A successful-looking response that cannot support reliable V1 usage/cost accounting must not silently yield a `COMPLETED` run with unknown economics.
 
-## 24. Deliberation Feedback
+### 15.2 Failed provider attempt
 
-While a run is in progress, the UI must expose meaningful progress.
+Failed attempts may legitimately lack usage or cost telemetry.
 
-During the advocate phase, show the status of all four advocates.
+When unavailable:
 
-After the advocate barrier succeeds, show the status of all three judges.
+- unavailable fields remain explicitly unavailable/null
+- the system must not fabricate zero
+- failure/error category is recorded
+- any usage/cost data that was returned is retained
 
-The UI must distinguish:
+### 15.3 Run aggregation
 
-- waiting
-- running
-- succeeded
-- retrying where relevant
-- failed
+The system deterministically aggregates:
 
-Do not show a blank result area as the only loading state.
+- logical call count
+- provider attempt count
+- total input tokens
+- total output tokens
+- total tokens
+- advocate cost
+- judge cost
+- total model cost
+- timing summary
 
-## 25. Persistence and Past Cases
+Pricing used for historical calculations must remain auditable after model prices change.
 
-Completed Tribunal runs must be persisted.
+---
 
-Failed runs should retain enough audit information to diagnose the failure.
+## 16. Hard Cost Policy
 
-The application must provide a Past Cases/history experience from which a completed case can be reopened.
+Maximum allowed model spend for one run:
 
-Reopening a completed run must display stored historical results; it must not automatically call the LLM again.
+```text
+$5.00 USD
+```
 
-V1 is a single-tenant educational/course-demo application. V1 does not require user accounts or login.
+This includes retries.
 
-Stored demo cases belong to the application instance rather than to separate user accounts.
+The desired operating cost is substantially lower and should favor free or very-low-cost models.
 
-Because there is no authentication boundary in V1, the eventual UI must clearly disclose that submitted cases may be retained and visible in the demo history.
+### 16.1 Preflight
 
-Users should be warned not to submit sensitive/private information.
+Before run execution, authoritative server code must conservatively estimate worst-case model spend for the selected configuration using current known pricing, bounded input exposure, output caps, seven logical calls, retry exposure, and an explicit safety margin.
 
-Multi-user private ownership is outside V1 unless scope is deliberately changed later.
+If pricing cannot be bounded reliably, the configuration is not eligible for V1 execution.
 
-## 26. Secrets and Authority Boundary
+If conservative preflight exceeds `$5.00`, execution is blocked as `BLOCKED_BUDGET` before any model call.
+
+### 16.2 Runtime guard
+
+Before each provider attempt, including retries, the backend must ensure the attempt cannot intentionally violate the remaining run budget under the current conservative accounting policy.
+
+No silent paid fallback is permitted.
+
+If provider billing unexpectedly exceeds the accepted bound after money has already been spent, remaining calls stop and the run is marked as an explicit budget anomaly/failure. The system must not conceal the overrun.
+
+Detailed formulas and source precedence live in `docs/economics.md`.
+
+---
+
+## 17. Idempotency and Duplicate Spend
+
+Starting a run is a cost-bearing operation and must be idempotent.
+
+Repeated browser submissions caused by double-click, retry, refresh, or network ambiguity must not create two paid Tribunal runs for one accepted start request.
+
+The backend must use a stable client/request idempotency identifier or equivalent deterministic uniqueness control.
+
+A background worker must claim a run atomically so duplicate worker invocation cannot execute the same run twice.
+
+---
+
+## 18. Persistence and History
+
+V1 is a single-tenant educational/demo application. It does not require accounts or login.
+
+Persist:
+
+- normalized cases
+- run configuration snapshots
+- participant configurations
+- attempts and economics
+- speeches
+- verdicts/reasoning
+- deterministic protocol
+- enough failure data to diagnose failed runs
+
+The History/Past Cases experience must reopen stored completed results without model calls.
+
+Because the V1 history is not private per-user, the UI must disclose that submitted cases may be retained and visible in demo history and must warn users not to submit sensitive/private information.
+
+Raw `.txt`/`.md` uploads do not need to be retained after successful normalization.
+
+---
+
+## 19. Browser / Server Authority Boundary
+
+The browser handles interaction and presentation. It is not authoritative for security, cost, model execution, or persistence rules.
 
 The browser must never receive:
 
-- OpenRouter API keys
-- privileged database credentials
-- other server secrets
+- OpenRouter API key
+- Supabase service-role/secret credential
+- internal background-function secret
+- other privileged server secrets
 
-The authoritative validation, budget enforcement, model calls, model output validation, and persistence operations must occur in trusted backend/server-side code.
+Trusted server-side code performs:
 
-Client-side validation may improve UX but cannot be the only validation.
+- authoritative input validation
+- file parsing/validation
+- budget enforcement
+- OpenRouter requests
+- structured model-output validation
+- deterministic majority/protocol assembly
+- authoritative persistence
 
-Detailed security controls belong to the later security document.
+Client validation may improve UX but does not replace server validation.
 
-## 27. Prompt Requirements
+---
 
-Runtime base prompts must be version controlled.
+## 20. Prompt Requirements
 
-The system should maintain distinct base behavioural instructions for:
+Important runtime base prompts are version-controlled.
+
+At minimum, use distinct base role instructions for:
 
 - advocates
 - judges
 
-Participant personality is injected/configured context and must not replace those base role instructions.
+Participant personality is separately supplied context.
 
-User-provided Charge Sheet and personality content must be treated as untrusted input.
+The prompt architecture must preserve fixed role/side/output/security instructions even when user-provided Charge Sheet/personality content contains adversarial instructions.
 
-Prompt wording is runtime behaviour, and changes to important prompts must be reviewable through Git.
+Runtime models receive no privileged arbitrary tools in V1.
 
-Detailed prompt text belongs later.
+Prompt changes are behavioural changes and require review like code changes.
 
-## 28. Acceptance Criteria
+---
 
-These criteria are target requirements. They do not claim that the current repository already implements the behaviour.
+## 21. UI Behaviour Requirements
 
-### 28.1 Case
+The detailed design contract is `docs/ui-spec.md`. At minimum:
 
-- CASE-001: The system requires Defendant, Act, and Exact Question for every Charge Sheet.
-- CASE-002: A valid manually entered Charge Sheet is accepted.
-- CASE-003: An empty Defendant field is rejected visibly and identifies Defendant as invalid.
-- CASE-004: An empty Act field is rejected visibly and identifies Act as invalid.
-- CASE-005: An empty Exact Question field is rejected visibly and identifies Exact Question as invalid.
-- CASE-006: A Defendant longer than 200 characters after trimming is rejected visibly.
-- CASE-007: An Act longer than 6000 characters after trimming is rejected visibly.
-- CASE-008: An Exact Question longer than 1000 characters after trimming is rejected visibly.
-- CASE-009: A valid structured `.txt` Charge Sheet import is accepted.
-- CASE-010: A valid structured `.md` Charge Sheet import is accepted.
-- CASE-011: An unsupported Charge Sheet file type is rejected visibly.
-- CASE-012: A non-UTF-8 Charge Sheet file is rejected visibly.
-- CASE-013: A Charge Sheet file larger than 64 KiB is rejected visibly.
-- CASE-014: A Charge Sheet file missing any required labelled section is rejected visibly.
-- CASE-015: A Charge Sheet file with a duplicate labelled section is rejected visibly.
-- CASE-016: A Charge Sheet file with an empty labelled section is rejected visibly.
-- CASE-017: File parsing is deterministic and does not call an LLM.
+- setup follows Charge Sheet → Advocates → Judges → Review
+- Review shows execution mode, models, 7-call geometry, conservative cost estimate, and `$5` policy
+- Deliberation shows participant progress, not a blank spinner
+- four advocate statuses are visible during advocate phase
+- three judge statuses are visible after the barrier
+- retry/failure is visible
+- completed result prioritizes majority first
+- all three judge votes are visible together
+- judge reasoning follows
+- advocate speeches follow
+- economics detail follows
+- History reopens stored results without rerun
 
-### 28.2 Participants
+A failed run must be visually and semantically distinct from a completed verdict.
 
-- PART-001: Every run contains exactly 2 PRO advocates.
-- PART-002: Every run contains exactly 2 CON advocates.
-- PART-003: Every run contains exactly 3 judges.
-- PART-004: Users cannot add or remove participants in V1.
-- PART-005: Users cannot change advocate side assignment in V1.
-- PART-006: Each participant has independent personality configuration.
-- PART-007: Valid manually entered personality text is accepted.
-- PART-008: Valid `.txt` personality import is accepted.
-- PART-009: Valid `.md` personality import is accepted.
-- PART-010: Empty personality text is rejected visibly.
-- PART-011: Personality text longer than 4000 characters after normalization is rejected visibly.
-- PART-012: A personality file larger than 16 KiB is rejected visibly.
-- PART-013: Personality context does not replace the fixed base role instructions.
+---
 
-### 28.3 Run and Execution
+## 22. Validation Strategy
 
-- RUN-001: Shared-Model Mode applies one selected OpenRouter model to all seven participants.
-- RUN-002: Separate-Model Mode honours participant-specific OpenRouter model assignments.
-- RUN-003: The four advocate logical calls can execute without depending on each other.
-- RUN-004: Judge execution does not begin until all four advocate speeches validate.
-- RUN-005: Each judge receives all four validated advocate speeches.
-- RUN-006: A successful no-retry run contains exactly seven logical model calls.
-- RUN-007: Retries are recorded as attempts of existing logical calls, not new participants.
-- RUN-008: No logical call receives more than one retry.
-- RUN-009: A retry does not silently change participant, role, side, personality, or selected model.
-- RUN-010: Agent Execution is not required for V1 and normal model calls are not described as agents.
+### 22.1 Unit tests
 
-### 28.4 Output
+Future unit tests must cover at least:
 
-- OUT-001: A valid advocate result contains a non-empty string `speech`.
-- OUT-002: An advocate result missing `speech` is rejected as invalid.
-- OUT-003: An advocate result with empty `speech` is rejected as invalid.
-- OUT-004: A valid judge result contains a verdict and non-empty reasoning.
-- OUT-005: Only `GUILTY` and `NOT_GUILTY` are accepted as normal V1 verdicts.
-- OUT-006: A judge result with any other verdict value is rejected as invalid.
-- OUT-007: A judge result with missing or empty reasoning is rejected as invalid.
-- OUT-008: Deterministic majority is correct for all three-verdict binary combinations.
-- OUT-009: Majority calculation never calls an LLM.
-- OUT-010: The full protocol is assembled without an eighth model call.
-- OUT-011: The protocol includes or references the canonical Charge Sheet, participant configuration, speeches, judge verdicts, judge reasonings, deterministic majority verdict, and model-call economics.
-
-### 28.5 Failure
-
-- FAIL-001: Advocate terminal failure prevents the judge phase from starting.
-- FAIL-002: Judge terminal failure prevents a `COMPLETED` result.
-- FAIL-003: A majority verdict is not produced from fewer than three valid judge verdicts.
-- FAIL-004: Invalid model output does not reach the UI as a valid verdict.
-- FAIL-005: Timeout is visible as a failure or retry state.
-- FAIL-006: No error path defaults to `GUILTY`.
-- FAIL-007: No error path defaults to `NOT_GUILTY`.
-- FAIL-008: `FAILED` is visibly distinct from `COMPLETED`.
-- FAIL-009: `BLOCKED_BUDGET` is visibly distinct from a model verdict.
-- FAIL-010: Unsupported or invalid uploaded input is not retried as a model call.
-- FAIL-011: Budget rejection is not represented as model failure.
-
-### 28.6 Economics
-
-- ECON-001: Every model-call attempt records participant identity, role, model, attempt number, and status.
-- ECON-002: Every model-call attempt records input tokens, output tokens, and total tokens where available or reliably derivable.
-- ECON-003: Every model-call attempt records applicable input-token and output-token prices where available or reliably derivable.
-- ECON-004: Every model-call attempt records calculated or observed cost in USD where available or reliably derivable.
-- ECON-005: Every model-call attempt records latency.
-- ECON-006: Failed attempts record a failure/error category.
-- ECON-007: Run totals equal deterministic aggregation of individual attempt data.
-- ECON-008: A configuration that violates preflight budget policy is blocked visibly.
-- ECON-009: Retry is blocked if budget policy would be violated.
-- ECON-010: No silent paid fallback occurs.
-- ECON-011: The `$5 USD` ceiling applies to one complete Tribunal run and includes retries.
-
-### 28.7 History
-
-- HIST-001: A completed run survives reload or reopen.
-- HIST-002: Reopening a completed run displays stored historical results.
-- HIST-003: Reopening a completed run does not call models again.
-- HIST-004: Stored majority, protocol, and economics match the original run.
-- HIST-005: Failed runs retain enough audit information to diagnose the failure.
-- HIST-006: The UI discloses that submitted cases may be retained and visible in demo history.
-- HIST-007: The UI warns users not to submit sensitive or private information.
-
-### 28.8 Security Boundary
-
-- SEC-001: No OpenRouter secret exists in client-side source or browser bundle.
-- SEC-002: No privileged database credential exists in client-side source or browser bundle.
-- SEC-003: Backend/server-side code independently validates authoritative inputs.
-- SEC-004: Backend/server-side code enforces budget policy.
-- SEC-005: Backend/server-side code performs OpenRouter calls.
-- SEC-006: Model output is parsed and validated before becoming application data.
-- SEC-007: Client-side validation is not treated as authoritative enforcement.
-
-## 29. Validation Approach
-
-### 29.1 Unit Validation
-
-Future unit tests should cover at least:
-
-- Charge Sheet validators
-- Charge Sheet file parser
+- Charge Sheet validation
+- structured file parser
 - personality validation
-- verdict validation
-- majority calculation
+- advocate schema validation
+- judge schema/verdict validation
+- deterministic majority
 - cost aggregation
-- budget logic
+- preflight/runtime budget rules
 - run-state transitions
+- idempotency/claim logic at the appropriate layer
 
-### 29.2 Integration Validation
+### 22.2 Integration tests
 
-Using a mocked or fake OpenRouter boundary, future integration tests should verify:
+Against a fake/mocked OpenRouter boundary, verify:
 
-- four advocate calls are initiated for a valid run
-- judge phase starts only after all four valid speeches
-- exactly three judge calls are then initiated
-- all judges receive all four speeches
-- Shared-Model and Separate-Model routing are correct
-- retry limits hold
+- four advocate requests are initiated as one concurrent phase
+- judges do not begin before all four valid speeches
+- three judge requests are initiated as one concurrent phase
+- every judge receives all four speeches
+- Shared-Model routing uses one model
+- Separate-Model routing preserves all seven assignments
+- strict malformed output fails/retries correctly
+- retry limit holds
 - phase failure rules hold
 - economics aggregate correctly
+- duplicate start does not create duplicate spend
 
-### 29.3 End-to-End Validation
+### 22.3 End-to-end
 
-Eventually verify this user flow:
+Eventually verify:
 
-1. Create Case
-2. Configure participants
-3. Review
-4. Deliberate
-5. View result
-6. Reopen from Past Cases
+```text
+Create Case
+→ Configure Participants
+→ Review / Preflight
+→ Start Tribunal
+→ Observe Deliberation
+→ View Result / Economics
+→ Reopen from Past Cases
+```
 
-### 29.4 Failure-Focused Scenarios
+### 22.4 Deliberate failure scenarios
 
-Manual or automated validation should explicitly include:
+Test intentionally:
 
-- timeout
+- provider timeout
 - provider unavailable
 - malformed advocate JSON
+- prose advocate output
 - empty speech
 - malformed judge JSON
-- invalid verdict
+- prose containing GUILTY but not schema-valid
+- unsupported verdict
 - empty reasoning
-- one advocate permanently failing
-- one judge permanently failing
-- unsupported file
-- oversized file
-- missing Charge Sheet section
-- budget preflight rejection
+- terminal advocate failure
+- terminal judge failure
+- invalid/oversized/non-UTF-8 upload
+- missing/duplicate Charge Sheet marker
+- budget preflight block
 - retry blocked by budget
+- missing usage/cost telemetry on otherwise successful response
+- duplicate start request
+- duplicate background-worker invocation
+- prompt-injection-like case/personality text
 
-## 30. Known Pitfalls
+---
 
-Known traps to avoid:
+## 23. Known Pitfalls
 
-- a judge may return prose instead of the required structure
-- a model call may time out
-- a Charge Sheet may omit the exact question
-- a malformed result may look fluent and convincing
-- a silent failure can accidentally look like `NOT_GUILTY`
-- a judge must never receive only some advocate arguments
-- retries can multiply cost
-- judges consume more input because they read all advocate speeches
-- free-model availability can change
-- model pricing can change
-- a pricing lookup can become stale
-- a protocol generated with another model call would change the seven-call economics
-- sequential execution would create unnecessary latency
-- client-side-only validation is not authoritative
-- prompt/personality input may contain adversarial instructions
+- Fluent invalid model output can appear trustworthy.
+- A keyword such as “guilty” in reasoning is not a verdict contract.
+- A judge must never receive a partial advocate set.
+- Sequential model calls create unnecessary latency.
+- Retries can double economic exposure.
+- Judges consume more context because they read all four speeches.
+- Free model availability and pricing can change without a code release.
+- Stale pricing can invalidate a budget estimate.
+- A browser retry can accidentally double-spend without idempotency.
+- Serverless/background delivery can occur more than once; workers must be claim-safe.
+- Client-side validation is not authoritative.
+- User personality text may attempt to override the role/output contract.
+- Logging full cases/prompts can create unnecessary privacy exposure.
+- A protocol generated by an extra LLM would silently change the seven-call economics.
 
-This section identifies requirement-level risks, not architecture-specific implementation solutions.
+---
 
-## 31. Architectural Guidance: Boundaries Only
+## 24. Acceptance Criteria
 
-This section defines required boundaries without choosing concrete technology.
+These are target criteria, not claims that implementation already exists.
 
-- Browser: input, interaction, and result presentation; no secrets or authoritative enforcement.
-- Backend: authoritative validation, orchestration, OpenRouter calls, budget enforcement, output validation, and persistence coordination.
-- Persistent store: cases, run configuration, participant outputs, verdicts, and model-call audit.
-- Deployment: must support the real two-phase runtime and expose a reachable web application.
+### CASE
 
-OpenRouter remains behind a server-side service boundary.
+- **CASE-001** — Every case requires Defendant, Act, and Exact Question.
+- **CASE-002** — Valid manual input inside limits is accepted.
+- **CASE-003** — Invalid/empty/oversized fields are rejected with field-specific feedback.
+- **CASE-004** — Valid structured `.txt` input is parsed deterministically.
+- **CASE-005** — Valid structured `.md` input is parsed deterministically.
+- **CASE-006** — Unsupported, non-UTF-8, malformed, duplicate-marker, or oversized files are rejected visibly.
+- **CASE-007** — File parsing performs no LLM call.
 
-Four advocates are parallelizable.
+### PARTICIPANTS
 
-Three judges are parallelizable after the advocate barrier.
+- **PART-001** — Every run has exactly two PRO advocates.
+- **PART-002** — Every run has exactly two CON advocates.
+- **PART-003** — Every run has exactly three judges.
+- **PART-004** — Users cannot add/remove participants or alter advocate sides in V1.
+- **PART-005** — Every participant has independent non-empty personality context.
+- **PART-006** — Manual and supported-file personality input both work within limits.
 
-Deterministic logic stays outside the model.
+### OUTPUT
 
-Do not choose the concrete frontend framework, backend hosting, database, ORM, or deployment provider in `SPEC.md`. Those belong to `ARCHITECTURE.md`.
+- **OUT-001** — Advocate output must be schema-valid JSON with non-empty `speech`.
+- **OUT-002** — Non-JSON/prose advocate output is rejected as an invalid attempt.
+- **OUT-003** — Judge output must be schema-valid JSON with valid verdict and non-empty reasoning.
+- **OUT-004** — Only `GUILTY` and `NOT_GUILTY` are accepted V1 verdicts.
+- **OUT-005** — Non-JSON/prose judge output is rejected even if it contains a verdict keyword.
+- **OUT-006** — Invalid model output cannot become application data without validation.
+- **OUT-007** — Deterministic majority is correct for all three-vote binary combinations.
+- **OUT-008** — Majority and protocol assembly use no additional LLM call.
 
-## 32. Deferred Architecture Decisions
+### RUN
 
-The following decisions are explicitly deferred to the next Milestone 2 step:
+- **RUN-001** — Shared-Model Mode applies one selected model to all seven participants.
+- **RUN-002** — Separate-Model Mode preserves participant-specific model assignments.
+- **RUN-003** — Four advocates are initiated as one concurrent application phase.
+- **RUN-004** — Judge phase does not start until all four advocate outputs validate.
+- **RUN-005** — Three judges are initiated as one concurrent application phase after the barrier.
+- **RUN-006** — Every judge receives all four validated speeches.
+- **RUN-007** — A successful no-retry run has exactly seven logical model calls.
+- **RUN-008** — A logical call receives at most one retry.
+- **RUN-009** — Every provider attempt is bounded by an application timeout of no more than 60 seconds.
+- **RUN-010** — Repeated start requests with the same idempotency identity do not create duplicate paid runs.
+- **RUN-011** — Duplicate worker delivery cannot execute the same claimed run twice.
 
-- frontend framework
-- backend/runtime technology
-- database/provider
-- deployment provider
-- exact persistence schema
-- API route design
-- server-function organization
-- model-client implementation
-- pricing cache design
-- concurrency implementation
-- schema-validation library
-- test framework
-- CI implementation
+### FAILURE
 
-True Agent Execution remains unresolved pending course clarification.
+- **FAIL-001** — Terminal advocate failure prevents judge execution.
+- **FAIL-002** — Terminal judge failure prevents `COMPLETED` and prevents majority calculation.
+- **FAIL-003** — Failure never defaults to a normal verdict.
+- **FAIL-004** — `FAILED` is visibly distinct from `COMPLETED`.
+- **FAIL-005** — `BLOCKED_BUDGET` is visibly distinct from model failure and verdict.
+- **FAIL-006** — Timeout and retry state are observable.
 
-## 33. Cross-Document Consistency Notes
+### ECONOMICS
 
-This specification preserves the approved conception in the existing Milestone 1 documents:
+- **ECON-001** — Every successful attempt has required participant/model/usage/cost/latency audit data.
+- **ECON-002** — Failed attempts preserve available telemetry and represent unavailable values as unavailable, not fabricated zero.
+- **ECON-003** — Run totals equal deterministic aggregation of attempt data.
+- **ECON-004** — Pricing snapshot used for historical accounting is retained.
+- **ECON-005** — Preflight blocks configurations whose conservative bound exceeds `$5.00`.
+- **ECON-006** — Retry is blocked when budget policy does not permit it.
+- **ECON-007** — No silent paid-model/provider fallback occurs.
+- **ECON-008** — A successful run cannot silently complete with unknown required usage/cost economics.
 
-- participant count remains exactly seven
-- Shared-Model and Separate-Model configurations remain required
-- Agent Execution remains unresolved
-- OpenRouter remains required
-- the hard run-cost ceiling remains `$5 USD` per complete run
-- deterministic majority remains non-AI
-- failure never becomes a verdict
-- exact architecture stack is not chosen
-- no application functionality is claimed to already exist
-- the existing Definition of Done remains target criteria rather than completed work
+### HISTORY
 
-Previously open decisions now resolved by this specification include V1 Charge Sheet fields, V1 `.txt`/`.md` upload support, V1 verdict vocabulary, V1 protocol assembly, retry limit, timeout target, and conceptual run states.
+- **HIST-001** — Completed runs survive reload and can be reopened.
+- **HIST-002** — Reopening a run uses stored results and makes no model call.
+- **HIST-003** — Stored majority/protocol/economics correspond to the original run.
+- **HIST-004** — Failed runs retain enough audit data for diagnosis.
+- **HIST-005** — V1 UI warns that demo submissions may be retained/visible and should not contain sensitive data.
+
+### SECURITY
+
+- **SEC-001** — OpenRouter and privileged database secrets never appear in browser code/bundle.
+- **SEC-002** — Authoritative validation occurs server-side.
+- **SEC-003** — Budget enforcement and OpenRouter calls occur server-side.
+- **SEC-004** — Model output is schema-validated before persistence as valid participant output.
+- **SEC-005** — Raw user/model content is rendered safely without executing supplied HTML/script.
+- **SEC-006** — Runtime models receive no privileged arbitrary tools in V1.
+
+---
+
+## 25. Architectural Guidance
+
+The architecture must preserve four explicit parts:
+
+- **Browser/frontend:** interaction and presentation.
+- **Backend:** authoritative validation, orchestration, OpenRouter, budget/output controls, persistence coordination.
+- **Database:** durable cases, runs, configurations, outputs, protocol, economics/audit.
+- **Deployment:** publicly reachable web app with a runtime that can safely complete the two-phase deliberation.
+
+OpenRouter remains behind a server-side boundary. Deterministic work stays outside the model. The four advocates and three judges use concurrent phases separated by a hard barrier.
+
+Concrete technology and data relationships are defined in `ARCHITECTURE.md`.
+
+---
+
+## 26. Scope Deferred Beyond V1
+
+Unless intent/spec is deliberately changed:
+
+- real legal advice/authority
+- authentication/private multi-user ownership
+- RAG/vector database
+- model training/fine-tuning
+- voice interface
+- image generation
+- arbitrary participant counts
+- autonomous model tools/actions
+- genuinely agentic execution mode until course requirement is confirmed
+
