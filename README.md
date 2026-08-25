@@ -2,11 +2,11 @@
 
 Course project for **Agentic Software Engineering (ASE-26)**.
 
-The Tribunal is a cognified web application in which AI advocates argue a case and AI judges deliberate and return reasoned verdicts. The current repository establishes the executable application skeleton and verification gate only; real Tribunal execution begins in later milestones.
+The Tribunal is a cognified web application in which AI advocates argue a case and AI judges deliberate and return reasoned verdicts. The current repository includes a complete mock UI shell for reviewing the Tribunal interaction model; real Tribunal execution and persistence begin in later milestones.
 
 ## Status
 
-Application skeleton.
+Mock UI shell with in-memory demo data.
 
 ## Stack
 
