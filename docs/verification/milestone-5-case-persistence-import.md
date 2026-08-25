@@ -1,9 +1,10 @@
 # Milestone 5 — Case Persistence & Import — Verification Evidence
 
 > Recovery/continuation note: this milestone's implementation was started by a
-> prior coding agent session (interrupted by expired usage credits) and
-> completed/stabilized/verified by a second session. This document records
-> the final, independently-verified state.
+> prior coding agent session (interrupted by expired usage credits),
+> completed/stabilized/verified by a continuation agent, then subjected to an
+> independent remote review. This document records the final state after
+> both passes.
 
 ## Planning references
 
@@ -18,7 +19,9 @@
 | 1 | `7a754a4f2c2b3e6e9a09797f0dd579310a23572b` | `docs: define Tribunal package import strategy` |
 | 2 | `55e40819e819e4471c500d0c54cff18dec7e5bb9` | `feat: implement deterministic Tribunal imports` |
 | 3 | `8011abfb269d41e6d365062c606ad71e69595262` | `feat: persist Tribunal cases` |
-| 4 | *(this evidence commit, recorded after commit)* | `docs: record Milestone 5 verification evidence` |
+| 4 | `ed43ac9c6b76dd30a45757168ea98d399c29ae5b` | `docs: record Milestone 5 verification evidence` |
+| 5 | `9f7efc981c509ef2561a0e32cfb17c89787ff14e` | `fix: harden Milestone 5 case persistence boundary` |
+| 6 | *(this evidence-update commit, recorded after commit)* | `docs: update Milestone 5 review evidence` |
 
 ## Recovery: commit-history reconstruction
 
@@ -170,19 +173,20 @@ explicit `Convene Tribunal` (still routed to the existing M4 mock
 
 ## Tests
 
-10 test files, 52 tests, all passing:
+10 test files, 55 tests, all passing (52 at the initial recovery pass + 3
+added during the independent-review follow-up — see below):
 
 ```text
 netlify/functions/health.test.ts        (2)
 netlify/server/supabase.test.ts         (3)
 netlify/server/importParsers.test.ts    (6)
 netlify/functions/import.test.ts        (5)
-netlify/functions/cases.test.ts         (6)
+netlify/functions/cases.test.ts         (8)
 src/app/App.test.tsx                    (5)
 src/features/deliberation/deliberation.test.tsx (5)
 src/features/results/result.test.tsx    (6)
 src/features/history/history.test.tsx   (5)
-src/features/case-setup/caseSetup.test.tsx (13)
+src/features/case-setup/caseSetup.test.tsx (14)
 ```
 
 Coverage highlights against the required matrix: Charge Sheet (valid txt/md,
@@ -258,7 +262,7 @@ response even when repository construction itself throws).
 ```text
 npm run lint        PASS
 npm run typecheck   PASS
-npm run test        PASS (10 files, 52 tests)
+npm run test        PASS (10 files, 55 tests)
 npm run build       PASS
 npm run verify:client-bundle   PASS (no secret in client bundle)
 npm run verify      PASS (full chain)
@@ -312,10 +316,72 @@ Verified by `grep`/`git diff` over the full branch diff against
   prior documentation commit)
 - `package.json`/`package-lock.json` unchanged — no new dependency
 
+## Independent Review Follow-Up
+
+An independent remote review of the pushed branch (HEAD
+`ed43ac9c6b76dd30a45757168ea98d399c29ae5b` at the time of review) found two
+small findings. Both were fixed in one review-fix commit,
+`9f7efc981c509ef2561a0e32cfb17c89787ff14e` —
+`fix: harden Milestone 5 case persistence boundary`.
+
+1. **Save Case was coupled to full seven-participant readiness.**
+   `ReviewPage.tsx` gated both `Save Case` and `Convene Tribunal` on
+   `isMockSetupReady(state)`. That's correct for `Convene Tribunal` but wrong
+   for `Save Case`: M5 persists only the canonical case
+   (Defendant/Act/Exact Question + source metadata) — participant
+   configuration isn't persisted/frozen until M6, so requiring it to be
+   valid before a case can be saved was stricter than the actual
+   persistence boundary. Fixed by introducing `canSaveCase = chargeSheetValid`
+   (only), used for both the button's `disabled` state and
+   `handleSaveCase`'s guard. `canConvene` is unchanged and still requires
+   `isMockSetupReady`. Regression test:
+   `allows saving a case with a valid Charge Sheet even when participants
+   are invalid, but blocks Convene` (fills a valid Charge Sheet, empties
+   PRO I's personality, jumps to Review via the stepper, asserts `Save Case`
+   enabled / `Convene Tribunal` disabled, clicks Save, and asserts the
+   POSTed body is exactly `{ defendant, act, exactQuestion, sourceType }`
+   with no participant data). The pre-existing
+   `does not mark invalid setup steps complete…` test was extended to also
+   assert `Save Case` stays disabled when the Charge Sheet itself is
+   invalid.
+
+2. **Case source-filename validation was looser than the import boundary's.**
+   `POST /api/cases` only checked filename length and path separators, and a
+   `MANUAL` case could technically carry an unused filename. Replaced the
+   single optional `sourceFilename` field with a `z.discriminatedUnion` on
+   `sourceType`: `MANUAL` cannot include `sourceFilename` at all (an extra
+   key is rejected by `strictObject`); `CHARGE_SHEET_FILE`/
+   `TRIBUNAL_PACKAGE_FILE` require a filename that passes the same
+   safe-filename rules the deterministic import boundary already enforces
+   (non-empty, ≤255 chars, no `/`, `\`, NUL, `.`, or `..`) plus a `.txt`/
+   `.md` extension requirement. This all runs in `validateCreateCaseInput`
+   before any repository/DB call, so malformed metadata is always
+   `400 invalid_case`, never a DB `CHECK`-constraint failure surfaced as a
+   500 — the DB constraints remain as defense in depth, unchanged. New
+   tests: `rejects malformed case source metadata with 400 before any
+   repository call` (MANUAL+filename, file-source without filename,
+   `.`, `..`, `/`, `\`, an embedded NUL character, and unsupported
+   extensions `.pdf`/`.exe` — each asserted to reach 400 with zero calls to
+   the injected repository) and `accepts valid case source metadata for
+   every source type` (MANUAL without a filename; CHARGE_SHEET_FILE and
+   TRIBUNAL_PACKAGE_FILE each with `.txt` and `.md`).
+
+Neither finding required any change to the deterministic import boundary,
+the migration, M7A scope, or OpenRouter/model-related code — none of that
+was touched.
+
+Test count: 52 → 55 (3 new tests: 1 UI regression test, 2 server-side case
+tests). Final verification after the fix: `lint`/`typecheck`/`test`
+(10 files, 55 tests)/`build`/`verify:client-bundle`/`verify` all PASS,
+`npm audit --omit=dev --audit-level=high` 0 vulnerabilities,
+`git diff --check origin/main...HEAD` clean. No dependency was added.
+
 ## Remote state
 
 Pushed to `origin/milestone/05-case-persistence-import` after this evidence
-commit; local `HEAD` and remote branch `HEAD` match exactly (recorded in the
-push output below rather than duplicated here to avoid staleness).
+update commit; local `HEAD` and remote branch `HEAD` match exactly.
 
-No pull request was opened. Issue #7 remains open. `main` was not touched.
+The Milestone 5 PR (base `main`, head
+`milestone/05-case-persistence-import`) was opened after this push and after
+all gates passed, per the independent-review follow-up instructions. It was
+not merged. Issue #7 remains open. `main` was not touched.
