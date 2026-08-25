@@ -27,7 +27,7 @@ class FakeCaseRepository implements CaseRepository {
     return {
       ...storedCase,
       ...input,
-      sourceFilename: input.sourceFilename ?? null
+      sourceFilename: input.sourceType === "MANUAL" ? null : input.sourceFilename
     };
   }
 
@@ -131,6 +131,110 @@ describe("case persistence functions", () => {
 
       expect(response.statusCode).toBe(400);
       expect(JSON.parse(response.body ?? "").error).toBe("invalid_case");
+    }
+  });
+
+  it("rejects malformed case source metadata with 400 before any repository call", async () => {
+    const baseCase = {
+      defendant: "Alex Rowan",
+      act: "Entered the restricted lab.",
+      exactQuestion: "Did Alex knowingly violate the lab protocol?"
+    };
+    const invalidRequests = [
+      { ...baseCase, sourceType: "MANUAL", sourceFilename: "charge.txt" },
+      { ...baseCase, sourceType: "CHARGE_SHEET_FILE" },
+      { ...baseCase, sourceType: "TRIBUNAL_PACKAGE_FILE" },
+      { ...baseCase, sourceType: "CHARGE_SHEET_FILE", sourceFilename: "." },
+      { ...baseCase, sourceType: "CHARGE_SHEET_FILE", sourceFilename: ".." },
+      {
+        ...baseCase,
+        sourceType: "CHARGE_SHEET_FILE",
+        sourceFilename: "sub/charge.txt"
+      },
+      {
+        ...baseCase,
+        sourceType: "CHARGE_SHEET_FILE",
+        sourceFilename: "../charge.txt"
+      },
+      {
+        ...baseCase,
+        sourceType: "CHARGE_SHEET_FILE",
+        sourceFilename: "sub\\charge.txt"
+      },
+      {
+        ...baseCase,
+        sourceType: "CHARGE_SHEET_FILE",
+        sourceFilename: "charge\0.txt"
+      },
+      {
+        ...baseCase,
+        sourceType: "TRIBUNAL_PACKAGE_FILE",
+        sourceFilename: "package.pdf"
+      },
+      {
+        ...baseCase,
+        sourceType: "TRIBUNAL_PACKAGE_FILE",
+        sourceFilename: "package.exe"
+      }
+    ];
+
+    for (const request of invalidRequests) {
+      const repository = new FakeCaseRepository();
+      const response = await handleCasesRequest(
+        {
+          httpMethod: "POST",
+          body: JSON.stringify(request)
+        } as HandlerEvent,
+        repository
+      );
+
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(response.body ?? "").error).toBe("invalid_case");
+      // No repository/DB call happens for malformed metadata.
+      expect(repository.createdInputs).toHaveLength(0);
+    }
+  });
+
+  it("accepts valid case source metadata for every source type", async () => {
+    const baseCase = {
+      defendant: "Alex Rowan",
+      act: "Entered the restricted lab.",
+      exactQuestion: "Did Alex knowingly violate the lab protocol?"
+    };
+    const validRequests = [
+      { ...baseCase, sourceType: "MANUAL" },
+      {
+        ...baseCase,
+        sourceType: "CHARGE_SHEET_FILE",
+        sourceFilename: "charge.txt"
+      },
+      {
+        ...baseCase,
+        sourceType: "CHARGE_SHEET_FILE",
+        sourceFilename: "charge.md"
+      },
+      {
+        ...baseCase,
+        sourceType: "TRIBUNAL_PACKAGE_FILE",
+        sourceFilename: "package.txt"
+      },
+      {
+        ...baseCase,
+        sourceType: "TRIBUNAL_PACKAGE_FILE",
+        sourceFilename: "package.md"
+      }
+    ];
+
+    for (const request of validRequests) {
+      const response = await handleCasesRequest(
+        {
+          httpMethod: "POST",
+          body: JSON.stringify(request)
+        } as HandlerEvent,
+        new FakeCaseRepository()
+      );
+
+      expect(response.statusCode).toBe(201);
     }
   });
 

@@ -7,23 +7,56 @@ import {
 } from "../../src/schemas/tribunalSetup";
 import { createServerSupabaseClient } from "./supabase";
 
-const sourceFilenameSchema = z
+// Mirrors the safe-filename rules the deterministic import boundary already
+// enforces (netlify/server/importParsers.ts: sanitizeFilename), plus the
+// .txt/.md extension requirement, so a file-backed case can never be
+// persisted with a filename the import boundary itself would have rejected.
+const fileSourceFilenameSchema = z
   .string()
   .trim()
-  .min(1)
-  .max(255)
+  .min(1, "Source filename is required.")
+  .max(255, "Source filename exceeds 255 characters.")
+  .refine((value) => value !== "." && value !== "..", {
+    message: 'Source filename must not be "." or "..".'
+  })
   .refine((value) => !value.includes("/") && !value.includes("\\"), {
     message: "Source filename must not include path separators."
   })
-  .optional();
+  .refine((value) => !value.includes("\0"), {
+    message: "Source filename must not include a NUL character."
+  })
+  .refine((value) => /\.(txt|md)$/i.test(value), {
+    message: "Source filename must be a .txt or .md file."
+  });
 
-const createCaseInputSchema = z.strictObject({
+const caseChargeFields = {
   defendant: chargeSheetSchema.shape.defendant,
   act: chargeSheetSchema.shape.act,
-  exactQuestion: chargeSheetSchema.shape.exactQuestion,
-  sourceType: sourceTypeSchema,
-  sourceFilename: sourceFilenameSchema
-});
+  exactQuestion: chargeSheetSchema.shape.exactQuestion
+};
+
+// A discriminated union keeps sourceFilename cross-field-valid instead of a
+// single optional field: MANUAL cases cannot carry a filename at all (an
+// extra key is rejected by strictObject), while CHARGE_SHEET_FILE/
+// TRIBUNAL_PACKAGE_FILE cases require one that passes the safe-filename
+// rules above. This runs before any repository/DB call, so malformed
+// metadata is always a 400 invalid_case, never a DB-constraint failure.
+const createCaseInputSchema = z.discriminatedUnion("sourceType", [
+  z.strictObject({
+    ...caseChargeFields,
+    sourceType: z.literal("MANUAL")
+  }),
+  z.strictObject({
+    ...caseChargeFields,
+    sourceType: z.literal("CHARGE_SHEET_FILE"),
+    sourceFilename: fileSourceFilenameSchema
+  }),
+  z.strictObject({
+    ...caseChargeFields,
+    sourceType: z.literal("TRIBUNAL_PACKAGE_FILE"),
+    sourceFilename: fileSourceFilenameSchema
+  })
+]);
 
 const persistedCaseSchema = z.object({
   id: z.string().uuid(),
@@ -158,7 +191,7 @@ function toCaseRowInput(input: CreateCaseInput) {
     act: input.act,
     exact_question: input.exactQuestion,
     source_type: input.sourceType,
-    source_filename: input.sourceFilename ?? null
+    source_filename: input.sourceType === "MANUAL" ? null : input.sourceFilename
   };
 }
 

@@ -32,6 +32,10 @@ export function ReviewPage() {
   const chargeSheetValid = isChargeSheetValid(state.chargeSheet);
   const advocatesValid = areAdvocatePersonalitiesValid(state);
   const judgesValid = areJudgePersonalitiesValid(state);
+  // M5 persists only the canonical case (Defendant/Act/Exact Question plus
+  // source metadata). Participant configuration is not persisted/frozen
+  // until M6, so Save Case must not require seven valid participants.
+  const canSaveCase = chargeSheetValid;
   const canConvene = isMockSetupReady(state);
   const blockedReasons = [
     !chargeSheetValid ? "Charge Sheet fields must be complete and valid." : "",
@@ -40,7 +44,7 @@ export function ReviewPage() {
   ].filter(Boolean);
 
   async function handleSaveCase() {
-    if (!canConvene) {
+    if (!canSaveCase) {
       return;
     }
 
@@ -247,7 +251,7 @@ export function ReviewPage() {
           Back
         </Button>
         <Button
-          disabled={!canConvene || isSaving}
+          disabled={!canSaveCase || isSaving}
           onClick={handleSaveCase}
           variant="outlined"
         >

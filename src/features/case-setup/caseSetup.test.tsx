@@ -141,6 +141,10 @@ describe("case setup workflow", () => {
     ).not.toHaveTextContent("Complete");
     expect(within(setupProgress).getAllByText("Complete")).toHaveLength(2);
     expect(screen.getByRole("button", { name: "Convene Tribunal" })).toBeDisabled();
+    // An invalid Charge Sheet blocks Save Case too — a case cannot be
+    // persisted without its three required fields, regardless of
+    // participant configuration.
+    expect(screen.getByRole("button", { name: /save case/i })).toBeDisabled();
     expect(
       screen.getByText(/mock tribunal cannot be convened yet/i)
     ).toBeVisible();
@@ -228,6 +232,82 @@ describe("case setup workflow", () => {
         body: expect.stringContaining("Alex Rowan")
       })
     );
+    expect(
+      screen.queryByText(/deliberation is running/i)
+    ).not.toBeInTheDocument();
+  });
+
+  it("allows saving a case with a valid Charge Sheet even when participants are invalid, but blocks Convene", async () => {
+    // M5 persists only the canonical case (Defendant/Act/Exact Question +
+    // source metadata). Participant configuration is not persisted/frozen
+    // until M6, so Save Case must not require seven valid participants.
+    const user = userEvent.setup();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          case: {
+            id: "22222222-2222-4222-8222-222222222222",
+            defendant: "Alex Rowan",
+            act: "Entered the restricted lab.",
+            exactQuestion: "Did Alex knowingly violate the lab protocol?",
+            sourceType: "MANUAL",
+            sourceFilename: null,
+            createdAt: "2026-08-25T10:00:00.000Z"
+          }
+        }),
+        { status: 201 }
+      )
+    );
+
+    renderWithAppProviders(<AppRoutes />);
+    await user.type(screen.getByLabelText(/defendant/i), "Alex Rowan");
+    await user.type(screen.getByLabelText(/^act/i), "Entered the restricted lab.");
+    await user.type(
+      screen.getByLabelText(/exact question/i),
+      "Did Alex knowingly violate the lab protocol?"
+    );
+    await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
+
+    // Make PRO I invalid. "Continue to Judges" is now disabled, so jump
+    // straight to Review via the always-navigable stepper, mirroring free
+    // back/forward navigation between setup steps.
+    await user.clear(
+      screen.getByLabelText(/PRO I personality/i, { selector: "textarea" })
+    );
+    expect(
+      screen.getByRole("button", { name: "Continue to Judges" })
+    ).toBeDisabled();
+
+    const setupProgress = screen.getByLabelText("Case setup progress");
+    await user.click(within(setupProgress).getByRole("link", { name: /Review/i }));
+
+    expect(await screen.findByRole("heading", { name: "Review Tribunal" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Convene Tribunal" })).toBeDisabled();
+    expect(
+      screen.getByText(/all four advocate personalities must be valid/i)
+    ).toBeVisible();
+
+    const saveButton = screen.getByRole("button", { name: /save case/i });
+    expect(saveButton).toBeEnabled();
+    await user.click(saveButton);
+
+    expect(await screen.findByText(/case saved to past cases/i)).toBeVisible();
+
+    const [, requestInit] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    const requestBody = JSON.parse(requestInit.body as string);
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/api/cases",
+      expect.objectContaining({ method: "POST" })
+    );
+    // Only normalized case/source metadata is posted — never participant
+    // configuration.
+    expect(requestBody).toEqual({
+      defendant: "Alex Rowan",
+      act: "Entered the restricted lab.",
+      exactQuestion: "Did Alex knowingly violate the lab protocol?",
+      sourceType: "MANUAL"
+    });
     expect(
       screen.queryByText(/deliberation is running/i)
     ).not.toBeInTheDocument();
