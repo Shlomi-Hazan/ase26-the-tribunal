@@ -11,6 +11,10 @@ dist/
 build/
 .next/
 
+# Local tooling output
+.netlify/
+coverage/
+
 # Logs
 *.log
 

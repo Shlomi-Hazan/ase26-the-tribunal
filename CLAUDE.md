@@ -26,20 +26,20 @@ If two authoritative documents materially conflict, stop and surface it.
 
 ## Commands
 
-Do not invent project commands before they exist.
+Use repository scripts rather than tool-specific ad-hoc equivalents:
 
-When `package.json` is introduced, this file should be updated with the canonical commands for:
-
-```text
-install
-run dev
-lint
-typecheck
-test
-build
+```sh
+npm install
+npm run dev
+npm run dev:netlify
+npm run lint
+npm run typecheck
+npm run test
+npm run test:watch
+npm run build
+npm run verify:client-bundle
+npm run verify
 ```
-
-Use repository scripts rather than tool-specific ad-hoc equivalents once scripts exist.
 
 ## Tribunal Reminders
 
