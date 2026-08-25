@@ -352,6 +352,19 @@ Use database constraints and transactional updates where possible for:
 
 Once a run begins, participant/model/prompt configuration is frozen.
 
+Milestone 6 enforces this immutability structurally, not only
+procedurally: `tribunal_runs` and `participant_configs` follow the same
+least-privilege pattern established for `cases` in Milestone 5 —
+`service_role` is granted only `SELECT` and `INSERT` on both tables, with
+no `UPDATE`/`DELETE` grant at all. There is no code path, authorized or
+not, that can alter an accepted run's configuration, because the database
+role the server uses cannot perform that statement regardless of what the
+application code attempts. RLS is enabled on both tables with no
+anon/authenticated policy, matching the Milestone 5 `cases` pattern.
+"Exactly seven participant configs per run" is enforced atomically via one
+Postgres function (see `docs/adr/0002-participant-configuration-freeze.md`)
+rather than left to sequential application-level inserts.
+
 Completed historical outputs/economics/protocol are immutable through normal V1 APIs.
 
 Never accept browser-supplied token/cost/majority values as authoritative.

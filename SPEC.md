@@ -934,6 +934,39 @@ These are target criteria, not claims that implementation already exists.
 - **PART-006** — Manual and supported-file personality input both work within limits.
 - **PART-007** — Optional participant `profileName` is editable/importable, limited to 120 characters, and remains human-facing metadata.
 
+### CONFIG (Milestone 6)
+
+- **CONFIG-001** — An accepted run persists exactly seven participant
+  configurations, keyed by the seven fixed application participant
+  identifiers; a duplicate, missing, or unknown key is rejected.
+- **CONFIG-002** — Each participant's role and advocate side (where
+  applicable) is fixed by its participant key and cannot be altered by
+  user/import input.
+- **CONFIG-003** — `profileName` is persisted per participant as optional
+  human-facing metadata (`<=120` normalized characters) and never changes
+  role, side, or seat.
+- **CONFIG-004** — Shared-Model Mode persists the same `model_id` on all
+  seven participant rows.
+- **CONFIG-005** — Separate-Model Mode persists all seven independently
+  configured `model_id` values.
+- **CONFIG-006** — A malformed model configuration (empty/oversized/unsafe
+  `model_id`) is rejected before any persistence occurs.
+- **CONFIG-007** — Once accepted, a run's participant configuration is
+  immutable: no API/database path can update or delete an accepted run's
+  `tribunal_runs` or `participant_configs` rows.
+- **CONFIG-008** — Accepting a run is idempotent on `client_request_id`; a
+  repeated request with the same identifier returns the already-accepted
+  run rather than creating a second one.
+- **CONFIG-009** — An accepted run references a valid, existing case; if
+  the current setup's case was not already saved, Convene creates it using
+  the same validated case-creation path as `Save Case` before freezing the
+  run.
+- **CONFIG-010** — Accepting a run performs zero OpenRouter/model calls and
+  produces no advocate speech, judge verdict, or economics data.
+- **CONFIG-011** — A package-imported `TribunalSetupDraft` (Milestone 5)
+  can be accepted/frozen through the same path as a manually-configured
+  draft, with no additional constraints.
+
 ### OUTPUT
 
 - **OUT-001** — Advocate output must be schema-valid JSON with non-empty `speech`.

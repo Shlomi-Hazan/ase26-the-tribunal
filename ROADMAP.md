@@ -41,8 +41,8 @@ Do not begin later milestones by destabilizing incomplete earlier work.
 | 2 | Engineering Contract | ✅ Complete |
 | 3 | Application Skeleton | ✅ Complete |
 | 4 | UI Shell with Mock Data | ✅ Complete |
-| 5 | Case Persistence & Import | 🟡 Current |
-| 6 | Participant Configuration | ⬜ Planned |
+| 5 | Case Persistence & Import | ✅ Complete |
+| 6 | Participant Configuration | 🟡 Current |
 | 7 | OpenRouter Infrastructure | ⬜ Planned |
 | 7A | Smart Tribunal Package Extraction | ⬜ Planned |
 | 8 | Shared-Model Tribunal | ⬜ Planned |

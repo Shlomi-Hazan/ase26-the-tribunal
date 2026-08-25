@@ -443,16 +443,30 @@ Exact route filenames are implementation details, but the V1 HTTP contract shoul
 
 `POST /api/runs`
 
-Request includes a stable `client_request_id` plus case and seven participant configurations.
+Request includes a stable `client_request_id`, the case fields (inline —
+not a bare `case_id` reference), and seven participant configurations.
 
 Server:
 
 - validates again independently of browser
-- reruns authoritative preflight
-- writes immutable run snapshot
+- if the browser already holds a `caseId` from a prior `Save Case` call it
+  is reused and re-validated; otherwise the server creates the case first
+  using the same validated Milestone 5 case-creation path, before creating
+  the run — the user is never required to call `Save Case` separately
+  before Convene (see `docs/adr/0002-participant-configuration-freeze.md`)
+- reruns authoritative preflight *(from Milestone 7 onward; Milestone 6 has
+  no preflight to run since no model pricing exists yet — see below)*
+- writes immutable run snapshot (Milestone 6: exactly seven
+  `participant_configs` rows plus the `tribunal_runs` row, inserted
+  atomically, status `READY`)
 - idempotently returns existing run if same request was already accepted
-- invokes worker
-- returns `202` with `run_id`
+- invokes worker *(from Milestone 8 onward; Milestone 6 performs no
+  execution and stops at `READY`)*
+- returns `202`/`201` with `run_id`
+
+Milestone 6 implements this endpoint's validation, case-reuse-or-create,
+and atomic freeze. It performs zero model/OpenRouter calls and never
+transitions a run past `READY`.
 
 ### 7.5 Read run/history
 
@@ -496,51 +510,89 @@ Milestone 5 persists normalized case data only. It does not create participant/r
 
 ### 8.2 `tribunal_runs`
 
+Milestone 6 creates only the columns needed to accept and freeze a
+configuration. Execution/economics columns below are **not** created by
+Milestone 6; they are added by a later forward migration when M8/M10
+actually need them (see `docs/adr/0002-participant-configuration-freeze.md`).
+
+Milestone 6 columns:
+
 ```text
 id                  uuid PK
-case_id             uuid FK -> cases
+case_id             uuid FK -> cases NOT NULL
 client_request_id   text UNIQUE NOT NULL
-execution_mode      text NOT NULL
-status              text NOT NULL
-majority_verdict    text NULL
+execution_mode      text NOT NULL   -- SHARED | SEPARATE
+status              text NOT NULL   -- CHECK against the full SPEC.md §14 vocabulary;
+                                     -- M6 itself only ever writes READY
+created_at          timestamptz NOT NULL
+```
 
+`client_request_id` is the first duplicate-spend guard, and doubles as the
+Milestone 6 Convene idempotency key even though no spend occurs yet.
+
+Deferred to M8/M10 (documented here for forward reference only — not part
+of the Milestone 6 migration):
+
+```text
+majority_verdict    text NULL
 total_input_tokens  bigint NULL
 total_output_tokens bigint NULL
 total_tokens        bigint NULL
 advocate_cost_usd   numeric NULL
 judge_cost_usd      numeric NULL
 total_cost_usd      numeric NULL
-
 failure_code        text NULL
 failure_message     text NULL
 started_at          timestamptz NULL
 completed_at        timestamptz NULL
-created_at          timestamptz NOT NULL
 ```
-
-`client_request_id` is the first duplicate-spend guard.
 
 ### 8.3 `participant_configs`
 
-Exactly seven rows per run.
+Exactly seven rows per run, inserted atomically together with the
+`tribunal_runs` row (see §8.3.1).
 
 ```text
 id                          uuid PK
-run_id                      uuid FK -> tribunal_runs
+run_id                      uuid FK -> tribunal_runs NOT NULL
 participant_key             text NOT NULL
 role                        text NOT NULL   -- ADVOCATE | JUDGE
-side                        text NULL       -- PRO | CON for advocates
+side                        text NULL       -- PRO | CON for advocates, NULL for judges
+profile_name                text NULL       -- optional, <=120 normalized chars
 personality_text            text NOT NULL
-personality_source          text NOT NULL   -- MANUAL | FILE
+personality_source          text NOT NULL   -- manual | individual_file | tribunal_package
 personality_source_filename text NULL
 model_id                    text NOT NULL
-prompt_version              text NOT NULL
+prompt_version              text NOT NULL   -- placeholder constant until M7 prompts exist
 created_at                  timestamptz NOT NULL
 
 UNIQUE(run_id, participant_key)
 ```
 
-Participant keys are stable logical identities such as `PRO_1`, `PRO_2`, `CON_1`, `CON_2`, `JUDGE_1`, `JUDGE_2`, `JUDGE_3`.
+Participant keys use the application's established `ParticipantId`
+convention (`advocate-pro-1`, `advocate-pro-2`, `advocate-con-1`,
+`advocate-con-2`, `judge-1`, `judge-2`, `judge-3` — see
+`src/schemas/tribunalSetup.ts`), **not** the Milestone 5 Tribunal Package
+seat identifiers (`PRO_1`, `CON_1`, `JUDGE_1`, …), which are a distinct,
+narrower namespace used only for parsing the `TRIBUNAL_PACKAGE_V1` file
+format. `personality_source` uses the same three-value taxonomy already
+established by Milestone 5 (`personalitySourceSchema`), not the two-value
+`MANUAL | FILE` this document previously (and incorrectly) implied.
+
+#### 8.3.1 Atomic freeze
+
+No client can perform a cross-table transaction against Supabase's REST
+Data API. Milestone 6 therefore defines one Postgres function, invoked via
+`supabase.rpc(...)`, that validates exactly seven participant entries with
+the seven known keys and inserts the run row plus all seven
+`participant_configs` rows in one implicit transaction — either the
+complete accepted configuration exists, or none of it does. See
+`docs/adr/0002-participant-configuration-freeze.md` for the full rationale
+and rejected alternative.
+
+Once a run is accepted, no `UPDATE`/`DELETE` grant exists for either table
+— immutability is a structural database privilege, not only an
+application code path that happens not to expose one.
 
 ### 8.4 `model_call_attempts`
 
@@ -627,7 +679,9 @@ Persist:
 - seven participant configurations
 - chosen model IDs
 - prompt versions
-- pricing/preflight context required for audit
+- pricing/preflight context required for audit *(from Milestone 7/10
+  onward; Milestone 6 has no pricing/preflight to persist yet, since no
+  OpenRouter infrastructure exists — see M6 columns in §8.2)*
 
 These inputs are frozen for that run.
 
