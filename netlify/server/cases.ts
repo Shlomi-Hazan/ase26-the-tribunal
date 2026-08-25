@@ -11,7 +11,10 @@ import { createServerSupabaseClient } from "./supabase";
 // enforces (netlify/server/importParsers.ts: sanitizeFilename), plus the
 // .txt/.md extension requirement, so a file-backed case can never be
 // persisted with a filename the import boundary itself would have rejected.
-const fileSourceFilenameSchema = z
+// Exported so Milestone 6 (netlify/server/runs.ts) can reuse the exact same
+// rule for participant personality source filenames instead of forking a
+// second, possibly-inconsistent copy.
+export const fileSourceFilenameSchema = z
   .string()
   .trim()
   .min(1, "Source filename is required.")
@@ -41,7 +44,10 @@ const caseChargeFields = {
 // TRIBUNAL_PACKAGE_FILE cases require one that passes the safe-filename
 // rules above. This runs before any repository/DB call, so malformed
 // metadata is always a 400 invalid_case, never a DB-constraint failure.
-const createCaseInputSchema = z.discriminatedUnion("sourceType", [
+// Exported so Milestone 6 can reuse this exact contract for the
+// "kind: new" branch of a Convene request instead of forking a looser
+// version.
+export const createCaseInputSchema = z.discriminatedUnion("sourceType", [
   z.strictObject({
     ...caseChargeFields,
     sourceType: z.literal("MANUAL")
@@ -87,6 +93,17 @@ export type CaseRepository = {
   getById(id: string): Promise<PersistedCase | null>;
 };
 
+// Milestone 6 addition: a Convene "kind: new" request must be idempotent
+// under a lost-response retry without introducing a second database
+// function (ADR 0002 Decision 9). This is a distinct, narrower interface
+// from CaseRepository so M5 code/tests are untouched.
+export type IdempotentCaseRepository = CaseRepository & {
+  createIdempotent(
+    input: CreateCaseInput,
+    conveneRequestId: string
+  ): Promise<PersistedCase>;
+};
+
 export class CaseValidationError extends Error {
   readonly errors: string[];
 
@@ -101,6 +118,15 @@ export class CasePersistenceError extends Error {
   constructor(message = "Case persistence failed.") {
     super(message);
     this.name = "CasePersistenceError";
+  }
+}
+
+// Distinguishable from CasePersistenceError so callers can map it to a
+// stable idempotency_conflict category instead of a generic 500.
+export class IdempotencyConflictError extends Error {
+  constructor(message = "Idempotency conflict.") {
+    super(message);
+    this.name = "IdempotencyConflictError";
   }
 }
 
@@ -130,7 +156,11 @@ export function createSupabaseCaseRepository(): CaseRepository {
   return new SupabaseCaseRepository(createServerSupabaseClient());
 }
 
-export class SupabaseCaseRepository implements CaseRepository {
+export function createSupabaseIdempotentCaseRepository(): IdempotentCaseRepository {
+  return new SupabaseCaseRepository(createServerSupabaseClient());
+}
+
+export class SupabaseCaseRepository implements IdempotentCaseRepository {
   constructor(private readonly client: SupabaseClient) {}
 
   async create(input: CreateCaseInput): Promise<PersistedCase> {
@@ -172,6 +202,66 @@ export class SupabaseCaseRepository implements CaseRepository {
     }
 
     return data ? parseCaseRow(data) : null;
+  }
+
+  // Milestone 6: idempotent get-or-create for Convene "kind: new" cases,
+  // keyed by the internal convene_request_id column (never exposed in any
+  // public response -- see caseSelectColumns below). Race-safe by
+  // construction: relies on the UNIQUE(convene_request_id) constraint to
+  // arbitrate concurrent identical requests rather than a SELECT-then-
+  // INSERT check. Never UPDATEs an existing case (this repository has no
+  // update method at all, matching the unchanged M5 cases grants).
+  async createIdempotent(
+    input: CreateCaseInput,
+    conveneRequestId: string
+  ): Promise<PersistedCase> {
+    const { data, error } = await this.client
+      .from("cases")
+      .insert({ ...toCaseRowInput(input), convene_request_id: conveneRequestId })
+      .select(caseSelectColumns)
+      .single();
+
+    if (!error && data) {
+      return parseCaseRow(data);
+    }
+
+    // Only a unique-violation on convene_request_id is treated as an
+    // idempotent retry; every other insert failure remains a genuine
+    // persistence failure. Postgres unique_violation is SQLSTATE 23505.
+    const isConveneRequestIdConflict =
+      error?.code === "23505" &&
+      typeof error.message === "string" &&
+      error.message.includes("convene_request_id");
+
+    if (!isConveneRequestIdConflict) {
+      throw new CasePersistenceError();
+    }
+
+    const { data: existing, error: selectError } = await this.client
+      .from("cases")
+      .select(`${caseSelectColumns},convene_request_id`)
+      .eq("convene_request_id", conveneRequestId)
+      .maybeSingle();
+
+    if (selectError || !existing) {
+      throw new CasePersistenceError();
+    }
+
+    const existingCase = parseCaseRow(existing);
+
+    const contentMatches =
+      existingCase.defendant === input.defendant &&
+      existingCase.act === input.act &&
+      existingCase.exactQuestion === input.exactQuestion &&
+      existingCase.sourceType === input.sourceType &&
+      existingCase.sourceFilename ===
+        (input.sourceType === "MANUAL" ? null : input.sourceFilename);
+
+    if (!contentMatches) {
+      throw new IdempotencyConflictError();
+    }
+
+    return existingCase;
   }
 }
 

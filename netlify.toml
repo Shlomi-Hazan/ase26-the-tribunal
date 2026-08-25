@@ -40,6 +40,16 @@
   status = 200
 
 [[redirects]]
+  from = "/api/runs/:id"
+  to = "/.netlify/functions/run-by-id?id=:id"
+  status = 200
+
+[[redirects]]
+  from = "/api/runs"
+  to = "/.netlify/functions/runs"
+  status = 200
+
+[[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200
