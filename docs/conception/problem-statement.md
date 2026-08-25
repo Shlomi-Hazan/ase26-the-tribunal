@@ -20,7 +20,7 @@ A Tribunal run should make the following outputs inspectable:
 - all three individual judge verdicts
 - all three judge reasonings
 - a deterministic majority result
-- a full protocol assembled from stored participant outputs
+- a full protocol
 - model-call economics
 
-The protocol and deterministic majority result must not require an eighth LLM call.
+The deterministic majority result must not require an additional LLM call. Whether the full protocol is assembled directly from stored participant outputs without an additional model call remains a specification decision.
