@@ -102,8 +102,13 @@ Coverage includes:
 - `npm run build` - PASS
 - `npm run verify:client-bundle` - PASS
 - `npm run verify` - PASS
-- `npm audit --omit=dev --audit-level=high` - registry endpoint returned `ECONNRESET` during this session
+- Initial `npm audit --omit=dev --audit-level=high` - temporarily blocked by npm registry `ECONNRESET` observed during that session
 - `npm audit --omit=dev --audit-level=high --offline` - PASS, `found 0 vulnerabilities`
+- Connectivity follow-up after switching to a mobile hotspot:
+  - `npm ping` - PASS against `https://registry.npmjs.org/`, `PONG 485ms`
+  - `npm audit --omit=dev --audit-level=high` - ONLINE PASS on the first follow-up attempt, `found 0 vulnerabilities`
+- Final production dependency gate - PASS
+- No `npm audit fix`, `npm audit fix --force`, or dependency change was required.
 - `git diff --check origin/main...HEAD` - PASS
 
 Note: Vite emitted a non-failing bundle-size advisory during build. The build exited successfully and the verification gate passed.
@@ -126,8 +131,8 @@ Note: Vite emitted a non-failing bundle-size advisory during build. The build ex
 - Completed result: PASS; majority appeared before judge votes, reasoning, speeches, and economics.
 - Past Cases: PASS; completed and failed mock cases were visible, and failed case showed no verdict.
 - Automated keyboard traversal: PASS via Testing Library/user-event primary navigation coverage.
-- Manual keyboard traversal: NOT VERIFIED; the browser adapter did not produce a reliable active-control signal for Tab traversal.
-- Manual visible-focus verification: NOT VERIFIED; the browser adapter did not produce a reliable focus-state signal.
+- Manual keyboard traversal: PASS; the user manually traversed the application with Tab / keyboard controls and confirmed that keyboard navigation behaved correctly across the reviewed application flow.
+- Manual visible-focus verification: PASS; the user manually confirmed that the focused control remained visibly identifiable during keyboard navigation.
 - Field labels: PASS; Charge Sheet fields were accessible by label in browser automation.
 - Status text independent of color: PASS; statuses are rendered as text labels.
 
@@ -160,4 +165,3 @@ Note: Vite emitted a non-failing bundle-size advisory during build. The build ex
 - File import controls are visual/disabled until Milestone 5.
 - Deliberation states are deterministic fixtures, not real execution.
 - Economics are fixture data, not real calculation or live provider pricing.
-- Manual keyboard traversal and visible focus still need independent verification before merge.
