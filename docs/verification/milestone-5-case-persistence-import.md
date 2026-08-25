@@ -376,6 +376,42 @@ tests). Final verification after the fix: `lint`/`typecheck`/`test`
 `npm audit --omit=dev --audit-level=high` 0 vulnerabilities,
 `git diff --check origin/main...HEAD` clean. No dependency was added.
 
+## Supabase project configuration
+
+A real Supabase development project has been created for this milestone.
+At project creation:
+
+- Data API: **enabled**
+- Automatic table exposure: **disabled**
+- Automatic RLS: **disabled**
+
+Because automatic table exposure is off, Data API reachability for
+`public.cases` requires explicit Postgres `grant`s rather than relying on
+Supabase's default exposure behavior. The migration
+(`supabase/migrations/20260825000000_create_cases.sql`) was updated
+in place (not a second migration, since it had not yet been applied
+anywhere) to add:
+
+- `revoke all on table public.cases from anon, authenticated, service_role;`
+- `grant select, insert on table public.cases to service_role;`
+
+Resulting privilege model: `anon` and `authenticated` have no table
+privileges at all; `service_role` (the server-only secret the application
+uses) has exactly `SELECT` and `INSERT` — matching the only two operations
+the M5 case repository performs (`create` does `insert().select()`,
+`list`/`getById` do `select()`). No `UPDATE`/`DELETE` is granted because
+M5 exposes no such API. `alter table public.cases enable row level
+security;` is unchanged, and no browser/public policy exists.
+
+No project URL, project ref, database password, secret key, or other
+credential is recorded in this document or anywhere in the repository.
+
+**The migration is still NOT yet applied to the development database at
+this point in the milestone's history.** Live Supabase persistence smoke
+testing therefore remains **NOT VERIFIED** — this commit only makes the
+migration itself correct for the project's actual Data API configuration;
+it does not run it.
+
 ## Remote state
 
 Pushed to `origin/milestone/05-case-persistence-import` after this evidence
