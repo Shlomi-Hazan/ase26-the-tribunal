@@ -1,9 +1,13 @@
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppShell } from "../layout/AppShell";
 import { renderWithAppProviders } from "../test/renderWithAppProviders";
 import { AppRoutes } from "./App";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 function renderApp(path = "/new/charge-sheet") {
   return renderWithAppProviders(
@@ -44,6 +48,9 @@ describe("application shell and routing", () => {
       screen.getByRole("heading", { name: "Charge Sheet" })
     ).toBeVisible();
 
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ cases: [] }), { status: 200 })
+    );
     renderApp("/history");
     expect(screen.getByRole("heading", { name: "Past Cases" })).toBeVisible();
   });

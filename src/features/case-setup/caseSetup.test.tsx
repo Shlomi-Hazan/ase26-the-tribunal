@@ -189,6 +189,50 @@ describe("case setup workflow", () => {
     ).toBeVisible();
   });
 
+  it("saves a valid normalized case without starting deliberation", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          case: {
+            id: "11111111-1111-4111-8111-111111111111",
+            defendant: "Alex Rowan",
+            act: "Entered the restricted lab.",
+            exactQuestion: "Did Alex knowingly violate the lab protocol?",
+            sourceType: "MANUAL",
+            sourceFilename: null,
+            createdAt: "2026-08-25T10:00:00.000Z"
+          }
+        }),
+        { status: 201 }
+      )
+    );
+
+    renderWithAppProviders(<AppRoutes />);
+    await user.type(screen.getByLabelText(/defendant/i), "Alex Rowan");
+    await user.type(screen.getByLabelText(/^act/i), "Entered the restricted lab.");
+    await user.type(
+      screen.getByLabelText(/exact question/i),
+      "Did Alex knowingly violate the lab protocol?"
+    );
+    await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
+    await user.click(screen.getByRole("link", { name: /continue to judges/i }));
+    await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+    await user.click(screen.getByRole("button", { name: /save case/i }));
+
+    expect(await screen.findByText(/case saved to past cases/i)).toBeVisible();
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/api/cases",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining("Alex Rowan")
+      })
+    );
+    expect(
+      screen.queryByText(/deliberation is running/i)
+    ).not.toBeInTheDocument();
+  });
+
   it("imports a Charge Sheet file without applying participant configuration", async () => {
     const user = userEvent.setup();
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(

@@ -30,6 +30,16 @@
   status = 200
 
 [[redirects]]
+  from = "/api/cases/:id"
+  to = "/.netlify/functions/case-by-id?id=:id"
+  status = 200
+
+[[redirects]]
+  from = "/api/cases"
+  to = "/.netlify/functions/cases"
+  status = 200
+
+[[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200
