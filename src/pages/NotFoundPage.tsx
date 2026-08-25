@@ -17,7 +17,7 @@ export function NotFoundPage() {
             Page not found
           </Typography>
           <Typography color="text.secondary">
-            The requested route is not part of the application skeleton.
+            The requested route is not part of the Tribunal mock UI shell.
           </Typography>
           <Button component={RouterLink} to="/" variant="contained">
             Return home

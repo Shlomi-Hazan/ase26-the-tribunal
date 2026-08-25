@@ -39,8 +39,8 @@ Do not begin later milestones by destabilizing incomplete earlier work.
 | 0 | Repository Bootstrap | ✅ Complete |
 | 1 | Project Conception | ✅ Complete |
 | 2 | Engineering Contract | ✅ Complete |
-| 3 | Application Skeleton | 🟡 Current |
-| 4 | UI Shell with Mock Data | ⬜ Planned |
+| 3 | Application Skeleton | ✅ Complete |
+| 4 | UI Shell with Mock Data | 🟡 Current |
 | 5 | Case Persistence & File Input | ⬜ Planned |
 | 6 | Participant Configuration | ⬜ Planned |
 | 7 | OpenRouter Infrastructure | ⬜ Planned |

@@ -1,34 +1,43 @@
-import { CssBaseline, ThemeProvider } from "@mui/material";
-import { render, screen } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { AppShell } from "../layout/AppShell";
+import { renderWithAppProviders } from "../test/renderWithAppProviders";
 import { AppRoutes } from "./App";
-import { theme } from "../theme/theme";
 
-function renderWithProviders(initialPath = "/") {
-  return render(
-    <ThemeProvider theme={theme}>
-      <CssBaseline />
-      <MemoryRouter initialEntries={[initialPath]}>
-        <AppRoutes />
-      </MemoryRouter>
-    </ThemeProvider>
+function renderApp(path = "/new/charge-sheet") {
+  return renderWithAppProviders(
+    <AppShell>
+      <AppRoutes />
+    </AppShell>,
+    path
   );
 }
 
-describe("App", () => {
-  it("renders the root application foundation", () => {
-    renderWithProviders();
+describe("application shell and routing", () => {
+  it("renders primary navigation", () => {
+    renderApp();
 
-    expect(
-      screen.getByRole("heading", { name: "The Tribunal" })
-    ).toBeVisible();
-    expect(screen.getByText(/application foundation is running/i)).toBeVisible();
+    expect(screen.getByRole("link", { name: "The Tribunal" })).toBeVisible();
+    expect(screen.getByRole("link", { name: "New Case" })).toBeVisible();
+    expect(screen.getByRole("link", { name: "Past Cases" })).toBeVisible();
+    expect(screen.getByText(/not legal advice/i)).toBeVisible();
   });
 
-  it("renders a not-found route", () => {
-    renderWithProviders("/missing");
+  it("renders New Case and Past Cases routes", () => {
+    renderApp("/new/charge-sheet");
+    expect(
+      screen.getByRole("heading", { name: "Charge Sheet" })
+    ).toBeVisible();
 
-    expect(screen.getByRole("heading", { name: /page not found/i })).toBeVisible();
+    renderApp("/history");
+    expect(screen.getByRole("heading", { name: "Past Cases" })).toBeVisible();
+  });
+
+  it("renders an unknown-route state", () => {
+    renderApp("/unknown");
+
+    expect(
+      screen.getByRole("heading", { name: /page not found/i })
+    ).toBeVisible();
   });
 });
