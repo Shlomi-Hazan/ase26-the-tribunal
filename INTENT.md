@@ -292,7 +292,7 @@ The user should immediately understand:
 - whether processing is still occurring
 - when something failed
 - what each judge decided
-- what the run cost
+- what the run cost was
 
 Do not specify colors, exact typography, component libraries, pixels, or final layouts here. Those belong to the future UI specification.
 
