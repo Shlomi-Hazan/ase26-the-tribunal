@@ -25,6 +25,21 @@ type ParticipantConfig = {
   modelId: string;
 };
 
+// Milestone 6: identity of the last successfully saved case, recorded so
+// Convene can decide whether to reuse it (case.kind = "existing") or save
+// a fresh one (case.kind = "new") -- see
+// docs/adr/0002-participant-configuration-freeze.md Decision 8 and
+// isSavedCaseCurrent below. This is browser-side UX convenience only; the
+// server always independently validates whichever branch it receives.
+export type SavedCaseIdentity = {
+  id: string;
+  chargeSheet: ChargeSheet;
+  caseSource: {
+    type: CaseSourceType;
+    filename?: string;
+  };
+};
+
 export type SetupState = {
   chargeSheet: ChargeSheet;
   caseSource: {
@@ -35,6 +50,7 @@ export type SetupState = {
   executionMode: ExecutionMode;
   sharedModelId: string;
   participants: Record<ParticipantId, ParticipantConfig>;
+  savedCase: SavedCaseIdentity | null;
 };
 
 export type SetupAction =
@@ -52,7 +68,8 @@ export type SetupAction =
       personality: string;
       filename: string;
     }
-  | { type: "setParticipantModel"; participantId: ParticipantId; modelId: string };
+  | { type: "setParticipantModel"; participantId: ParticipantId; modelId: string }
+  | { type: "recordSavedCase"; id: string };
 
 export type SetupContextValue = {
   state: SetupState;
@@ -86,7 +103,8 @@ export const initialSetupState: SetupState = {
   importNotice: "",
   executionMode: "shared",
   sharedModelId: defaultModelId,
-  participants: initialParticipants
+  participants: initialParticipants,
+  savedCase: null
 };
 
 export function setupReducer(state: SetupState, action: SetupAction): SetupState {
@@ -200,9 +218,40 @@ export function setupReducer(state: SetupState, action: SetupAction): SetupState
           }
         }
       };
+    case "recordSavedCase":
+      return {
+        ...state,
+        savedCase: {
+          id: action.id,
+          chargeSheet: state.chargeSheet,
+          caseSource: state.caseSource
+        }
+      };
     default:
       return state;
   }
+}
+
+// Milestone 6: a saved case is only safe to reuse (case.kind = "existing")
+// while the currently-displayed Charge Sheet/source metadata exactly
+// matches what was actually saved. Any edit to those fields since the
+// last successful Save Case -- including a fresh Charge Sheet or Full
+// Tribunal Package import, which both update chargeSheet/caseSource --
+// makes this return false automatically, with no separate invalidation
+// action required. Participant/personality/model edits never affect
+// this, since they do not change case identity/content.
+export function isSavedCaseCurrent(state: SetupState): boolean {
+  if (!state.savedCase) {
+    return false;
+  }
+
+  return (
+    state.savedCase.chargeSheet.defendant === state.chargeSheet.defendant &&
+    state.savedCase.chargeSheet.act === state.chargeSheet.act &&
+    state.savedCase.chargeSheet.exactQuestion === state.chargeSheet.exactQuestion &&
+    state.savedCase.caseSource.type === state.caseSource.type &&
+    state.savedCase.caseSource.filename === state.caseSource.filename
+  );
 }
 
 export function validateChargeSheet(chargeSheet: ChargeSheet) {

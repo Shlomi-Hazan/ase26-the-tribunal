@@ -410,6 +410,327 @@ describe("case setup workflow", () => {
     );
   });
 
+  it("freezes a valid Tribunal configuration on Convene and remains on Review", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          run: {
+            id: "33333333-3333-4333-8333-333333333333",
+            caseId: "44444444-4444-4444-8444-444444444444",
+            executionMode: "shared",
+            status: "READY",
+            createdAt: "2026-08-25T10:00:00.000Z",
+            participants: []
+          }
+        }),
+        { status: 201 }
+      )
+    );
+
+    renderWithAppProviders(<AppRoutes />);
+    await user.type(screen.getByLabelText(/defendant/i), "Alex Rowan");
+    await user.type(screen.getByLabelText(/^act/i), "Entered the restricted lab.");
+    await user.type(
+      screen.getByLabelText(/exact question/i),
+      "Did Alex knowingly violate the lab protocol?"
+    );
+    await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
+    await user.click(screen.getByRole("link", { name: /continue to judges/i }));
+    await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+    await user.click(screen.getByRole("button", { name: "Convene Tribunal" }));
+
+    expect(
+      await screen.findByText(/tribunal configuration frozen/i)
+    ).toBeVisible();
+    expect(
+      screen.getByText(/model execution is not enabled yet/i)
+    ).toBeVisible();
+    expect(
+      screen.getByText(/33333333-3333-4333-8333-333333333333/)
+    ).toBeVisible();
+    expect(
+      screen.queryByText(/deliberation is running/i)
+    ).not.toBeInTheDocument();
+
+    const [url, requestInit] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    const requestBody = JSON.parse(requestInit.body as string);
+
+    expect(url).toBe("/api/runs");
+    expect(requestInit.method).toBe("POST");
+    expect(requestBody.case).toEqual({
+      kind: "new",
+      case: {
+        defendant: "Alex Rowan",
+        act: "Entered the restricted lab.",
+        exactQuestion: "Did Alex knowingly violate the lab protocol?",
+        sourceType: "MANUAL"
+      }
+    });
+    expect(requestBody.executionMode).toBe("shared");
+    expect(requestBody.participants).toHaveLength(7);
+    expect(typeof requestBody.clientRequestId).toBe("string");
+    expect(requestBody.clientRequestId.length).toBeGreaterThan(0);
+  });
+
+  it("disables Convene while pending and after success, without re-arming", async () => {
+    const user = userEvent.setup();
+    let resolveFetch: (response: Response) => void = () => {};
+    vi.spyOn(globalThis, "fetch").mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveFetch = resolve;
+      })
+    );
+
+    renderWithAppProviders(<AppRoutes />);
+    await user.type(screen.getByLabelText(/defendant/i), "Alex Rowan");
+    await user.type(screen.getByLabelText(/^act/i), "Entered the restricted lab.");
+    await user.type(
+      screen.getByLabelText(/exact question/i),
+      "Did Alex knowingly violate the lab protocol?"
+    );
+    await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
+    await user.click(screen.getByRole("link", { name: /continue to judges/i }));
+    await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+
+    const conveneButton = screen.getByRole("button", { name: "Convene Tribunal" });
+    await user.click(conveneButton);
+
+    expect(screen.getByRole("button", { name: "Convening..." })).toBeDisabled();
+
+    resolveFetch(
+      new Response(
+        JSON.stringify({
+          run: {
+            id: "55555555-5555-4555-8555-555555555555",
+            caseId: "66666666-6666-4666-8666-666666666666",
+            executionMode: "shared",
+            status: "READY",
+            createdAt: "2026-08-25T10:00:00.000Z",
+            participants: []
+          }
+        }),
+        { status: 201 }
+      )
+    );
+
+    expect(
+      await screen.findByRole("button", { name: "Configuration frozen" })
+    ).toBeDisabled();
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses the saved case identity on Convene after Save Case", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          case: {
+            id: "77777777-7777-4777-8777-777777777777",
+            defendant: "Alex Rowan",
+            act: "Entered the restricted lab.",
+            exactQuestion: "Did Alex knowingly violate the lab protocol?",
+            sourceType: "MANUAL",
+            sourceFilename: null,
+            createdAt: "2026-08-25T10:00:00.000Z"
+          }
+        }),
+        { status: 201 }
+      )
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          run: {
+            id: "88888888-8888-4888-8888-888888888888",
+            caseId: "77777777-7777-4777-8777-777777777777",
+            executionMode: "shared",
+            status: "READY",
+            createdAt: "2026-08-25T10:00:00.000Z",
+            participants: []
+          }
+        }),
+        { status: 201 }
+      )
+    );
+
+    renderWithAppProviders(<AppRoutes />);
+    await user.type(screen.getByLabelText(/defendant/i), "Alex Rowan");
+    await user.type(screen.getByLabelText(/^act/i), "Entered the restricted lab.");
+    await user.type(
+      screen.getByLabelText(/exact question/i),
+      "Did Alex knowingly violate the lab protocol?"
+    );
+    await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
+    await user.click(screen.getByRole("link", { name: /continue to judges/i }));
+    await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+    await user.click(screen.getByRole("button", { name: /save case/i }));
+
+    expect(await screen.findByText(/case saved to past cases/i)).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Convene Tribunal" }));
+
+    expect(await screen.findByText(/tribunal configuration frozen/i)).toBeVisible();
+
+    const [, requestInit] = fetchSpy.mock.calls[1] as [string, RequestInit];
+    const requestBody = JSON.parse(requestInit.body as string);
+
+    expect(requestBody.case).toEqual({
+      kind: "existing",
+      caseId: "77777777-7777-4777-8777-777777777777"
+    });
+  });
+
+  it("sends a new case on Convene when the saved case was edited afterward", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          case: {
+            id: "99999999-9999-4999-8999-999999999999",
+            defendant: "Alex Rowan",
+            act: "Entered the restricted lab.",
+            exactQuestion: "Did Alex knowingly violate the lab protocol?",
+            sourceType: "MANUAL",
+            sourceFilename: null,
+            createdAt: "2026-08-25T10:00:00.000Z"
+          }
+        }),
+        { status: 201 }
+      )
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          run: {
+            id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            caseId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            executionMode: "shared",
+            status: "READY",
+            createdAt: "2026-08-25T10:00:00.000Z",
+            participants: []
+          }
+        }),
+        { status: 201 }
+      )
+    );
+
+    renderWithAppProviders(<AppRoutes />);
+    await user.type(screen.getByLabelText(/defendant/i), "Alex Rowan");
+    await user.type(screen.getByLabelText(/^act/i), "Entered the restricted lab.");
+    await user.type(
+      screen.getByLabelText(/exact question/i),
+      "Did Alex knowingly violate the lab protocol?"
+    );
+    await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
+    await user.click(screen.getByRole("link", { name: /continue to judges/i }));
+    await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+    await user.click(screen.getByRole("button", { name: /save case/i }));
+
+    expect(await screen.findByText(/case saved to past cases/i)).toBeVisible();
+
+    await user.click(
+      within(screen.getByLabelText("Case setup progress")).getByRole("link", {
+        name: /Charge Sheet/i
+      })
+    );
+    await user.type(screen.getByLabelText(/defendant/i), " Jr.");
+    await user.click(
+      within(screen.getByLabelText("Case setup progress")).getByRole("link", {
+        name: /Review/i
+      })
+    );
+
+    expect(
+      await screen.findByRole("button", { name: "Convene Tribunal" })
+    ).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Convene Tribunal" }));
+
+    expect(await screen.findByText(/tribunal configuration frozen/i)).toBeVisible();
+
+    const [, requestInit] = fetchSpy.mock.calls[1] as [string, RequestInit];
+    const requestBody = JSON.parse(requestInit.body as string);
+
+    expect(requestBody.case).toEqual({
+      kind: "new",
+      case: {
+        defendant: "Alex Rowan Jr.",
+        act: "Entered the restricted lab.",
+        exactQuestion: "Did Alex knowingly violate the lab protocol?",
+        sourceType: "MANUAL"
+      }
+    });
+  });
+
+  it("surfaces a server idempotency conflict honestly without navigating", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ error: "idempotency_conflict", errors: [] }),
+        { status: 409 }
+      )
+    );
+
+    renderWithAppProviders(<AppRoutes />);
+    await user.type(screen.getByLabelText(/defendant/i), "Alex Rowan");
+    await user.type(screen.getByLabelText(/^act/i), "Entered the restricted lab.");
+    await user.type(
+      screen.getByLabelText(/exact question/i),
+      "Did Alex knowingly violate the lab protocol?"
+    );
+    await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
+    await user.click(screen.getByRole("link", { name: /continue to judges/i }));
+    await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+    await user.click(screen.getByRole("button", { name: "Convene Tribunal" }));
+
+    expect(
+      await screen.findByText(/could not be frozen because a prior request/i)
+    ).toBeVisible();
+    expect(
+      screen.queryByText(/tribunal configuration frozen/i)
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/deliberation is running/i)
+    ).not.toBeInTheDocument();
+    // The Convene button re-arms after a failed attempt so the user can
+    // retry (unlike after a success, which is final).
+    expect(screen.getByRole("button", { name: "Convene Tribunal" })).toBeEnabled();
+  });
+
+  it("surfaces server-side Convene validation errors honestly", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          error: "invalid_run",
+          errors: ["participants: exactly seven participants are required."]
+        }),
+        { status: 400 }
+      )
+    );
+
+    renderWithAppProviders(<AppRoutes />);
+    await user.type(screen.getByLabelText(/defendant/i), "Alex Rowan");
+    await user.type(screen.getByLabelText(/^act/i), "Entered the restricted lab.");
+    await user.type(
+      screen.getByLabelText(/exact question/i),
+      "Did Alex knowingly violate the lab protocol?"
+    );
+    await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
+    await user.click(screen.getByRole("link", { name: /continue to judges/i }));
+    await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+    await user.click(screen.getByRole("button", { name: "Convene Tribunal" }));
+
+    expect(
+      await screen.findByText(/exactly seven participants are required/i)
+    ).toBeVisible();
+    expect(
+      screen.queryByText(/tribunal configuration frozen/i)
+    ).not.toBeInTheDocument();
+  });
+
   it("keeps existing setup state when a Tribunal package import fails", async () => {
     const user = userEvent.setup();
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(

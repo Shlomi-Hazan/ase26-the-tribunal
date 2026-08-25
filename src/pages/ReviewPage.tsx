@@ -8,7 +8,7 @@ import {
   Stack,
   Typography
 } from "@mui/material";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Link as RouterLink } from "react-router-dom";
 import { EconomicsSummary } from "../components/EconomicsSummary";
 import { PageHeader } from "../components/PageHeader";
@@ -17,17 +17,36 @@ import {
   areAdvocatePersonalitiesValid,
   areJudgePersonalitiesValid,
   isChargeSheetValid,
-  isMockSetupReady
+  isMockSetupReady,
+  isSavedCaseCurrent,
+  type SetupState
 } from "../features/case-setup/setupState";
 import { useSetup } from "../features/case-setup/useSetup";
 import { allParticipants, mockModels } from "../mocks/tribunalMockData";
 import { CaseApiError, saveCase, type StoredCase } from "../services/caseApi";
+import {
+  convene,
+  RunApiError,
+  type RunCaseRequest,
+  type RunParticipantRequest,
+  type StoredRun
+} from "../services/runApi";
 
 export function ReviewPage() {
-  const { state } = useSetup();
+  const { state, dispatch } = useSetup();
   const [saveError, setSaveError] = useState("");
   const [savedCase, setSavedCase] = useState<StoredCase | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [conveneError, setConveneError] = useState("");
+  const [conveneResult, setConveneResult] = useState<StoredRun | null>(null);
+  const [isConvening, setIsConvening] = useState(false);
+  // Milestone 6 client idempotency key lifecycle: stable across a retry of
+  // the same semantic submission, refreshed only when the underlying
+  // request actually changed (docs/adr/0002-participant-configuration-
+  // freeze.md Decision 8; SPEC.md CONFIG-008/008A). Refs, not state --
+  // this is bookkeeping, not something that should trigger a re-render.
+  const clientRequestIdRef = useRef<string | null>(null);
+  const requestSnapshotRef = useRef<string | null>(null);
   const sharedModel = mockModels.find((model) => model.id === state.sharedModelId);
   const chargeSheetValid = isChargeSheetValid(state.chargeSheet);
   const advocatesValid = areAdvocatePersonalitiesValid(state);
@@ -60,10 +79,58 @@ export function ReviewPage() {
       });
 
       setSavedCase(storedCase);
+      dispatch({ type: "recordSavedCase", id: storedCase.id });
     } catch (error) {
       setSaveError(formatCaseError(error));
     } finally {
       setIsSaving(false);
+    }
+  }
+
+  async function handleConvene() {
+    // Once accepted, retain the accepted run state instead of starting a
+    // fresh request -- Convene is not re-armed after success.
+    if (!canConvene || isConvening || conveneResult) {
+      return;
+    }
+
+    const caseRequest = buildCaseRequest(state);
+    const participants = buildParticipantsRequest(state);
+    const snapshot = JSON.stringify({
+      case: caseRequest,
+      executionMode: state.executionMode,
+      participants
+    });
+
+    // Reuse the existing client_request_id only while the semantic
+    // submission is unchanged from the last attempt; a materially edited
+    // resubmission gets a fresh key rather than reusing one that would
+    // now describe different data under the old identity.
+    if (!clientRequestIdRef.current || requestSnapshotRef.current !== snapshot) {
+      clientRequestIdRef.current = crypto.randomUUID();
+      requestSnapshotRef.current = snapshot;
+    }
+
+    setConveneError("");
+    setIsConvening(true);
+
+    try {
+      const run = await convene({
+        clientRequestId: clientRequestIdRef.current,
+        case: caseRequest,
+        executionMode: state.executionMode,
+        participants
+      });
+
+      if (caseRequest.kind === "new") {
+        dispatch({ type: "recordSavedCase", id: run.caseId });
+      }
+
+      setConveneResult(run);
+    } catch (error) {
+      setConveneError(formatRunError(error));
+    } finally {
+      setIsConvening(false);
     }
   }
 
@@ -246,6 +313,16 @@ export function ReviewPage() {
         </Alert>
       ) : null}
       {saveError ? <Alert severity="error">{saveError}</Alert> : null}
+      {conveneResult ? (
+        <Alert severity="success">
+          Tribunal configuration frozen. Model execution is not enabled yet.
+          {" "}
+          <Typography color="text.secondary" component="span" variant="body2">
+            Run ID: {conveneResult.id}
+          </Typography>
+        </Alert>
+      ) : null}
+      {conveneError ? <Alert severity="error">{conveneError}</Alert> : null}
       <Stack direction="row" spacing={2}>
         <Button component={RouterLink} to="/new/judges" variant="outlined">
           Back
@@ -257,22 +334,72 @@ export function ReviewPage() {
         >
           {isSaving ? "Saving..." : "Save Case"}
         </Button>
-        {canConvene ? (
-          <Button
-            component={RouterLink}
-            to="/demo/deliberation?scenario=running"
-            variant="contained"
-          >
-            Convene Tribunal
-          </Button>
-        ) : (
-          <Button disabled variant="contained">
-            Convene Tribunal
-          </Button>
-        )}
+        <Button
+          disabled={!canConvene || isConvening || Boolean(conveneResult)}
+          onClick={handleConvene}
+          variant="contained"
+        >
+          {isConvening
+            ? "Convening..."
+            : conveneResult
+              ? "Configuration frozen"
+              : "Convene Tribunal"}
+        </Button>
       </Stack>
     </Stack>
   );
+}
+
+// Milestone 6: Shared mode always sends the one shared model for every
+// participant, regardless of each participant's individually-stored
+// modelId (which the UI does not surface while in Shared mode) --
+// matches SPEC.md CONFIG-004 and is re-validated authoritatively
+// server-side either way.
+function buildParticipantsRequest(state: SetupState): RunParticipantRequest[] {
+  return allParticipants.map((participant) => {
+    const config = state.participants[participant.id];
+    const modelId =
+      state.executionMode === "shared" ? state.sharedModelId : config.modelId;
+    const profileName = config.profileName.trim() ? config.profileName : undefined;
+
+    if (config.personalitySource === "manual") {
+      return {
+        participantId: participant.id,
+        profileName,
+        personality: config.personality,
+        personalitySource: "manual",
+        modelId
+      };
+    }
+
+    return {
+      participantId: participant.id,
+      profileName,
+      personality: config.personality,
+      personalitySource: config.personalitySource,
+      personalitySourceFilename: config.personalitySourceFilename,
+      modelId
+    };
+  });
+}
+
+// Milestone 6: reuse the last successfully saved case only while it is
+// still current (docs/adr/0002-participant-configuration-freeze.md
+// Decision 8); otherwise Convene saves a fresh case as part of the same
+// request rather than requiring a separate manual Save Case first.
+function buildCaseRequest(state: SetupState): RunCaseRequest {
+  if (state.savedCase && isSavedCaseCurrent(state)) {
+    return { kind: "existing", caseId: state.savedCase.id };
+  }
+
+  return {
+    kind: "new",
+    case: {
+      ...state.chargeSheet,
+      sourceType: state.caseSource.type,
+      sourceFilename: state.caseSource.filename
+    }
+  };
 }
 
 function formatCaseError(error: unknown) {
@@ -281,6 +408,18 @@ function formatCaseError(error: unknown) {
   }
 
   return "Case could not be saved.";
+}
+
+function formatRunError(error: unknown) {
+  if (error instanceof RunApiError) {
+    if (error.status === 409) {
+      return "This configuration could not be frozen because a prior request with the same submission id already produced a different result. Please try again.";
+    }
+
+    return error.errors.join(" ") || "Tribunal configuration could not be frozen.";
+  }
+
+  return "Tribunal configuration could not be frozen.";
 }
 
 function formatSourceType(sourceType: string) {
