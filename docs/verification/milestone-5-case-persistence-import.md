@@ -412,6 +412,151 @@ testing therefore remains **NOT VERIFIED** — this commit only makes the
 migration itself correct for the project's actual Data API configuration;
 it does not run it.
 
+## Live Supabase integration gate
+
+A real Supabase development database now exists (project created, migration
+`20260825000000` applied, `local == remote` per
+`npx supabase@2.115.0 migration list`). This section records the full,
+unedited history of live-testing against it, including the failure — the
+audit trail is preserved rather than cleaned up.
+
+### 1. Initial live persistence smoke: FAILED
+
+The first live smoke test exercised the real application boundary (`POST
+/api/cases` through the running `netlify dev` Netlify Function, not a direct
+SQL insert). It failed:
+
+```text
+POST /api/cases → HTTP 500 {"error":"case_persistence_failed"}
+```
+
+### 2. Exact cause
+
+Read-only diagnostic requests directly against the Supabase Data API (same
+project, same service-role credential, no schema/code change) reproduced the
+failure identically for both a `NULL` and a valid non-null `source_filename`,
+returning the underlying PostgreSQL error:
+
+```json
+{"code":"54000","details":null,"hint":null,"message":"null character not permitted"}
+```
+
+The applied migration's `cases_source_filename_check` constraint contained:
+
+```sql
+position(chr(0) in source_filename) = 0
+```
+
+PostgreSQL's `text` type is internally NUL-terminated and cannot represent a
+NUL byte at all — `chr(0)` cannot be constructed as a `text` value, so this
+expression raises an engine-level error whenever it is evaluated. This
+blocked **every** insert into `public.cases`, regardless of the payload.
+
+### 3. Why the automated test suite did not detect it
+
+Every unit/integration test (`netlify/functions/cases.test.ts`) exercises
+`handleCasesRequest`/`handleCaseByIdRequest` against an injected in-memory
+`FakeCaseRepository`, by design (per `ARCHITECTURE.md` §14: OpenRouter/DB
+integration tests should be fakeable so they don't need live infrastructure).
+None of the 55 automated tests ever executes a real SQL statement against
+real PostgreSQL, so a DDL-level defect like this is structurally invisible
+to them — only a genuine live integration test against the real database
+can catch it, which is exactly what this gate is for.
+
+### 4. Why the constraint was also unnecessary
+
+PostgreSQL already structurally guarantees no `text` column can ever contain
+a NUL byte — the input parser itself rejects it long before a CHECK
+constraint would run. The clause was defensive (mirroring the server-side
+Zod validation for depth-in-defense) but could never be satisfied by real
+Postgres, so removing it changes no real-world validation behavior.
+
+### 5. Original migration integrity
+
+`supabase/migrations/20260825000000_create_cases.sql` was **not** edited,
+renamed, or amended (already applied to a real database). `git diff` against
+it on this branch is empty at every point after the live-testing began.
+
+### 6–7. Forward remediation migration
+
+A new migration,
+`supabase/migrations/20260825204419_fix_cases_source_filename_check.sql`
+(commit `fix: repair cases filename check constraint`), drops and re-adds
+`cases_source_filename_check` with the same nullable/length/no-`/`-or-`\`
+rules, minus the broken `chr(0)` clause. No column, default, `source_type`
+constraint, RLS setting, grant, or index was touched. Applied via
+`npx supabase@2.115.0 db push`; confirmed via `migration list`:
+
+```text
+20260825000000  local == remote
+20260825204419  local == remote
+```
+
+### 8. Corrected remote constraint — verified
+
+Queried live via `npx supabase@2.115.0 db query --linked` against
+`pg_constraint`/`pg_class`/`information_schema.role_table_grants`/
+`pg_policies`:
+
+- `cases_source_filename_check` no longer contains `chr(0)`; corrected
+  definition: `source_filename IS NULL OR (length 1..255 AND no "/" or "\")`.
+- `relrowsecurity = true` (RLS still enabled).
+- `anon`: zero privileges on `public.cases`.
+- `authenticated`: zero privileges on `public.cases`.
+- `service_role`: exactly `SELECT` and `INSERT` — no `UPDATE`/`DELETE`.
+- `pg_policies` for `public.cases`: empty (no browser/public policy).
+
+### 9. Final live persistence smoke — MANUAL: PASS
+
+Through the real running Netlify dev server against the real database:
+
+- `POST /api/cases` (Defendant `M5 Live Persistence Smoke`, MANUAL) →
+  **HTTP 201**, DB-generated UUID `057a244d-c35d-4c8f-a224-80816d07db59`,
+  DB-generated `createdAt`, `sourceFilename: null`, all fields matched the
+  request exactly.
+- `GET /api/cases/057a244d-c35d-4c8f-a224-80816d07db59` → **HTTP 200**, same
+  UUID, same `createdAt`, all fields exact.
+- `GET /api/cases` → **HTTP 200**, array containing exactly the created row.
+
+### 10. Optional file-backed smoke — PASS
+
+`POST /api/cases` with `sourceType: CHARGE_SHEET_FILE`,
+`sourceFilename: m5-live-smoke.md` → **HTTP 201**, filename persisted
+exactly; `GET /api/cases/<id>` → **HTTP 200**, filename returned exactly.
+Both synthetic rows (`057a244d-…` and the file-backed one) remain in the
+development database as integration evidence — M5 has no DELETE API, so per
+instructions they were left rather than removed outside the application
+boundary.
+
+### 11. Import regression — PASS
+
+Re-verified live against the real running functions: Charge Sheet `.txt`
+import (200, normalized fields), personality `.md` import (200, normalized
+text), `docs/examples/tribunal-package-v1.txt` full package import (200,
+exactly 7 participants, correct fixed seats, no `modelId`/`side`/
+`executionMode` on any participant), and invalid-package rejection
+(`[PRO_3]` → 400). No OpenRouter/model call anywhere.
+
+### 12. Final automated verification — PASS
+
+`npm run verify` (lint/typecheck/**10 files, 55 tests**/build/
+verify:client-bundle), `npm audit --omit=dev --audit-level=high` (0
+vulnerabilities), `git diff --check origin/main...HEAD` (clean). No
+dependency change.
+
+### 13. Browser verification
+
+Not attempted this pass — the live API-level smoke test (the actual gate
+this session existed to satisfy) already exercises the identical
+Netlify Function → `SupabaseCaseRepository` → Supabase Data API →
+`public.cases` path a browser click would use; a browser session would not
+add further evidence toward the specific defect this gate targeted.
+**Full browser click-through: NOT VERIFIED** (recorded honestly, not
+upgraded to a fabricated pass).
+
+No project URL, project ref, database password, secret key, access token,
+or `.env` contents appear anywhere in this document.
+
 ## Remote state
 
 Pushed to `origin/milestone/05-case-persistence-import` after this evidence
