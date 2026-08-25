@@ -1,8 +1,10 @@
 # The Tribunal — Project Master Plan
 
-> **Course:** Agentic Software Engineering (ASE-26)  
-> **Project:** The Tribunal  
+> **Course:** Agentic Software Engineering (ASE-26)
+> **Project:** The Tribunal
 > **Purpose:** Build a complete, verifiable, well-documented cognified web application while demonstrating disciplined agentic software engineering from project conception through deployment.
+
+> **Document status:** This is a comprehensive planning and historical reference artifact. When it differs from later focused decisions, `INTENT.md`, `SPEC.md`, `ARCHITECTURE.md`, and the relevant focused engineering document take precedence.
 
 ---
 
@@ -2038,17 +2040,17 @@ The Git history should make it obvious that project conception and engineering d
 
 At the end of the project, the repository should allow an evaluator to reconstruct the complete engineering story:
 
-> Here is the intent.  
-> Here is the specification derived from it.  
-> Here are the assumptions that were identified and resolved.  
-> Here is the architecture and why it was selected.  
-> Here is the milestone sequence.  
-> Here is what the development agents were instructed to do.  
-> Here is what they actually changed.  
-> Here is how each important change was verified.  
-> Here is the Git history and Pull Request trail.  
-> Here are the runtime model calls.  
-> Here are the token counts, prices, costs, latency, and failures.  
+> Here is the intent.
+> Here is the specification derived from it.
+> Here are the assumptions that were identified and resolved.
+> Here is the architecture and why it was selected.
+> Here is the milestone sequence.
+> Here is what the development agents were instructed to do.
+> Here is what they actually changed.
+> Here is how each important change was verified.
+> Here is the Git history and Pull Request trail.
+> Here are the runtime model calls.
+> Here are the token counts, prices, costs, latency, and failures.
 > Here is the deployed product.
 
 The final goal is therefore not merely to produce a working Tribunal.

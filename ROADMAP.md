@@ -1,6 +1,6 @@
 # The Tribunal — Project Roadmap
 
-> **Course:** Agentic Software Engineering (ASE-26)  
+> **Course:** Agentic Software Engineering (ASE-26)
 > **Rule:** Every milestone ends with verification evidence and a human merge gate.
 
 ## 0. Roadmap Principles
@@ -119,6 +119,10 @@ Convert product conception into a testable and reviewable engineering contract b
 - `SECURITY.md`
 - `docs/ui-spec.md`
 - `docs/economics.md`
+
+## Supporting Reference
+
+- `THE_TRIBUNAL_PROJECT_MASTER_PLAN.md` — comprehensive planning/history reference; not one of the eight focused engineering-contract documents and does not override later focused `INTENT.md`, `SPEC.md`, or `ARCHITECTURE.md` decisions.
 
 ## Decisions locked here
 
@@ -617,4 +621,3 @@ Final question:
 ## Exit condition
 
 The project is functionally demonstrable, secure enough for its stated demo scope, reproducible, documented, and supported by repository evidence rather than verbal claims.
-

@@ -1,7 +1,7 @@
 # The Tribunal — System Specification
 
-> **Course:** Agentic Software Engineering (ASE-26)  
-> **Status:** V1 engineering contract  
+> **Course:** Agentic Software Engineering (ASE-26)
+> **Status:** V1 engineering contract
 > **Purpose:** Define precise, testable product behaviour before implementation.
 
 ## 0. Document Role and Precedence
@@ -820,4 +820,3 @@ Unless intent/spec is deliberately changed:
 - arbitrary participant counts
 - autonomous model tools/actions
 - genuinely agentic execution mode until course requirement is confirmed
-

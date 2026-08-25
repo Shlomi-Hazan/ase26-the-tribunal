@@ -50,4 +50,3 @@ Use repository scripts rather than tool-specific ad-hoc equivalents once scripts
 - `$5.00` run ceiling includes retries.
 - All OpenRouter calls and privileged DB access remain server-side.
 - Agent Mode is not implemented unless separately confirmed and specified.
-

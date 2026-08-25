@@ -1,6 +1,6 @@
 # The Tribunal — Architecture
 
-> **Status:** V1 architecture decision  
+> **Status:** V1 architecture decision
 > **Companion documents:** `INTENT.md`, `SPEC.md`, `SECURITY.md`, `docs/economics.md`, `docs/ui-spec.md`
 
 ## 0. Architectural Goal
@@ -831,4 +831,3 @@ The following require an approved architecture/specification change to violate:
 12. Historical runs do not rerun models when opened.
 13. Runtime model calls receive no privileged arbitrary tools.
 14. Model/user/external data is validated before trust.
-

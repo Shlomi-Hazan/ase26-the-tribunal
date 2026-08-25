@@ -458,4 +458,3 @@ It does not promise that every model offered by OpenRouter is supported by The T
 It does not treat cost estimates as exact billing predictions.
 
 It does not count OpenRouter credit-purchase fees as per-run inference cost; the product economics view focuses on model inference charges attributable to the run.
-

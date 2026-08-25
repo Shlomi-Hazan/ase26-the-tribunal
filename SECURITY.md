@@ -1,6 +1,6 @@
 # The Tribunal — Security and Privacy
 
-> **Scope:** V1 single-tenant public course/demo application.  
+> **Scope:** V1 single-tenant public course/demo application.
 > **Security principle:** Minimize blast radius, keep authority server-side, and treat user/model/external data as untrusted.
 
 ## 1. Security Goals
@@ -406,4 +406,3 @@ V1 does not claim:
 - protection against a determined large distributed abuse campaign without stronger authentication/admission controls
 
 The V1 security goal is a bounded, honest, auditable public course demo with protected secrets and financial blast radius.
-

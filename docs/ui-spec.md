@@ -1,7 +1,7 @@
 # The Tribunal — UI Specification
 
-> **Design direction:** Modern Digital Courtroom  
-> **Guiding principle:** Minimal interaction, polished presentation.  
+> **Design direction:** Modern Digital Courtroom
+> **Guiding principle:** Minimal interaction, polished presentation.
 > **Scope:** User flow, information hierarchy, interaction, feedback, bad states, responsive/accessibility expectations.
 
 ## 1. Design Objective
@@ -689,4 +689,3 @@ A milestone UI is not accepted until relevant items are true:
 - [ ] historical run is clearly historical and does not rerun models
 - [ ] mobile layout remains usable
 - [ ] keyboard/focus/labels/contrast have been manually checked
-
