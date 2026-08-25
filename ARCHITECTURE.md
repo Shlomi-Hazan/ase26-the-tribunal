@@ -447,40 +447,53 @@ Request includes a stable `client_request_id`, a discriminated `case`
 field (`{ kind: "existing", caseId }` or `{ kind: "new", ...CreateCaseInput }`
 — never both), and seven participant configurations.
 
-Server:
+Server, in the following precise order (`docs/adr/0002-participant-configuration-freeze.md`
+Decision 10 — the exact ordering is the fix for a real defect an
+independent review found in an earlier draft, see below):
 
-- validates again independently of browser
-- resolves the case: `kind: "existing"` loads and trusts the already-
-  immutable M5 case by ID (rejecting an unknown ID); `kind: "new"` creates
-  it first via the unchanged Milestone 5 case-creation path. This case
-  resolution is an ordinary, independently-atomic single-table operation
-  and happens **before**, not inside, the run/config freeze below — see
-  `docs/adr/0002-participant-configuration-freeze.md` Decision 6. If the
-  subsequent freeze fails, a newly-created case remains persisted; that is
-  accepted (it is a legitimately valid, independently useful M5 case).
-- computes a deterministic `request_fingerprint` (SHA-256 over the
-  resolved case ID + execution mode + normalized seven-participant
-  configuration; see ADR Decision 8) — server-computed, never
-  browser-authoritative
-- reruns authoritative preflight *(from Milestone 7 onward; Milestone 6 has
-  no preflight to run since no model pricing exists yet — see below)*
-- calls the freeze function (`SECURITY DEFINER`, the only write path for
-  these two tables — see §8.3.1) with `client_request_id`,
-  `request_fingerprint`, `execution_mode`, `case_id`, and the seven
-  participant entries. The function atomically: reuses an existing run if
-  the fingerprint matches, rejects with a conflict if it doesn't, or
-  inserts exactly the run row + seven `participant_configs` rows and
-  returns them
-- returns `202`/`201` with `run_id`, or `409 idempotency_conflict` if the
-  same `client_request_id` was reused for a materially different request
-- invokes worker *(from Milestone 8 onward; Milestone 6 performs no
-  execution and stops at `READY`)*
+1. validates the request again independently of browser
+2. resolves the *canonical semantic* case input: `kind: "existing"` loads
+   and trusts the already-immutable M5 case by ID (rejecting an unknown
+   ID) without writing anything; `kind: "new"` validates the normalized
+   case fields but does **not** create the row yet
+3. normalizes the seven participant configs
+4. computes a deterministic `request_fingerprint` (SHA-256, Node built-in
+   `crypto`) over the **canonical case input from step 2** — `{kind:
+   "existing", caseId}` or `{kind: "new", defendant, act, exactQuestion,
+   sourceType, sourceFilename}` — **never** a generated/resolved case
+   UUID, plus execution mode and the normalized seven-participant
+   configuration (ADR Decision 11) — server-computed, never
+   browser-authoritative. Computing this *before* any case row exists is
+   deliberate: fingerprinting a `kind: "new"` case's *resolved* ID instead
+   would make a legitimate retry after a lost HTTP response mint a second
+   case UUID and produce a different fingerprint, incorrectly reporting a
+   conflict for an identical request
+5. reruns authoritative preflight *(from Milestone 7 onward; Milestone 6
+   has no preflight to run since no model pricing exists yet — see below)*
+6. resolves/creates the case idempotently — for `kind: "new"`, an ordinary
+   insert keyed by `convene_request_id = client_request_id`, falling back
+   to a compare-and-reuse (or `409`) read on a unique-constraint conflict;
+   race-safe by construction, no new database function required (ADR
+   Decision 9)
+7. calls the freeze function (`SECURITY DEFINER`, the only write path for
+   `tribunal_runs`/`participant_configs` — see §8.3.1) with
+   `client_request_id`, the `request_fingerprint` from step 4,
+   `execution_mode`, the `case_id` resolved in step 6, and the seven
+   participant entries. The function is the **final** atomic authority
+   (ADR Decision 6): it atomically reuses an existing run if the
+   fingerprint matches, rejects with a conflict if it doesn't, or inserts
+   exactly the run row + seven `participant_configs` rows and returns them
+8. returns `202`/`201` with `run_id`, or `409 idempotency_conflict` if
+   either case resolution (step 6) or the freeze function (step 7)
+   detected a same-key/different-payload conflict
+9. invokes worker *(from Milestone 8 onward; Milestone 6 performs no
+   execution and stops at `READY`)*
 
 Milestone 6 implements this endpoint's validation, case resolution, and
 atomic freeze. It performs zero model/OpenRouter calls and never
 transitions a run past `READY`. `READY` means accepted/frozen
 configuration only — it does not by itself mean execution-eligible (see
-ADR Decision 9 on the `prompt_version` placeholder).
+ADR Decision 12 on the `prompt_version` placeholder).
 
 ### 7.5 Read run/history
 
@@ -522,6 +535,20 @@ Milestone 5 source types distinguish at minimum:
 
 Milestone 5 persists normalized case data only. It does not create participant/run/output/protocol tables early.
 
+A future Milestone 6 forward migration (not yet created) adds exactly one
+nullable column, `convene_request_id text` (`UNIQUE` when non-null — plain
+PostgreSQL `UNIQUE` semantics, so any number of `NULL` rows remain
+allowed), so a Convene-created `kind: "new"` case is itself idempotent
+under a lost-response retry (`docs/adr/0002-participant-configuration-freeze.md`
+Decision 9). Standalone M5 `Save Case` is unaffected and continues to
+write `NULL`. This column is internal persistence metadata only — it is
+never added to the public `StoredCase`/browser response shape, since the
+case repository already selects an explicit column list rather than
+`select *`. No other `cases` column, constraint, or grant changes; the
+existing Milestone 5 privilege model (`service_role`: `SELECT` + `INSERT`
+only, no `UPDATE`/`DELETE`; `anon`/`authenticated`: no access; RLS
+enabled) is unchanged.
+
 ### 8.2 `tribunal_runs`
 
 Milestone 6 creates only the columns needed to accept and freeze a
@@ -535,7 +562,7 @@ Milestone 6 columns:
 id                  uuid PK
 case_id             uuid FK -> cases NOT NULL
 client_request_id   text UNIQUE NOT NULL
-request_fingerprint text NOT NULL   -- SHA-256 of the normalized accepted request; see ADR Decision 8
+request_fingerprint text NOT NULL   -- SHA-256 of the canonical semantic request (never a resolved case UUID); see ADR Decision 11
 execution_mode      text NOT NULL   -- SHARED | SEPARATE
 status              text NOT NULL   -- CHECK against the full SPEC.md §14 vocabulary;
                                      -- M6 itself only ever writes READY
@@ -625,16 +652,20 @@ for `tribunal_runs` and `participant_configs`:
   conflict is reported, or nothing new is written. It performs no
   model/provider/network work.
 
-See `docs/adr/0002-participant-configuration-freeze.md` Decision 5 for the
+See `docs/adr/0002-participant-configuration-freeze.md` Decision 6 for the
 full rationale and the rejected alternative (an `INSERT` grant to
 `service_role` alongside the function, which would let server code bypass
 the invariant).
 
-Once a run is accepted, no `UPDATE`/`DELETE` grant exists for either table
-under any role — immutability is a structural database privilege, not
-only an application code path that happens not to expose one. Case
-persistence is a separate, ordinarily-atomic predecessor step, not part of
-this same transaction — see ADR Decision 6.
+Once a run is accepted, no application-facing role (`service_role`,
+`anon`, `authenticated`, `PUBLIC`) has an `UPDATE`/`DELETE` grant for
+either table — immutability is a structural database privilege, not only
+an application code path that happens not to expose one. (Administrative/
+function-owner privileges necessarily exist so the `SECURITY DEFINER`
+function above can insert, but that ownership authority is never itself
+an application call path.) Case persistence is a separate, ordinarily-
+atomic predecessor step, not part of this same transaction — see ADR
+Decision 7.
 
 ### 8.4 `model_call_attempts`
 

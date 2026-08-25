@@ -949,12 +949,22 @@ These are target criteria, not claims that implementation already exists.
   seven participant rows.
 - **CONFIG-005** — Separate-Model Mode persists all seven independently
   configured `model_id` values.
-- **CONFIG-006** — A malformed model configuration (empty/oversized/unsafe
-  `model_id`) is rejected before any persistence occurs.
+- **CONFIG-006** — `model_id` is validated structurally before any
+  persistence occurs: trimmed, `1`–`256` characters, no C0 control
+  characters or `DEL`; no semantic/catalog check (that is Milestone 7's
+  responsibility). A value failing this bound is rejected.
+- **CONFIG-006A** — Personality source/filename combinations are
+  cross-field validated at freeze time, not trusted from the browser:
+  `manual` requires no filename; `individual_file`/`tribunal_package`
+  require a safe `.txt`/`.md` filename (same safe-filename rules
+  established for `cases` and imports in Milestone 5). A structurally
+  inconsistent combination is rejected before persistence.
 - **CONFIG-007** — Once accepted, a run's participant configuration is
-  immutable: no database role, including the server's own, has an
-  `UPDATE`/`DELETE` grant on `tribunal_runs` or `participant_configs`; the
-  one function that can write either table is not itself an update path.
+  immutable: no application-facing role (including `service_role`, the
+  only role application/server code ever authenticates as) has an
+  `INSERT`, `UPDATE`, or `DELETE` grant on `tribunal_runs` or
+  `participant_configs`; the one function that can write either table is
+  not itself an update path.
 - **CONFIG-008** — Accepting a run is idempotent on `client_request_id`; a
   repeated request with the same identifier **and** an unchanged
   normalized configuration returns the already-accepted run rather than
@@ -974,6 +984,15 @@ These are target criteria, not claims that implementation already exists.
   `participant_configs` rows is guaranteed atomic; a failed or conflicting
   freeze never leaves a partial run or a `participant_configs` row count
   other than 0 or 7 for that run.
+- **CONFIG-009B** — A new-case Convene request is itself idempotent: a
+  retry after a lost HTTP response (same `client_request_id`, same
+  normalized new-case fields) reuses the same case row rather than
+  creating a second one, and the request-level idempotency fingerprint
+  (CONFIG-008) is computed from the case's normalized *content*, never
+  from a generated case ID — so this retry correctly returns the existing
+  run rather than a false `409`. A same-key request whose new-case
+  content has materially changed is rejected `409 idempotency_conflict`
+  without modifying the existing case.
 - **CONFIG-010** — Accepting a run performs zero OpenRouter/model calls and
   produces no advocate speech, judge verdict, or economics data.
 - **CONFIG-011** — A package-imported `TribunalSetupDraft` (Milestone 5)
