@@ -14,6 +14,19 @@ Milestone 4 - UI Shell with Mock Data.
 - Branch: `milestone/04-ui-shell-mock-data`
 - Base main SHA: `ac68a3d0c704ba39978f7a677e1a6887e8875395`
 - Implementation commit SHA: `19592172d85c8bacd55e76dda5bd991d75ce61df`
+- Review-driven follow-up commit SHA: `855c9f61af6608caf8734bd9fa16c7712eed6c48`
+
+## Review-Driven Corrections
+
+- Participant personality validation now uses one central 4,000-character rule.
+- Advocate and judge progression is blocked when required personalities are empty or over limit.
+- Setup step completion labels now reflect actual in-memory data validity instead of route position.
+- Review now blocks mock convening when the Charge Sheet or participant configuration is invalid.
+- Populated mock history no longer renders the empty state.
+- Historical GUILTY and NOT_GUILTY result fixtures now match their Past Cases verdicts.
+- Result heading semantics now preserve one primary level-1 heading on the result page.
+- Detailed economics attempts are contained in a responsive horizontal-scroll table region.
+- Screenshot evidence filenames were corrected from `.png` to `.jpg` because the stored bytes are JPEG.
 
 ## Screen and Route Inventory
 
@@ -53,7 +66,7 @@ Milestone 4 - UI Shell with Mock Data.
 ## Tests
 
 - Test files: 7 passed
-- Tests: 21 passed
+- Tests: 28 passed
 
 Coverage includes:
 
@@ -62,15 +75,24 @@ Coverage includes:
 - Past Cases route
 - unknown route
 - Charge Sheet required validation and successful next step
+- Charge Sheet invalid continuation focuses the first invalid field
+- participant personality empty and over-limit validation
+- invalid advocate and judge progression guards
+- data-driven setup completion labels
+- invalid Review convening block
 - exactly four fixed advocates
 - exactly three fixed judges
 - Shared Model single selector
 - Separate Models participant selectors
 - Review 7-call geometry, `$5.00` policy, privacy warning, and mock economics
 - deliberation running/retry/judge/failure/budget-blocked states
-- result hierarchy and deterministic-majority explanation
-- historical disclosure and failed history item with no verdict
+- result hierarchy, heading semantics, and deterministic-majority explanation
+- historical GUILTY and NOT_GUILTY fixture consistency
+- populated history without contradictory empty state
+- failed history item with no verdict
 - empty history state
+- responsive economics table containment
+- automated keyboard traversal through primary navigation
 
 ## Verification Commands
 
@@ -80,7 +102,8 @@ Coverage includes:
 - `npm run build` - PASS
 - `npm run verify:client-bundle` - PASS
 - `npm run verify` - PASS
-- `npm audit --omit=dev --audit-level=high` - PASS, `found 0 vulnerabilities`
+- `npm audit --omit=dev --audit-level=high` - registry endpoint returned `ECONNRESET` during this session
+- `npm audit --omit=dev --audit-level=high --offline` - PASS, `found 0 vulnerabilities`
 - `git diff --check origin/main...HEAD` - PASS
 
 Note: Vite emitted a non-failing bundle-size advisory during build. The build exited successfully and the verification gate passed.
@@ -102,18 +125,21 @@ Note: Vite emitted a non-failing bundle-size advisory during build. The build ex
 - Budget blocked: PASS; budget route was distinct from deliberation failure and rendered no failed participant status in the DOM snapshot.
 - Completed result: PASS; majority appeared before judge votes, reasoning, speeches, and economics.
 - Past Cases: PASS; completed and failed mock cases were visible, and failed case showed no verdict.
-- Keyboard traversal: NOT VERIFIED; the browser adapter did not produce a reliable active-control signal for Tab traversal.
-- Visible focus: NOT VERIFIED; the browser adapter did not produce a reliable focus-state signal.
+- Automated keyboard traversal: PASS via Testing Library/user-event primary navigation coverage.
+- Manual keyboard traversal: NOT VERIFIED; the browser adapter did not produce a reliable active-control signal for Tab traversal.
+- Manual visible-focus verification: NOT VERIFIED; the browser adapter did not produce a reliable focus-state signal.
 - Field labels: PASS; Charge Sheet fields were accessible by label in browser automation.
 - Status text independent of color: PASS; statuses are rendered as text labels.
 
 ## Screenshot Evidence
 
-- `docs/verification/assets/milestone-4/desktop-review.png`
-- `docs/verification/assets/milestone-4/desktop-deliberation-retry.png`
-- `docs/verification/assets/milestone-4/desktop-result.png`
-- `docs/verification/assets/milestone-4/mobile-charge-sheet.png`
-- `docs/verification/assets/milestone-4/mobile-result.png`
+- `docs/verification/assets/milestone-4/desktop-review.jpg`
+- `docs/verification/assets/milestone-4/desktop-deliberation-retry.jpg`
+- `docs/verification/assets/milestone-4/desktop-result.jpg`
+- `docs/verification/assets/milestone-4/mobile-charge-sheet.jpg`
+- `docs/verification/assets/milestone-4/mobile-result.jpg`
+
+`file docs/verification/assets/milestone-4/*` reported JPEG image data for all five screenshot files.
 
 ## Security and Scope Confirmation
 
@@ -134,4 +160,4 @@ Note: Vite emitted a non-failing bundle-size advisory during build. The build ex
 - File import controls are visual/disabled until Milestone 5.
 - Deliberation states are deterministic fixtures, not real execution.
 - Economics are fixture data, not real calculation or live provider pricing.
-- Keyboard traversal and visible focus still need independent manual verification before merge.
+- Manual keyboard traversal and visible focus still need independent verification before merge.
