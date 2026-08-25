@@ -30,3 +30,15 @@ create table public.cases (
 );
 
 alter table public.cases enable row level security;
+
+-- This project has automatic Data API table exposure and automatic RLS
+-- disabled at creation, so Data API reachability requires explicit
+-- Postgres grants. Only the server-only service_role may reach this
+-- table, and only for the operations M5 actually performs (create/list/
+-- get). No UPDATE/DELETE API exists yet, so none is granted here.
+revoke all on table public.cases
+from anon, authenticated, service_role;
+
+grant select, insert
+on table public.cases
+to service_role;
