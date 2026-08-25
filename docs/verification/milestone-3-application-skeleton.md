@@ -34,6 +34,22 @@ Milestone 3 - Application Skeleton.
 - Development: TypeScript, Vite, React Vite plugin, React/Node types, ESLint, TypeScript ESLint, React Hooks linting, React Refresh linting, Vitest, jsdom, React Testing Library, jest-dom, user-event, Netlify CLI.
 - Dependency-resolution support: OpenTelemetry API peer used by the current approved tooling graph.
 
+## Dependency Security Review
+
+- Node runtime: `24.x`, as pinned by `.nvmrc`, `package.json` engines, and CI.
+- Node type definitions: direct `@types/node` dependency aligned from `^26.3.0` to `^24.13.3`; resolved version is `24.13.3`.
+- Production audit: `npm audit --omit=dev` and `npm audit --omit=dev --audit-level=high` both reported `found 0 vulnerabilities`.
+- Full audit summary: 7 high-severity findings remain in development tooling.
+- Runtime classification: remaining high-severity findings are not in the production/runtime dependency graph.
+- Remaining chain: `netlify-cli` -> `@netlify/dev` -> `@netlify/functions-dev` -> `extract-zip`.
+- Advisory: `GHSA-jmr9-qjv8-65gv` for `extract-zip` symlink path traversal.
+- Remaining chain: `netlify-cli` -> `@netlify/dev` -> `@netlify/images` -> `ipx` -> `sharp`.
+- Advisory: `GHSA-f88m-g3jw-g9cj` for `sharp` inherited libvips vulnerabilities, including `CVE-2026-33327`, `CVE-2026-33328`, `CVE-2026-35590`, and `CVE-2026-35591`.
+- Upstream fix status: npm reports remediation only through `npm audit fix --force`, which would install `netlify-cli@23.15.1` and is a breaking downgrade from the current `netlify-cli@27.3.0` line.
+- Decision: no force-fix was used.
+- Milestone risk acceptance: Netlify CLI is development/build tooling, not browser or runtime application code, and this Milestone 3 skeleton does not process untrusted image uploads.
+- OpenTelemetry check: `npm explain @opentelemetry/api` shows the direct root dev dependency satisfies Vitest's optional peer and participates in the current Netlify tooling graph; it was left unchanged.
+
 ## Verification Commands
 
 - `npm run lint` - PASS
