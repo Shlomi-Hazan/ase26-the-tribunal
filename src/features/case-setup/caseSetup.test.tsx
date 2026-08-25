@@ -1,12 +1,72 @@
 import { fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderWithAppProviders } from "../../test/renderWithAppProviders";
 import { AppRoutes } from "../../app/App";
 import {
   personalityLimit,
   validateParticipantPersonality
 } from "./setupState";
+
+const packageDraft = {
+  chargeSheet: {
+    defendant: "Imported Alex",
+    act: "Imported act text.",
+    exactQuestion: "Imported exact question?"
+  },
+  participants: {
+    "advocate-pro-1": {
+      profileName: "Evidence advocate",
+      personality: "Imported PRO I personality.",
+      personalitySource: "tribunal_package",
+      personalitySourceFilename: "package.md"
+    },
+    "advocate-pro-2": {
+      profileName: "Narrative advocate",
+      personality: "Imported PRO II personality.",
+      personalitySource: "tribunal_package",
+      personalitySourceFilename: "package.md"
+    },
+    "advocate-con-1": {
+      profileName: "Procedure advocate",
+      personality: "Imported CON I personality.",
+      personalitySource: "tribunal_package",
+      personalitySourceFilename: "package.md"
+    },
+    "advocate-con-2": {
+      profileName: "Practical advocate",
+      personality: "Imported CON II personality.",
+      personalitySource: "tribunal_package",
+      personalitySourceFilename: "package.md"
+    },
+    "judge-1": {
+      profileName: "Methodical judge",
+      personality: "Imported Judge I personality.",
+      personalitySource: "tribunal_package",
+      personalitySourceFilename: "package.md"
+    },
+    "judge-2": {
+      profileName: "Fairness judge",
+      personality: "Imported Judge II personality.",
+      personalitySource: "tribunal_package",
+      personalitySourceFilename: "package.md"
+    },
+    "judge-3": {
+      profileName: "Evidence judge",
+      personality: "Imported Judge III personality.",
+      personalitySource: "tribunal_package",
+      personalitySourceFilename: "package.md"
+    }
+  },
+  importSource: {
+    type: "TRIBUNAL_PACKAGE_FILE",
+    filename: "package.md"
+  }
+};
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("case setup workflow", () => {
   it("blocks Charge Sheet continuation until required fields are valid", async () => {
@@ -35,7 +95,9 @@ describe("case setup workflow", () => {
     const user = userEvent.setup();
     renderWithAppProviders(<AppRoutes />, "/new/advocates");
 
-    await user.clear(screen.getByLabelText(/PRO I personality/i));
+    await user.clear(
+      screen.getByLabelText(/PRO I personality/i, { selector: "textarea" })
+    );
 
     expect(screen.getByText(/personality is required/i)).toBeVisible();
     expect(screen.getByRole("button", { name: "Continue to Judges" })).toBeDisabled();
@@ -48,9 +110,10 @@ describe("case setup workflow", () => {
       /4,000 characters or fewer/
     );
 
-    fireEvent.change(screen.getByLabelText(/PRO I personality/i), {
-      target: { value: "x".repeat(personalityLimit + 1) }
-    });
+    fireEvent.change(
+      screen.getByLabelText(/PRO I personality/i, { selector: "textarea" }),
+      { target: { value: "x".repeat(personalityLimit + 1) } }
+    );
 
     expect(screen.getByText(/4,000 characters or fewer/i)).toBeVisible();
   });
@@ -59,7 +122,9 @@ describe("case setup workflow", () => {
     const user = userEvent.setup();
     renderWithAppProviders(<AppRoutes />, "/new/judges");
 
-    await user.clear(screen.getByLabelText(/Judge II personality/i));
+    await user.clear(
+      screen.getByLabelText(/Judge II personality/i, { selector: "textarea" })
+    );
 
     expect(screen.getByRole("button", { name: "Review Tribunal" })).toBeDisabled();
     expect(
@@ -76,6 +141,10 @@ describe("case setup workflow", () => {
     ).not.toHaveTextContent("Complete");
     expect(within(setupProgress).getAllByText("Complete")).toHaveLength(2);
     expect(screen.getByRole("button", { name: "Convene Tribunal" })).toBeDisabled();
+    // An invalid Charge Sheet blocks Save Case too — a case cannot be
+    // persisted without its three required fields, regardless of
+    // participant configuration.
+    expect(screen.getByRole("button", { name: /save case/i })).toBeDisabled();
     expect(
       screen.getByText(/mock tribunal cannot be convened yet/i)
     ).toBeVisible();
@@ -122,5 +191,246 @@ describe("case setup workflow", () => {
     expect(
       within(screen.getByTestId("economics-section")).getByText(/mock fixture data/i)
     ).toBeVisible();
+  });
+
+  it("saves a valid normalized case without starting deliberation", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          case: {
+            id: "11111111-1111-4111-8111-111111111111",
+            defendant: "Alex Rowan",
+            act: "Entered the restricted lab.",
+            exactQuestion: "Did Alex knowingly violate the lab protocol?",
+            sourceType: "MANUAL",
+            sourceFilename: null,
+            createdAt: "2026-08-25T10:00:00.000Z"
+          }
+        }),
+        { status: 201 }
+      )
+    );
+
+    renderWithAppProviders(<AppRoutes />);
+    await user.type(screen.getByLabelText(/defendant/i), "Alex Rowan");
+    await user.type(screen.getByLabelText(/^act/i), "Entered the restricted lab.");
+    await user.type(
+      screen.getByLabelText(/exact question/i),
+      "Did Alex knowingly violate the lab protocol?"
+    );
+    await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
+    await user.click(screen.getByRole("link", { name: /continue to judges/i }));
+    await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+    await user.click(screen.getByRole("button", { name: /save case/i }));
+
+    expect(await screen.findByText(/case saved to past cases/i)).toBeVisible();
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/api/cases",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining("Alex Rowan")
+      })
+    );
+    expect(
+      screen.queryByText(/deliberation is running/i)
+    ).not.toBeInTheDocument();
+  });
+
+  it("allows saving a case with a valid Charge Sheet even when participants are invalid, but blocks Convene", async () => {
+    // M5 persists only the canonical case (Defendant/Act/Exact Question +
+    // source metadata). Participant configuration is not persisted/frozen
+    // until M6, so Save Case must not require seven valid participants.
+    const user = userEvent.setup();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          case: {
+            id: "22222222-2222-4222-8222-222222222222",
+            defendant: "Alex Rowan",
+            act: "Entered the restricted lab.",
+            exactQuestion: "Did Alex knowingly violate the lab protocol?",
+            sourceType: "MANUAL",
+            sourceFilename: null,
+            createdAt: "2026-08-25T10:00:00.000Z"
+          }
+        }),
+        { status: 201 }
+      )
+    );
+
+    renderWithAppProviders(<AppRoutes />);
+    await user.type(screen.getByLabelText(/defendant/i), "Alex Rowan");
+    await user.type(screen.getByLabelText(/^act/i), "Entered the restricted lab.");
+    await user.type(
+      screen.getByLabelText(/exact question/i),
+      "Did Alex knowingly violate the lab protocol?"
+    );
+    await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
+
+    // Make PRO I invalid. "Continue to Judges" is now disabled, so jump
+    // straight to Review via the always-navigable stepper, mirroring free
+    // back/forward navigation between setup steps.
+    await user.clear(
+      screen.getByLabelText(/PRO I personality/i, { selector: "textarea" })
+    );
+    expect(
+      screen.getByRole("button", { name: "Continue to Judges" })
+    ).toBeDisabled();
+
+    const setupProgress = screen.getByLabelText("Case setup progress");
+    await user.click(within(setupProgress).getByRole("link", { name: /Review/i }));
+
+    expect(await screen.findByRole("heading", { name: "Review Tribunal" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Convene Tribunal" })).toBeDisabled();
+    expect(
+      screen.getByText(/all four advocate personalities must be valid/i)
+    ).toBeVisible();
+
+    const saveButton = screen.getByRole("button", { name: /save case/i });
+    expect(saveButton).toBeEnabled();
+    await user.click(saveButton);
+
+    expect(await screen.findByText(/case saved to past cases/i)).toBeVisible();
+
+    const [, requestInit] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    const requestBody = JSON.parse(requestInit.body as string);
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/api/cases",
+      expect.objectContaining({ method: "POST" })
+    );
+    // Only normalized case/source metadata is posted — never participant
+    // configuration.
+    expect(requestBody).toEqual({
+      defendant: "Alex Rowan",
+      act: "Entered the restricted lab.",
+      exactQuestion: "Did Alex knowingly violate the lab protocol?",
+      sourceType: "MANUAL"
+    });
+    expect(
+      screen.queryByText(/deliberation is running/i)
+    ).not.toBeInTheDocument();
+  });
+
+  it("imports a Charge Sheet file without applying participant configuration", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          chargeSheet: {
+            defendant: "Imported Alex",
+            act: "Imported act text.",
+            exactQuestion: "Imported exact question?"
+          },
+          filename: "charge.md"
+        }),
+        { status: 200 }
+      )
+    );
+
+    renderWithAppProviders(<AppRoutes />);
+    await user.upload(
+      screen.getByLabelText("Charge Sheet import file"),
+      new File(["ignored"], "charge.md", { type: "text/markdown" })
+    );
+
+    expect(await screen.findByDisplayValue("Imported Alex")).toBeVisible();
+    expect(screen.getByDisplayValue("Imported act text.")).toBeVisible();
+    expect(screen.getByDisplayValue("Imported exact question?")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Charge Sheet" })).toBeVisible();
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/api/import/charge-sheet",
+      expect.objectContaining({ method: "POST" })
+    );
+  });
+
+  it("imports a participant personality file only into the selected seat", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          personality: "Imported only for PRO I.",
+          filename: "pro-one.md"
+        }),
+        { status: 200 }
+      )
+    );
+
+    renderWithAppProviders(<AppRoutes />, "/new/advocates");
+    await user.upload(
+      screen.getByLabelText("PRO I personality import file"),
+      new File(["ignored"], "pro-one.md", { type: "text/markdown" })
+    );
+
+    expect(await screen.findByDisplayValue("Imported only for PRO I."))
+      .toBeVisible();
+    expect(
+      screen.getByLabelText(/PRO II personality/i, { selector: "textarea" })
+    ).not.toHaveValue("Imported only for PRO I.");
+    expect(screen.getByText(/individual personality file/i)).toBeVisible();
+  });
+
+  it("imports a complete Tribunal package atomically and reviews all seven participants", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ draft: packageDraft }), { status: 200 })
+    );
+
+    renderWithAppProviders(<AppRoutes />);
+    await user.upload(
+      screen.getByLabelText("Full Tribunal Package import file"),
+      new File(["ignored"], "package.md", { type: "text/markdown" })
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "Review Tribunal" })
+    ).toBeVisible();
+    expect(
+      screen.getByText(
+        "Imported Tribunal package — review all extracted fields before convening."
+      )
+    ).toBeVisible();
+    expect(screen.getByText("Imported Alex")).toBeVisible();
+    expect(
+      screen.getByText(/^Source: Full Tribunal Package \(package\.md\)$/)
+    ).toBeVisible();
+    expect(screen.getByText(/Evidence advocate/)).toBeVisible();
+    expect(screen.getByText(/Imported Judge III personality\./)).toBeVisible();
+    // Package import preserves application-owned execution mode and model
+    // assignment: the default Shared mode/model must still be in effect.
+    expect(screen.getByText(/Shared Model —/)).toBeVisible();
+    expect(screen.getByText(/Shared mock model:/)).toBeVisible();
+    expect(
+      screen.queryByText(/deliberation is running/i)
+    ).not.toBeInTheDocument();
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/api/import/tribunal-package",
+      expect.objectContaining({ method: "POST" })
+    );
+  });
+
+  it("keeps existing setup state when a Tribunal package import fails", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          error: "invalid_import",
+          errors: ["Missing package section [JUDGE_3]."]
+        }),
+        { status: 400 }
+      )
+    );
+
+    renderWithAppProviders(<AppRoutes />);
+    await user.type(screen.getByLabelText(/defendant/i), "Manual Alex");
+    await user.upload(
+      screen.getByLabelText("Full Tribunal Package import file"),
+      new File(["ignored"], "bad-package.md", { type: "text/markdown" })
+    );
+
+    expect(await screen.findByText(/Missing package section/)).toBeVisible();
+    expect(screen.getByDisplayValue("Manual Alex")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Charge Sheet" })).toBeVisible();
   });
 });

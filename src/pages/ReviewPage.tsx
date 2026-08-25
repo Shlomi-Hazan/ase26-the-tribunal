@@ -8,6 +8,7 @@ import {
   Stack,
   Typography
 } from "@mui/material";
+import { useState } from "react";
 import { Link as RouterLink } from "react-router-dom";
 import { EconomicsSummary } from "../components/EconomicsSummary";
 import { PageHeader } from "../components/PageHeader";
@@ -20,19 +21,51 @@ import {
 } from "../features/case-setup/setupState";
 import { useSetup } from "../features/case-setup/useSetup";
 import { allParticipants, mockModels } from "../mocks/tribunalMockData";
+import { CaseApiError, saveCase, type StoredCase } from "../services/caseApi";
 
 export function ReviewPage() {
   const { state } = useSetup();
+  const [saveError, setSaveError] = useState("");
+  const [savedCase, setSavedCase] = useState<StoredCase | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
   const sharedModel = mockModels.find((model) => model.id === state.sharedModelId);
   const chargeSheetValid = isChargeSheetValid(state.chargeSheet);
   const advocatesValid = areAdvocatePersonalitiesValid(state);
   const judgesValid = areJudgePersonalitiesValid(state);
+  // M5 persists only the canonical case (Defendant/Act/Exact Question plus
+  // source metadata). Participant configuration is not persisted/frozen
+  // until M6, so Save Case must not require seven valid participants.
+  const canSaveCase = chargeSheetValid;
   const canConvene = isMockSetupReady(state);
   const blockedReasons = [
     !chargeSheetValid ? "Charge Sheet fields must be complete and valid." : "",
     !advocatesValid ? "All four advocate personalities must be valid." : "",
     !judgesValid ? "All three judge personalities must be valid." : ""
   ].filter(Boolean);
+
+  async function handleSaveCase() {
+    if (!canSaveCase) {
+      return;
+    }
+
+    setSaveError("");
+    setSavedCase(null);
+    setIsSaving(true);
+
+    try {
+      const storedCase = await saveCase({
+        ...state.chargeSheet,
+        sourceType: state.caseSource.type,
+        sourceFilename: state.caseSource.filename
+      });
+
+      setSavedCase(storedCase);
+    } catch (error) {
+      setSaveError(formatCaseError(error));
+    } finally {
+      setIsSaving(false);
+    }
+  }
 
   return (
     <Stack spacing={4}>
@@ -42,6 +75,7 @@ export function ReviewPage() {
         title="Review Tribunal"
         description="This is the final mock review gate before the UI-only deliberation route."
       />
+      {state.importNotice ? <Alert severity="info">{state.importNotice}</Alert> : null}
       <Card>
         <CardContent>
           <Stack spacing={2}>
@@ -58,6 +92,10 @@ export function ReviewPage() {
             <Typography>
               <strong>Exact Question:</strong>{" "}
               {state.chargeSheet.exactQuestion || "Not entered yet"}
+            </Typography>
+            <Typography color="text.secondary" variant="body2">
+              Source: {formatSourceType(state.caseSource.type)}
+              {state.caseSource.filename ? ` (${state.caseSource.filename})` : ""}
             </Typography>
           </Stack>
         </CardContent>
@@ -116,6 +154,28 @@ export function ReviewPage() {
                         ? sharedModel?.displayName
                         : model?.displayName}
                     </Typography>
+                    <Typography color="text.secondary" variant="body2">
+                      Profile name:{" "}
+                      {state.participants[participant.id].profileName ||
+                        "Not provided"}
+                    </Typography>
+                    <Typography color="text.secondary" variant="body2">
+                      Personality source:{" "}
+                      {formatPersonalitySource(
+                        state.participants[participant.id].personalitySource
+                      )}
+                      {state.participants[participant.id].personalitySourceFilename
+                        ? ` (${
+                            state.participants[participant.id]
+                              .personalitySourceFilename
+                          })`
+                        : ""}
+                    </Typography>
+                    <Typography variant="body2">
+                      Personality:{" "}
+                      {state.participants[participant.id].personality ||
+                        "Not entered yet"}
+                    </Typography>
                   </Box>
                 );
               })}
@@ -172,9 +232,30 @@ export function ReviewPage() {
         This V1 course demo stores submitted cases in shared demo history. Do
         not submit sensitive, private, confidential, or identifying information.
       </Alert>
+      {savedCase ? (
+        <Alert severity="success">
+          Case saved to Past Cases.{" "}
+          <Button
+            component={RouterLink}
+            size="small"
+            to={`/cases/${savedCase.id}`}
+            variant="outlined"
+          >
+            Open saved case
+          </Button>
+        </Alert>
+      ) : null}
+      {saveError ? <Alert severity="error">{saveError}</Alert> : null}
       <Stack direction="row" spacing={2}>
         <Button component={RouterLink} to="/new/judges" variant="outlined">
           Back
+        </Button>
+        <Button
+          disabled={!canSaveCase || isSaving}
+          onClick={handleSaveCase}
+          variant="outlined"
+        >
+          {isSaving ? "Saving..." : "Save Case"}
         </Button>
         {canConvene ? (
           <Button
@@ -192,4 +273,34 @@ export function ReviewPage() {
       </Stack>
     </Stack>
   );
+}
+
+function formatCaseError(error: unknown) {
+  if (error instanceof CaseApiError) {
+    return error.errors.join(" ");
+  }
+
+  return "Case could not be saved.";
+}
+
+function formatSourceType(sourceType: string) {
+  switch (sourceType) {
+    case "CHARGE_SHEET_FILE":
+      return "Charge Sheet file";
+    case "TRIBUNAL_PACKAGE_FILE":
+      return "Full Tribunal Package";
+    default:
+      return "Manual";
+  }
+}
+
+function formatPersonalitySource(source: string) {
+  switch (source) {
+    case "individual_file":
+      return "Individual file";
+    case "tribunal_package":
+      return "Full Tribunal Package";
+    default:
+      return "Manual";
+  }
 }

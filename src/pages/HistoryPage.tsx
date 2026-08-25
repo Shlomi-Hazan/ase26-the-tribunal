@@ -3,26 +3,70 @@ import {
   Button,
   Card,
   CardContent,
-  Chip,
+  Alert,
+  CircularProgress,
   Stack,
   Typography
 } from "@mui/material";
+import { useEffect, useState } from "react";
 import { Link as RouterLink } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { EmptyHistoryState } from "../features/history/EmptyHistoryState";
-import { mockHistoryCases } from "../mocks/tribunalMockData";
+import {
+  CaseApiError,
+  listCases,
+  type StoredCase
+} from "../services/caseApi";
 
 export function HistoryPage() {
-  const hasHistoryCases = mockHistoryCases.length > 0;
+  const [cases, setCases] = useState<StoredCase[]>([]);
+  const [error, setError] = useState("");
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadCases() {
+      try {
+        const storedCases = await listCases();
+
+        if (isMounted) {
+          setCases(storedCases);
+          setError("");
+        }
+      } catch (loadError) {
+        if (isMounted) {
+          setError(formatCaseError(loadError));
+        }
+      } finally {
+        if (isMounted) {
+          setIsLoading(false);
+        }
+      }
+    }
+
+    void loadCases();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   return (
     <Stack spacing={4}>
       <PageHeader
         eyebrow="Past Cases"
         title="Past Cases"
-        description="Static mock history only. Refreshing does not persist new setup data in Milestone 4."
+        description="Stored case drafts can be reopened for inspection. No Tribunal run or model output is persisted in this milestone."
       />
-      {hasHistoryCases ? (
+      {isLoading ? (
+        <Stack direction="row" spacing={2} sx={{ alignItems: "center" }}>
+          <CircularProgress aria-label="Loading past cases" size={24} />
+          <Typography>Loading stored cases...</Typography>
+        </Stack>
+      ) : null}
+      {error ? <Alert severity="error">{error}</Alert> : null}
+      {!isLoading && !error && cases.length > 0 ? (
         <Box
           sx={{
             display: "grid",
@@ -30,48 +74,66 @@ export function HistoryPage() {
             gridTemplateColumns: { xs: "1fr", md: "repeat(3, 1fr)" }
           }}
         >
-          {mockHistoryCases.map((item) => (
+          {cases.map((item) => (
             <Card key={item.id}>
               <CardContent>
                 <Stack spacing={1.5}>
-                  <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
-                    <Typography component="h2" variant="h6">
-                      {item.defendant}
-                    </Typography>
-                    <Chip
-                      color={item.status === "Failed" ? "error" : "success"}
-                      label={item.status}
-                      size="small"
-                    />
-                  </Stack>
+                  <Typography component="h2" variant="h6">
+                    {item.defendant}
+                  </Typography>
                   <Typography color="text.secondary">
                     {item.exactQuestion}
                   </Typography>
-                  <Typography variant="body2">{item.date}</Typography>
-                  <Typography variant="body2">{item.executionMode}</Typography>
-                  <Typography sx={{ fontWeight: 800 }}>
-                    {item.verdict ? `Verdict: ${item.verdict}` : "No verdict"}
+                  <Typography color="text.secondary" variant="body2">
+                    Created: {formatDate(item.createdAt)}
                   </Typography>
                   <Typography color="text.secondary" variant="body2">
-                    Mock cost: {item.cost}
+                    Source: {formatSourceType(item.sourceType)}
+                    {item.sourceFilename ? ` (${item.sourceFilename})` : ""}
                   </Typography>
-                  {item.status === "Completed" ? (
-                    <Button
-                      component={RouterLink}
-                      to={`/demo/result?source=history&case=${item.id}`}
-                      variant="outlined"
-                    >
-                      Open historical result
-                    </Button>
-                  ) : null}
+                  <Typography sx={{ fontWeight: 800 }}>No verdict yet</Typography>
+                  <Button
+                    component={RouterLink}
+                    to={`/cases/${item.id}`}
+                    variant="outlined"
+                  >
+                    Open saved case
+                  </Button>
                 </Stack>
               </CardContent>
             </Card>
           ))}
         </Box>
-      ) : (
+      ) : null}
+      {!isLoading && !error && cases.length === 0 ? (
         <EmptyHistoryState />
-      )}
+      ) : null}
     </Stack>
   );
+}
+
+function formatCaseError(error: unknown) {
+  if (error instanceof CaseApiError) {
+    return error.errors.join(" ");
+  }
+
+  return "Past cases could not be loaded.";
+}
+
+function formatSourceType(sourceType: string) {
+  switch (sourceType) {
+    case "CHARGE_SHEET_FILE":
+      return "Charge Sheet file";
+    case "TRIBUNAL_PACKAGE_FILE":
+      return "Full Tribunal Package";
+    default:
+      return "Manual";
+  }
+}
+
+function formatDate(value: string) {
+  return new Intl.DateTimeFormat("en", {
+    dateStyle: "medium",
+    timeStyle: "short"
+  }).format(new Date(value));
 }

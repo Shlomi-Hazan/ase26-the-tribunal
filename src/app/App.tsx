@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { SetupProvider } from "../features/case-setup/SetupProvider";
 import { AppShell } from "../layout/AppShell";
 import { AdvocatesPage } from "../pages/AdvocatesPage";
+import { CaseDetailPage } from "../pages/CaseDetailPage";
 import { ChargeSheetPage } from "../pages/ChargeSheetPage";
 import { DeliberationPage } from "../pages/DeliberationPage";
 import { HistoryPage } from "../pages/HistoryPage";
@@ -23,6 +24,7 @@ export function AppRoutes() {
       <Route path="/demo/deliberation" element={<DeliberationPage />} />
       <Route path="/demo/result" element={<ResultPage />} />
       <Route path="/history" element={<HistoryPage />} />
+      <Route path="/cases/:caseId" element={<CaseDetailPage />} />
       <Route path="*" element={<NotFoundPage />} />
     </Routes>
   );

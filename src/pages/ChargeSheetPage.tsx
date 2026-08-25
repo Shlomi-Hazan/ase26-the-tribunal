@@ -7,7 +7,7 @@ import {
   TextField,
   Typography
 } from "@mui/material";
-import { useRef, useState } from "react";
+import { type ChangeEvent, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { SetupStepper } from "../components/SetupStepper";
@@ -16,6 +16,11 @@ import {
   validateChargeSheet
 } from "../features/case-setup/setupState";
 import { useSetup } from "../features/case-setup/useSetup";
+import {
+  ImportApiError,
+  importChargeSheetFile,
+  importTribunalPackageFile
+} from "../services/importApi";
 
 type ChargeField = keyof typeof chargeSheetLimits;
 
@@ -51,6 +56,10 @@ export function ChargeSheetPage() {
   const { state, dispatch } = useSetup();
   const navigate = useNavigate();
   const [attempted, setAttempted] = useState(false);
+  const [importError, setImportError] = useState("");
+  const [importing, setImporting] = useState<"charge" | "package" | "">("");
+  const chargeSheetInputRef = useRef<HTMLInputElement>(null);
+  const tribunalPackageInputRef = useRef<HTMLInputElement>(null);
   const fieldRefs = {
     defendant: useRef<HTMLInputElement>(null),
     act: useRef<HTMLInputElement>(null),
@@ -69,6 +78,62 @@ export function ChargeSheetPage() {
     }
 
     navigate("/new/advocates");
+  }
+
+  async function handleChargeSheetImport(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+
+    if (!file) {
+      return;
+    }
+
+    setImportError("");
+    setImporting("charge");
+
+    try {
+      const result = await importChargeSheetFile(file);
+
+      dispatch({
+        type: "applyChargeSheetImport",
+        chargeSheet: result.chargeSheet,
+        filename: result.filename
+      });
+      setAttempted(false);
+    } catch (error) {
+      setImportError(formatImportError(error));
+    } finally {
+      setImporting("");
+    }
+  }
+
+  async function handleTribunalPackageImport(
+    event: ChangeEvent<HTMLInputElement>
+  ) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+
+    if (!file) {
+      return;
+    }
+
+    setImportError("");
+    setImporting("package");
+
+    try {
+      const result = await importTribunalPackageFile(file);
+
+      dispatch({
+        type: "applyTribunalPackageImport",
+        draft: result.draft
+      });
+      setAttempted(false);
+      navigate("/new/review");
+    } catch (error) {
+      setImportError(formatImportError(error));
+    } finally {
+      setImporting("");
+    }
   }
 
   return (
@@ -116,13 +181,51 @@ export function ChargeSheetPage() {
               />
             );
           })}
+          {state.importNotice ? (
+            <Alert onClose={() => dispatch({ type: "clearImportNotice" })} severity="success">
+              {state.importNotice}
+            </Alert>
+          ) : null}
+          {importError ? <Alert severity="error">{importError}</Alert> : null}
           <Alert severity="info">
-            .txt / .md import appears here for review, but real deterministic
-            parsing starts in Milestone 5.
+            Import Charge Sheet fills only the case fields. Import Full Tribunal
+            Package fills the case and all seven participant personalities for
+            review; neither import convenes a Tribunal.
           </Alert>
-          <Button disabled variant="outlined">
-            Import Charge Sheet in Milestone 5
-          </Button>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+            <input
+              aria-label="Charge Sheet import file"
+              accept=".txt,.md,text/plain,text/markdown"
+              hidden
+              onChange={handleChargeSheetImport}
+              ref={chargeSheetInputRef}
+              type="file"
+            />
+            <Button
+              disabled={Boolean(importing)}
+              onClick={() => chargeSheetInputRef.current?.click()}
+              variant="outlined"
+            >
+              {importing === "charge" ? "Importing..." : "Import Charge Sheet"}
+            </Button>
+            <input
+              aria-label="Full Tribunal Package import file"
+              accept=".txt,.md,text/plain,text/markdown"
+              hidden
+              onChange={handleTribunalPackageImport}
+              ref={tribunalPackageInputRef}
+              type="file"
+            />
+            <Button
+              disabled={Boolean(importing)}
+              onClick={() => tribunalPackageInputRef.current?.click()}
+              variant="outlined"
+            >
+              {importing === "package"
+                ? "Importing..."
+                : "Import Full Tribunal Package"}
+            </Button>
+          </Stack>
           <Box>
             <Button onClick={handleContinue} variant="contained">
               Continue to Advocates
@@ -137,4 +240,12 @@ export function ChargeSheetPage() {
       </Paper>
     </Stack>
   );
+}
+
+function formatImportError(error: unknown) {
+  if (error instanceof ImportApiError) {
+    return error.errors.join(" ");
+  }
+
+  return "Import failed.";
 }

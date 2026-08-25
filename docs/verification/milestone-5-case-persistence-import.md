@@ -1,0 +1,568 @@
+# Milestone 5 — Case Persistence & Import — Verification Evidence
+
+> Recovery/continuation note: this milestone's implementation was started by a
+> prior coding agent session (interrupted by expired usage credits),
+> completed/stabilized/verified by a continuation agent, then subjected to an
+> independent remote review. This document records the final state after
+> both passes.
+
+## Planning references
+
+- Issue: [#7 — Milestone 5 — Case Persistence & Import](https://github.com/Shlomi-Hazan/ase26-the-tribunal/issues/7)
+- Branch: `milestone/05-case-persistence-import`
+- Base (merge-base with `origin/main`): `a2704d1ee737123e9efc3a59294fb656ad077f5d`
+
+## Commits on this branch
+
+| # | SHA | Message |
+|---|---|---|
+| 1 | `7a754a4f2c2b3e6e9a09797f0dd579310a23572b` | `docs: define Tribunal package import strategy` |
+| 2 | `55e40819e819e4471c500d0c54cff18dec7e5bb9` | `feat: implement deterministic Tribunal imports` |
+| 3 | `8011abfb269d41e6d365062c606ad71e69595262` | `feat: persist Tribunal cases` |
+| 4 | `ed43ac9c6b76dd30a45757168ea98d399c29ae5b` | `docs: record Milestone 5 verification evidence` |
+| 5 | `9f7efc981c509ef2561a0e32cfb17c89787ff14e` | `fix: harden Milestone 5 case persistence boundary` |
+| 6 | *(this evidence-update commit, recorded after commit)* | `docs: update Milestone 5 review evidence` |
+
+## Recovery: commit-history reconstruction
+
+The prior session had left the import and persistence work as one interleaved,
+uncommitted working tree (plus the already-committed documentation commit).
+Several files contained both concerns in the same file (`ReviewPage.tsx`,
+`caseSetup.test.tsx`, `netlify.toml`). Since this environment does not support
+interactive `git add -p`/`-i`, the split was done by reconstructing an
+intermediate "import-only" version of each mixed file (verified byte-for-byte
+against the final version by diffing afterward), staging + committing that,
+then restoring the persistence-only remainder as the second commit. Each
+commit's exact file-system snapshot was validated in isolation with
+`git stash push -u --keep-index` (moving every not-yet-staged/untracked file
+out of the working tree) before running lint/typecheck/test/build against
+that snapshot alone, so both commits are independently coherent, not just the
+final combined state.
+
+## Work recovered vs. repaired
+
+Recovered as-is (already correct on inspection):
+- shared `TribunalSetupDraft`/`ChargeSheet`/participant Zod schemas
+- `setupState.ts` reducer — profile name and personality updates are already
+  correctly isolated to their own fields (the two incidents the prior agent
+  reported — a state/reducer collision and a profile-name-writes-into-
+  personality bug — were independently re-verified and are **not** present in
+  the final code)
+- `cases` Supabase migration (DB CHECK constraints, RLS, no public policy)
+- case repository authority boundary (browser never touches Supabase)
+
+Repaired during this session (see next section for detail):
+- `ImportValidationError` message wording
+- base64 request-size guard (was missing entirely)
+- a required-marker-vs-empty-value conflation in the deterministic parser
+- five brittle test selectors/assertions
+- an unhandled-exception/stack-trace-leak bug in the live `cases`/`case-by-id`
+  Netlify functions (found via live manual testing, not by the existing
+  unit tests, which inject the repository and bypass this code path)
+
+## Repairs
+
+1. **`ImportValidationError.message`** (`netlify/server/importParsers.ts`) —
+   was hard-coded to `"Import validation failed."`, so `.toThrow(/regex/)`
+   assertions against the specific reason always failed. Now
+   `errors.join(" ")`; the structured `.errors` array (used by the HTTP JSON
+   contract) is unchanged.
+2. **Base64 request-size safety** (`netlify/server/importRequest.ts`,
+   `netlify/functions/import-*.ts`) — `decodeBase64Content` previously decoded
+   the full request body before any size check, so an arbitrarily large
+   base64 string was fully allocated/decoded before the parser's byte-length
+   check could reject it. `decodeBase64Content` now takes the endpoint's raw
+   byte limit and rejects an oversized encoded payload
+   (`Math.ceil(maxBytes / 3) * 4 + 4` chars) before calling `Buffer.from`. No
+   new dependency. Verified live against the running Netlify function with a
+   4&nbsp;MB payload → rejected immediately with
+   `"Uploaded file exceeds 16 KiB."`
+3. **Required-marker vs. empty-value conflation** (`parseMarkerFields`) — the
+   required-field check treated "marker present but empty" the same as
+   "marker missing," short-circuiting before the field-limit Zod schema could
+   produce the approved user-facing wording (`docs/ui-spec.md` §17: *"Exact
+   Question is required."*). The check now only verifies marker **presence**;
+   emptiness/length are left to the schema layer, so both the standalone
+   Charge Sheet import and the package's nested `[CHARGE_SHEET]` section
+   produce the same field-named message.
+4. **Test selector/assertion fixes** (`caseSetup.test.tsx`,
+   `netlify/server/importParsers.test.ts`) — five tests were written against
+   ambiguous/incorrect selectors once the personality-import file input
+   (`aria-label="… personality import file"`) was added alongside the
+   personality textarea (`label="… personality"`), which made unanchored
+   `getByLabelText` regexes match both elements, and against MUI's rendered
+   text-node concatenation for `<Typography>Prefix: {value}</Typography>`
+   (`getByText("value")` doesn't match; the element's own text is
+   `"Prefix: value"`). Fixed with `{ selector: "textarea" }` /
+   substring-regex assertions rather than loosening the underlying UI.
+5. **Unhandled server-config exception leaking a stack trace** (found via live
+   `netlify dev` testing, see below) — `netlify/functions/cases.ts` and
+   `case-by-id.ts` constructed `createSupabaseCaseRepository()` as a call
+   argument, outside `handleCasesRequest`'s/`handleCaseByIdRequest`'s own
+   `try/catch`. When Supabase env vars are absent, that constructor throws
+   synchronously and the exception propagated past both try/catches,
+   returning a raw stack trace (with local file paths) as the HTTP body
+   instead of the safe `{ error: ... }` JSON contract. Fixed by wrapping the
+   repository construction + delegation in the exported `handler` itself.
+   Added a regression test that invokes the real exported `handler`s (not
+   the injectable `handle*Request` used by the rest of the suite) and asserts
+   the response is safe JSON, not a stack trace.
+
+None of these repairs changed product behaviour described in `SPEC.md`; all
+are either bug fixes or additional test coverage.
+
+## Specification evolution (already present in the inherited documentation commit)
+
+Confirmed present and internally consistent across `SPEC.md`,
+`ARCHITECTURE.md`, `ROADMAP.md`, `SECURITY.md`, `docs/ui-spec.md`,
+`docs/economics.md`, `docs/adr/0001-tribunal-package-import.md`:
+
+- strict `TRIBUNAL_PACKAGE_V1` Full Tribunal Package format, fixed seats only
+- optional `profileName` (≤120 chars, human-facing only, never role/side)
+- fixed participant seats remain application-owned; package cannot set
+  model/provider/side/execution-mode/budget/prompt-version
+- package import is atomic and never auto-convenes the Tribunal
+- `M7A — Smart Tribunal Package Extraction` present in `ROADMAP.md` between
+  M7 and M8, with later milestones unrenumbered
+- M7A's future one-call structured extraction is explicitly **not** one of
+  the seven Tribunal participant logical calls, has no hard-coded lecturer
+  dossier, and never auto-convenes
+
+## Deterministic imports
+
+| Import | Endpoint | Formats | Max size |
+|---|---|---|---|
+| Charge Sheet | `POST /api/import/charge-sheet` | `.txt`, `.md`, UTF-8 | 64 KiB |
+| Personality | `POST /api/import/personality` | `.txt`, `.md`, UTF-8 | 16 KiB |
+| Full Tribunal Package | `POST /api/import/tribunal-package` | `.txt`, `.md`, UTF-8 | 192 KiB |
+
+Package grammar: `TRIBUNAL_PACKAGE_V1` header (exactly once) + `[CHARGE_SHEET]`
++ exactly `[PRO_1]`, `[PRO_2]`, `[CON_1]`, `[CON_2]`, `[JUDGE_1]`, `[JUDGE_2]`,
+`[JUDGE_3]`, each with required `PERSONALITY:` and optional `PROFILE_NAME:`.
+Unknown sections, duplicate sections/markers, and unsupported structural
+fields (`MODEL:`, `SIDE:`, etc.) fail closed with a specific error and leave
+existing setup state untouched (verified in
+`imports a complete Tribunal package atomically…` and
+`keeps existing setup state when a Tribunal package import fails`).
+
+UI flow: Charge Sheet page (manual / Charge Sheet import / Full Tribunal
+Package import) → package import navigates straight to Review with an
+"Imported Tribunal package…" notice → human review/edit remains available →
+explicit `Convene Tribunal` (still routed to the existing M4 mock
+`/demo/deliberation` route; no real execution exists yet, per scope).
+
+## Persistence
+
+- Migration: `supabase/migrations/20260825000000_create_cases.sql` —
+  `cases` table, UUID PK, DB `CHECK` constraints for canonical Charge Sheet
+  lengths and allowed `source_type` values, RLS enabled, no public browser
+  policy.
+- Source types: `MANUAL`, `CHARGE_SHEET_FILE`, `TRIBUNAL_PACKAGE_FILE`.
+- API: `POST /api/cases`, `GET /api/cases`, `GET /api/cases/:id`, all via
+  `netlify/server/cases.ts` (`SupabaseCaseRepository`, injectable
+  `CaseRepository` interface used directly by tests).
+- Client never imports Supabase or sees a service-role key (`grep` over
+  `src/` is empty for both).
+- `Save Case` is a distinct action from `Convene Tribunal`; only the case
+  (Defendant/Act/Exact Question/source metadata) is durable in M5 — no
+  participant/run/output/protocol/economics table exists yet.
+- History (`/history`) and Case Detail (`/cases/:id`) read real stored cases
+  only; neither fabricates verdict, status, speeches, reasoning, model, or
+  cost. Existing M4 mock demo routes (`/demo/deliberation`, `/demo/result`)
+  are untouched.
+
+## Tests
+
+10 test files, 55 tests, all passing (52 at the initial recovery pass + 3
+added during the independent-review follow-up — see below):
+
+```text
+netlify/functions/health.test.ts        (2)
+netlify/server/supabase.test.ts         (3)
+netlify/server/importParsers.test.ts    (6)
+netlify/functions/import.test.ts        (5)
+netlify/functions/cases.test.ts         (8)
+src/app/App.test.tsx                    (5)
+src/features/deliberation/deliberation.test.tsx (5)
+src/features/results/result.test.tsx    (6)
+src/features/history/history.test.tsx   (5)
+src/features/case-setup/caseSetup.test.tsx (14)
+```
+
+Coverage highlights against the required matrix: Charge Sheet (valid txt/md,
+missing/duplicate marker, empty section, over-limit Defendant/Act/Question,
+unsupported extension, oversize, invalid UTF-8); personality (valid/empty/
+over-limit/unsupported-extension/oversize/invalid-UTF-8); Full Tribunal
+Package (valid with/without profile names, over-limit profile name, missing
+header/duplicate header/missing or duplicate section, missing advocate/judge,
+missing vs. empty vs. over-limit personality, unknown section, unsupported
+structural field, invalid nested Charge Sheet, unsupported extension,
+oversize, invalid UTF-8, exactly seven canonical seats, model/side/mode
+rejected); UI (Charge-Sheet-only import touches only the case, personality
+import touches only the target seat, atomic package import fills all seven
+seats + notice + Review navigation, execution mode/model assignment
+unchanged, invalid package leaves state untouched, no auto-run); cases API
+(create/list/get, invalid Defendant/Act/Exact-Question/source-type/filename,
+unknown-id 404, browser-supplied id/createdAt/raw-bytes rejected, safe error
+response even when repository construction itself throws).
+
+## Database verification
+
+- Migration reviewed against the required `cases` contract (§13 of the
+  recovery brief) — matches, plus the recommended DB `CHECK` constraints.
+- Fake/injected repository tests: `netlify/functions/cases.test.ts` exercises
+  the full HTTP contract (`handleCasesRequest`/`handleCaseByIdRequest`) with
+  an injected in-memory `FakeCaseRepository`, independent of live
+  infrastructure.
+- **Live Supabase persistence smoke test: NOT VERIFIED — environment not
+  configured.** No `.env`, no `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` are
+  present in this environment. Confirmed honestly by exercising the real
+  `netlify dev` function against the missing config: it correctly produced
+  `ServerConfigError` rather than a fabricated success (and, after the fix
+  above, returns that as safe JSON rather than a stack trace).
+
+## Manual UI review
+
+- **Desktop layout** (Vite dev server, `1280`-class viewport): Charge Sheet,
+  Advocates, and Review screens visually reviewed — 3 charge-sheet fields,
+  four fixed advocate cards with profile-name/personality/import controls,
+  Review's case summary/execution mode/7-participant grid/economics/privacy
+  warning/Save Case+Convene actions all render as specified.
+- **Mobile layout** (375×812 preset): Charge Sheet screen reviewed — stepper
+  stacks to one column, fields remain full-width and readable, no horizontal
+  overflow.
+- **Import/persistence flow through the browser**: partially verified. This
+  sandbox's browser tool proxies `netlify dev` (port 8888) in a way that
+  serves module scripts (e.g. `/src/main.tsx`) with `content-type: text/html`
+  instead of `text/javascript` — confirmed by `curl -I` returning `text/html`
+  through the proxy vs. `text/javascript` hitting Vite directly on port 5173
+  — which blocks the browser's module loader specifically in this sandboxed
+  preview, independent of any code in this diff (the underlying
+  `netlify.toml` SPA catch-all predates this milestone). Because of that, the
+  actual click-through of file upload → import → Review → Save Case →
+  History could not be captured as browser screenshots in this session.
+  Instead, the same real `netlify dev` Netlify Functions (port 8888,
+  identical code path a browser would hit) were exercised directly:
+  - `docs/examples/tribunal-package-v1.txt` uploaded via `POST
+    /api/import/tribunal-package` → correct normalized draft with all seven
+    seats and profile names.
+  - Malformed package (`[PRO_3]`) → `400 {"errors":["Unknown package section
+    [PRO_3]."]}`.
+  - 4 MB base64 personality payload → rejected immediately with `"Uploaded
+    file exceeds 16 KiB."` (confirms the new request-size guard).
+  - `POST/GET /api/cases`, `GET /api/cases/:id` → safe JSON error (not a
+    stack trace) with Supabase unconfigured, confirming repair #5 above.
+  - `GET /api/health` → sanity baseline, unaffected.
+  This is real evidence against the live server boundary, not mocks, but it
+  is not the same as a human-observed browser click-through — recorded
+  honestly rather than claimed as a full pass.
+
+## Verification commands run
+
+```text
+npm run lint        PASS
+npm run typecheck   PASS
+npm run test        PASS (10 files, 55 tests)
+npm run build       PASS
+npm run verify:client-bundle   PASS (no secret in client bundle)
+npm run verify      PASS (full chain)
+npm audit --omit=dev --audit-level=high   0 vulnerabilities
+git diff --check origin/main...HEAD       clean
+```
+
+Both the import commit and the persistence commit were additionally verified
+**in isolation** (via `git stash push -u --keep-index` around each commit) —
+lint/typecheck/test/build all pass at each commit individually, not only at
+the combined branch tip.
+
+No dependency was added or changed (`package.json`/`package-lock.json` diff
+against `origin/main` is empty).
+
+## Known limitations
+
+- Live Supabase persistence is unverified in this environment (see above).
+- Full browser click-through of the import/persistence flow is unverified in
+  this sandbox's `netlify dev` proxy (see above); the equivalent server
+  behaviour was verified directly against the same running functions.
+- The production build emits a pre-existing "chunk larger than 500 kB"
+  warning (single-bundle Vite output); not a regression from this milestone
+  and not addressed here.
+- `netlify dev` treats every `*.test.ts` file under `netlify/functions/` as a
+  function definition (a warning, e.g. `Function name 'cases.test' is
+  invalid`); this convention predates M5 (`health.test.ts` already existed
+  since M3) and was left as-is rather than restructured mid-milestone.
+- Case list ordering is `created_at desc` with no explicit tiebreaker for
+  identical timestamps; acceptable for this milestone's scope.
+
+## Explicit scope confirmation
+
+Verified by `grep`/`git diff` over the full branch diff against
+`origin/main`:
+
+- no OpenRouter implementation or API call
+- no model call of any kind
+- no PDF/DOCX parser, no OCR
+- no AI/LLM smart extraction
+- no live OpenRouter model catalog
+- no real economics/cost engine (Review's economics card remains explicitly
+  labeled mock/fixture data, unchanged from M4)
+- no Tribunal background worker or real execution
+- no participant/run/output/protocol persistence (only `cases`)
+- no lecturer-specific fixture or hard-coded dossier (only the neutral
+  "Alex Rowan" example, matching M4's existing mock convention)
+- no deployment changes
+- no authentication
+- no M6/M7/M7A/M8 implementation (M7A is documented only, inherited from the
+  prior documentation commit)
+- `package.json`/`package-lock.json` unchanged — no new dependency
+
+## Independent Review Follow-Up
+
+An independent remote review of the pushed branch (HEAD
+`ed43ac9c6b76dd30a45757168ea98d399c29ae5b` at the time of review) found two
+small findings. Both were fixed in one review-fix commit,
+`9f7efc981c509ef2561a0e32cfb17c89787ff14e` —
+`fix: harden Milestone 5 case persistence boundary`.
+
+1. **Save Case was coupled to full seven-participant readiness.**
+   `ReviewPage.tsx` gated both `Save Case` and `Convene Tribunal` on
+   `isMockSetupReady(state)`. That's correct for `Convene Tribunal` but wrong
+   for `Save Case`: M5 persists only the canonical case
+   (Defendant/Act/Exact Question + source metadata) — participant
+   configuration isn't persisted/frozen until M6, so requiring it to be
+   valid before a case can be saved was stricter than the actual
+   persistence boundary. Fixed by introducing `canSaveCase = chargeSheetValid`
+   (only), used for both the button's `disabled` state and
+   `handleSaveCase`'s guard. `canConvene` is unchanged and still requires
+   `isMockSetupReady`. Regression test:
+   `allows saving a case with a valid Charge Sheet even when participants
+   are invalid, but blocks Convene` (fills a valid Charge Sheet, empties
+   PRO I's personality, jumps to Review via the stepper, asserts `Save Case`
+   enabled / `Convene Tribunal` disabled, clicks Save, and asserts the
+   POSTed body is exactly `{ defendant, act, exactQuestion, sourceType }`
+   with no participant data). The pre-existing
+   `does not mark invalid setup steps complete…` test was extended to also
+   assert `Save Case` stays disabled when the Charge Sheet itself is
+   invalid.
+
+2. **Case source-filename validation was looser than the import boundary's.**
+   `POST /api/cases` only checked filename length and path separators, and a
+   `MANUAL` case could technically carry an unused filename. Replaced the
+   single optional `sourceFilename` field with a `z.discriminatedUnion` on
+   `sourceType`: `MANUAL` cannot include `sourceFilename` at all (an extra
+   key is rejected by `strictObject`); `CHARGE_SHEET_FILE`/
+   `TRIBUNAL_PACKAGE_FILE` require a filename that passes the same
+   safe-filename rules the deterministic import boundary already enforces
+   (non-empty, ≤255 chars, no `/`, `\`, NUL, `.`, or `..`) plus a `.txt`/
+   `.md` extension requirement. This all runs in `validateCreateCaseInput`
+   before any repository/DB call, so malformed metadata is always
+   `400 invalid_case`, never a DB `CHECK`-constraint failure surfaced as a
+   500 — the DB constraints remain as defense in depth, unchanged. New
+   tests: `rejects malformed case source metadata with 400 before any
+   repository call` (MANUAL+filename, file-source without filename,
+   `.`, `..`, `/`, `\`, an embedded NUL character, and unsupported
+   extensions `.pdf`/`.exe` — each asserted to reach 400 with zero calls to
+   the injected repository) and `accepts valid case source metadata for
+   every source type` (MANUAL without a filename; CHARGE_SHEET_FILE and
+   TRIBUNAL_PACKAGE_FILE each with `.txt` and `.md`).
+
+Neither finding required any change to the deterministic import boundary,
+the migration, M7A scope, or OpenRouter/model-related code — none of that
+was touched.
+
+Test count: 52 → 55 (3 new tests: 1 UI regression test, 2 server-side case
+tests). Final verification after the fix: `lint`/`typecheck`/`test`
+(10 files, 55 tests)/`build`/`verify:client-bundle`/`verify` all PASS,
+`npm audit --omit=dev --audit-level=high` 0 vulnerabilities,
+`git diff --check origin/main...HEAD` clean. No dependency was added.
+
+## Supabase project configuration
+
+A real Supabase development project has been created for this milestone.
+At project creation:
+
+- Data API: **enabled**
+- Automatic table exposure: **disabled**
+- Automatic RLS: **disabled**
+
+Because automatic table exposure is off, Data API reachability for
+`public.cases` requires explicit Postgres `grant`s rather than relying on
+Supabase's default exposure behavior. The migration
+(`supabase/migrations/20260825000000_create_cases.sql`) was updated
+in place (not a second migration, since it had not yet been applied
+anywhere) to add:
+
+- `revoke all on table public.cases from anon, authenticated, service_role;`
+- `grant select, insert on table public.cases to service_role;`
+
+Resulting privilege model: `anon` and `authenticated` have no table
+privileges at all; `service_role` (the server-only secret the application
+uses) has exactly `SELECT` and `INSERT` — matching the only two operations
+the M5 case repository performs (`create` does `insert().select()`,
+`list`/`getById` do `select()`). No `UPDATE`/`DELETE` is granted because
+M5 exposes no such API. `alter table public.cases enable row level
+security;` is unchanged, and no browser/public policy exists.
+
+No project URL, project ref, database password, secret key, or other
+credential is recorded in this document or anywhere in the repository.
+
+**The migration is still NOT yet applied to the development database at
+this point in the milestone's history.** Live Supabase persistence smoke
+testing therefore remains **NOT VERIFIED** — this commit only makes the
+migration itself correct for the project's actual Data API configuration;
+it does not run it.
+
+## Live Supabase integration gate
+
+A real Supabase development database now exists (project created, migration
+`20260825000000` applied, `local == remote` per
+`npx supabase@2.115.0 migration list`). This section records the full,
+unedited history of live-testing against it, including the failure — the
+audit trail is preserved rather than cleaned up.
+
+### 1. Initial live persistence smoke: FAILED
+
+The first live smoke test exercised the real application boundary (`POST
+/api/cases` through the running `netlify dev` Netlify Function, not a direct
+SQL insert). It failed:
+
+```text
+POST /api/cases → HTTP 500 {"error":"case_persistence_failed"}
+```
+
+### 2. Exact cause
+
+Read-only diagnostic requests directly against the Supabase Data API (same
+project, same service-role credential, no schema/code change) reproduced the
+failure identically for both a `NULL` and a valid non-null `source_filename`,
+returning the underlying PostgreSQL error:
+
+```json
+{"code":"54000","details":null,"hint":null,"message":"null character not permitted"}
+```
+
+The applied migration's `cases_source_filename_check` constraint contained:
+
+```sql
+position(chr(0) in source_filename) = 0
+```
+
+PostgreSQL's `text` type is internally NUL-terminated and cannot represent a
+NUL byte at all — `chr(0)` cannot be constructed as a `text` value, so this
+expression raises an engine-level error whenever it is evaluated. This
+blocked **every** insert into `public.cases`, regardless of the payload.
+
+### 3. Why the automated test suite did not detect it
+
+Every unit/integration test (`netlify/functions/cases.test.ts`) exercises
+`handleCasesRequest`/`handleCaseByIdRequest` against an injected in-memory
+`FakeCaseRepository`, by design (per `ARCHITECTURE.md` §14: OpenRouter/DB
+integration tests should be fakeable so they don't need live infrastructure).
+None of the 55 automated tests ever executes a real SQL statement against
+real PostgreSQL, so a DDL-level defect like this is structurally invisible
+to them — only a genuine live integration test against the real database
+can catch it, which is exactly what this gate is for.
+
+### 4. Why the constraint was also unnecessary
+
+PostgreSQL already structurally guarantees no `text` column can ever contain
+a NUL byte — the input parser itself rejects it long before a CHECK
+constraint would run. The clause was defensive (mirroring the server-side
+Zod validation for depth-in-defense) but could never be satisfied by real
+Postgres, so removing it changes no real-world validation behavior.
+
+### 5. Original migration integrity
+
+`supabase/migrations/20260825000000_create_cases.sql` was **not** edited,
+renamed, or amended (already applied to a real database). `git diff` against
+it on this branch is empty at every point after the live-testing began.
+
+### 6–7. Forward remediation migration
+
+A new migration,
+`supabase/migrations/20260825204419_fix_cases_source_filename_check.sql`
+(commit `fix: repair cases filename check constraint`), drops and re-adds
+`cases_source_filename_check` with the same nullable/length/no-`/`-or-`\`
+rules, minus the broken `chr(0)` clause. No column, default, `source_type`
+constraint, RLS setting, grant, or index was touched. Applied via
+`npx supabase@2.115.0 db push`; confirmed via `migration list`:
+
+```text
+20260825000000  local == remote
+20260825204419  local == remote
+```
+
+### 8. Corrected remote constraint — verified
+
+Queried live via `npx supabase@2.115.0 db query --linked` against
+`pg_constraint`/`pg_class`/`information_schema.role_table_grants`/
+`pg_policies`:
+
+- `cases_source_filename_check` no longer contains `chr(0)`; corrected
+  definition: `source_filename IS NULL OR (length 1..255 AND no "/" or "\")`.
+- `relrowsecurity = true` (RLS still enabled).
+- `anon`: zero privileges on `public.cases`.
+- `authenticated`: zero privileges on `public.cases`.
+- `service_role`: exactly `SELECT` and `INSERT` — no `UPDATE`/`DELETE`.
+- `pg_policies` for `public.cases`: empty (no browser/public policy).
+
+### 9. Final live persistence smoke — MANUAL: PASS
+
+Through the real running Netlify dev server against the real database:
+
+- `POST /api/cases` (Defendant `M5 Live Persistence Smoke`, MANUAL) →
+  **HTTP 201**, DB-generated UUID `057a244d-c35d-4c8f-a224-80816d07db59`,
+  DB-generated `createdAt`, `sourceFilename: null`, all fields matched the
+  request exactly.
+- `GET /api/cases/057a244d-c35d-4c8f-a224-80816d07db59` → **HTTP 200**, same
+  UUID, same `createdAt`, all fields exact.
+- `GET /api/cases` → **HTTP 200**, array containing exactly the created row.
+
+### 10. Optional file-backed smoke — PASS
+
+`POST /api/cases` with `sourceType: CHARGE_SHEET_FILE`,
+`sourceFilename: m5-live-smoke.md` → **HTTP 201**, filename persisted
+exactly; `GET /api/cases/<id>` → **HTTP 200**, filename returned exactly.
+Both synthetic rows (`057a244d-…` and the file-backed one) remain in the
+development database as integration evidence — M5 has no DELETE API, so per
+instructions they were left rather than removed outside the application
+boundary.
+
+### 11. Import regression — PASS
+
+Re-verified live against the real running functions: Charge Sheet `.txt`
+import (200, normalized fields), personality `.md` import (200, normalized
+text), `docs/examples/tribunal-package-v1.txt` full package import (200,
+exactly 7 participants, correct fixed seats, no `modelId`/`side`/
+`executionMode` on any participant), and invalid-package rejection
+(`[PRO_3]` → 400). No OpenRouter/model call anywhere.
+
+### 12. Final automated verification — PASS
+
+`npm run verify` (lint/typecheck/**10 files, 55 tests**/build/
+verify:client-bundle), `npm audit --omit=dev --audit-level=high` (0
+vulnerabilities), `git diff --check origin/main...HEAD` (clean). No
+dependency change.
+
+### 13. Browser verification
+
+Not attempted this pass — the live API-level smoke test (the actual gate
+this session existed to satisfy) already exercises the identical
+Netlify Function → `SupabaseCaseRepository` → Supabase Data API →
+`public.cases` path a browser click would use; a browser session would not
+add further evidence toward the specific defect this gate targeted.
+**Full browser click-through: NOT VERIFIED** (recorded honestly, not
+upgraded to a fabricated pass).
+
+No project URL, project ref, database password, secret key, access token,
+or `.env` contents appear anywhere in this document.
+
+## Remote state
+
+Pushed to `origin/milestone/05-case-persistence-import` after this evidence
+update commit; local `HEAD` and remote branch `HEAD` match exactly.
+
+The Milestone 5 PR (base `main`, head
+`milestone/05-case-persistence-import`) was opened after this push and after
+all gates passed, per the independent-review follow-up instructions. It was
+not merged. Issue #7 remains open. `main` was not touched.

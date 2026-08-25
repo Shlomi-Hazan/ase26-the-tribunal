@@ -1,4 +1,5 @@
 import {
+  Alert,
   Button,
   Card,
   CardContent,
@@ -6,19 +7,61 @@ import {
   TextField,
   Typography
 } from "@mui/material";
+import { type ChangeEvent, useRef, useState } from "react";
 import {
   personalityLimit,
+  profileNameLimit,
+  validateParticipantProfileName,
   validateParticipantPersonality
 } from "../features/case-setup/setupState";
 import { useSetup } from "../features/case-setup/useSetup";
 import type { Participant } from "../mocks/tribunalMockData";
+import {
+  ImportApiError,
+  importPersonalityFile
+} from "../services/importApi";
 import { ModelSelect } from "./ModelSelect";
 
 export function ParticipantCard({ participant }: { participant: Participant }) {
   const { state, dispatch } = useSetup();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [importError, setImportError] = useState("");
+  const [importNotice, setImportNotice] = useState("");
+  const [isImporting, setIsImporting] = useState(false);
   const config = state.participants[participant.id];
+  const profileNameError = validateParticipantProfileName(config.profileName);
   const personalityError = validateParticipantPersonality(config.personality);
+  const hasProfileNameError = Boolean(profileNameError);
   const hasPersonalityError = Boolean(personalityError);
+
+  async function handlePersonalityImport(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+
+    if (!file) {
+      return;
+    }
+
+    setImportError("");
+    setImportNotice("");
+    setIsImporting(true);
+
+    try {
+      const result = await importPersonalityFile(file);
+
+      dispatch({
+        type: "applyParticipantPersonalityImport",
+        participantId: participant.id,
+        personality: result.personality,
+        filename: result.filename
+      });
+      setImportNotice(`Imported personality from ${result.filename}.`);
+    } catch (error) {
+      setImportError(formatImportError(error));
+    } finally {
+      setIsImporting(false);
+    }
+  }
 
   return (
     <Card
@@ -46,6 +89,30 @@ export function ParticipantCard({ participant }: { participant: Participant }) {
             </Typography>
           </Stack>
           <TextField
+            error={hasProfileNameError}
+            fullWidth
+            helperText={
+              hasProfileNameError
+                ? `${profileNameError} ${config.profileName.length}/${profileNameLimit} characters.`
+                : `Optional display name. ${config.profileName.length}/${profileNameLimit} characters.`
+            }
+            id={`${participant.id}-profile-name`}
+            label={`${participant.label} profile name`}
+            onChange={(event) =>
+              dispatch({
+                type: "setParticipantProfileName",
+                participantId: participant.id,
+                value: event.target.value
+              })
+            }
+            slotProps={{
+              htmlInput: {
+                maxLength: profileNameLimit
+              }
+            }}
+            value={config.profileName}
+          />
+          <TextField
             error={hasPersonalityError}
             fullWidth
             helperText={
@@ -72,8 +139,33 @@ export function ParticipantCard({ participant }: { participant: Participant }) {
             }}
             value={config.personality}
           />
-          <Button disabled variant="outlined">
-            Personality import available in Milestone 5
+          {config.personalitySource !== "manual" ? (
+            <Typography color="text.secondary" variant="body2">
+              Source:{" "}
+              {config.personalitySource === "tribunal_package"
+                ? "Full Tribunal Package"
+                : "Individual personality file"}
+              {config.personalitySourceFilename
+                ? ` (${config.personalitySourceFilename})`
+                : ""}
+            </Typography>
+          ) : null}
+          {importNotice ? <Alert severity="success">{importNotice}</Alert> : null}
+          {importError ? <Alert severity="error">{importError}</Alert> : null}
+          <input
+            aria-label={`${participant.label} personality import file`}
+            accept=".txt,.md,text/plain,text/markdown"
+            hidden
+            onChange={handlePersonalityImport}
+            ref={fileInputRef}
+            type="file"
+          />
+          <Button
+            disabled={isImporting}
+            onClick={() => fileInputRef.current?.click()}
+            variant="outlined"
+          >
+            {isImporting ? "Importing..." : "Import Personality"}
           </Button>
           {state.executionMode === "separate" ? (
             <ModelSelect
@@ -93,4 +185,12 @@ export function ParticipantCard({ participant }: { participant: Participant }) {
       </CardContent>
     </Card>
   );
+}
+
+function formatImportError(error: unknown) {
+  if (error instanceof ImportApiError) {
+    return error.errors.join(" ");
+  }
+
+  return "Personality import failed.";
 }

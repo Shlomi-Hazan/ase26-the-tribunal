@@ -1,0 +1,34 @@
+TRIBUNAL_PACKAGE_V1
+
+[CHARGE_SHEET]
+DEFENDANT: Alex Rowan
+ACT: Entered a restricted laboratory after receiving a written warning.
+QUESTION: Did Alex knowingly violate the laboratory access rule?
+
+[PRO_1]
+PROFILE_NAME: Evidence-first advocate
+PERSONALITY: Precise, evidence-focused, and calm under pressure.
+
+[PRO_2]
+PROFILE_NAME: Narrative advocate
+PERSONALITY: Story-driven, persuasive, and attentive to motive.
+
+[CON_1]
+PROFILE_NAME: Procedure advocate
+PERSONALITY: Skeptical, procedural, and careful about burden of proof.
+
+[CON_2]
+PROFILE_NAME: Practical advocate
+PERSONALITY: Plainspoken, practical, and focused on alternative explanations.
+
+[JUDGE_1]
+PROFILE_NAME: Methodical judge
+PERSONALITY: Methodical and statute-minded, with concise reasoning.
+
+[JUDGE_2]
+PROFILE_NAME: Fairness judge
+PERSONALITY: Contextual and fairness-oriented, weighing competing narratives.
+
+[JUDGE_3]
+PROFILE_NAME: Evidence judge
+PERSONALITY: Strict about evidence quality and explicit uncertainty.

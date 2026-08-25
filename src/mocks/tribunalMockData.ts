@@ -1,3 +1,5 @@
+import type { ParticipantId } from "../schemas/tribunalSetup";
+
 export type ExecutionMode = "shared" | "separate";
 export type AdvocateSide = "PRO" | "CON";
 export type Verdict = "GUILTY" | "NOT_GUILTY";
@@ -16,15 +18,6 @@ export type Participant = {
   kind: ParticipantKind;
   side?: AdvocateSide;
 };
-
-export type ParticipantId =
-  | "advocate-pro-1"
-  | "advocate-pro-2"
-  | "advocate-con-1"
-  | "advocate-con-2"
-  | "judge-1"
-  | "judge-2"
-  | "judge-3";
 
 export type MockModel = {
   id: string;

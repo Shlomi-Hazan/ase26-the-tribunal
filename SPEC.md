@@ -66,6 +66,41 @@ One actual outbound request to OpenRouter for one logical call. Each logical cal
 
 One complete attempt to deliberate one configured case.
 
+### 2.6 Tribunal Package
+
+A Tribunal Package is one structured file that can populate a complete setup draft:
+
+- canonical Charge Sheet
+- PRO Advocate 1 profile
+- PRO Advocate 2 profile
+- CON Advocate 1 profile
+- CON Advocate 2 profile
+- Judge 1 profile
+- Judge 2 profile
+- Judge 3 profile
+
+It does not determine participant count, participant role, advocate side, execution mode, model assignment, prompt version, retry policy, security policy, or economics policy. Those remain application-owned.
+
+Milestone 5 supports a strict deterministic Tribunal Package format using exactly these fixed seat identifiers:
+
+- `PRO_1`
+- `PRO_2`
+- `CON_1`
+- `CON_2`
+- `JUDGE_1`
+- `JUDGE_2`
+- `JUDGE_3`
+
+The section identifier determines which fixed seat is populated. A package must not include arbitrary role or side assignment.
+
+### 2.7 Tribunal Setup Draft
+
+A Tribunal Setup Draft is normalized application data produced by manual entry, individual imports, or a Tribunal Package import before a run exists.
+
+It contains the canonical Charge Sheet and exactly seven fixed participant draft entries. Each participant draft may include optional `profileName`, personality text, personality source metadata, and safe import source metadata.
+
+The draft is editable and reviewable. It is not a frozen run configuration.
+
 ---
 
 ## 3. Charge Sheet Input
@@ -120,6 +155,109 @@ The following must be rejected visibly:
 
 The raw uploaded file does not need to be retained after successful parsing in V1.
 
+### 3.3 Full Tribunal Package import
+
+Milestone 5 supports strict structured Tribunal Package imports:
+
+- `.txt`
+- `.md`
+- UTF-8 text only
+- maximum raw package size: **192 KiB**
+- deterministic parsing
+- no LLM call for parsing
+
+Canonical strict package grammar:
+
+```text
+TRIBUNAL_PACKAGE_V1
+
+[CHARGE_SHEET]
+
+DEFENDANT:
+<text>
+
+ACT:
+<text>
+
+QUESTION:
+<text>
+
+[PRO_1]
+
+PROFILE_NAME:
+<optional text>
+
+PERSONALITY:
+<text>
+
+[PRO_2]
+
+PROFILE_NAME:
+<optional text>
+
+PERSONALITY:
+<text>
+
+[CON_1]
+
+PROFILE_NAME:
+<optional text>
+
+PERSONALITY:
+<text>
+
+[CON_2]
+
+PROFILE_NAME:
+<optional text>
+
+PERSONALITY:
+<text>
+
+[JUDGE_1]
+
+PROFILE_NAME:
+<optional text>
+
+PERSONALITY:
+<text>
+
+[JUDGE_2]
+
+PROFILE_NAME:
+<optional text>
+
+PERSONALITY:
+<text>
+
+[JUDGE_3]
+
+PROFILE_NAME:
+<optional text>
+
+PERSONALITY:
+<text>
+```
+
+A package is valid only when:
+
+- package header exists exactly once
+- required sections exist exactly once
+- no duplicate required section exists
+- no unknown participant seat or unknown structural section is accepted
+- Charge Sheet obeys canonical field limits
+- each of the seven `PERSONALITY:` values is non-empty after trimming and at most 4000 normalized characters
+- optional `PROFILE_NAME:` values are at most 120 normalized characters
+- raw package size is at most 192 KiB
+- UTF-8 is valid
+- extension is `.txt` or `.md`
+
+Unsupported structural fields, including model, provider, execution mode, prompt, pricing, retry, or budget fields, fail closed.
+
+Package import is atomic. Either the entire normalized package validates and can populate the setup draft, or the current setup remains unchanged with specific visible errors.
+
+Package import never starts Tribunal execution and never spends the seven Tribunal participant calls.
+
 ---
 
 ## 4. Participant Personality Input
@@ -142,6 +280,23 @@ Requirements:
 Personality is behavioural context, not merely a label. It supplements but never replaces the participant's fixed role instructions.
 
 User-provided personality text is untrusted input. It cannot change participant identity, advocate side, output contract, cost/security rules, or backend authority.
+
+### 4.1 Participant profile name
+
+Each participant may also have an optional `profileName`.
+
+Requirements:
+
+- user supplied or import supplied
+- trimmed
+- maximum **120 characters**
+- plain untrusted text
+- purely human-facing metadata
+- does not define or change the participant role
+
+The fixed application seat remains authoritative and visible. For example, `PRO I - Example Person` may be shown, but the imported name never converts a PRO advocate into a CON advocate or a judge into an advocate.
+
+Milestone 6 persists/freezes this field in full participant configuration.
 
 ---
 
@@ -546,9 +701,53 @@ Because the V1 history is not private per-user, the UI must disclose that submit
 
 Raw `.txt`/`.md` uploads do not need to be retained after successful normalization.
 
+Milestone 5 persists basic normalized cases only. A stored case is not a completed Tribunal run and must not fabricate verdicts, speeches, model costs, execution status, or protocol data.
+
 ---
 
-## 19. Browser / Server Authority Boundary
+## 19. Smart Tribunal Package Extraction Future Scope
+
+After OpenRouter infrastructure exists in Milestone 7 and before real Tribunal orchestration in Milestone 8, the project plans a future `M7A - Smart Tribunal Package Extraction` milestone.
+
+M7A will allow a free-form complete Tribunal document to be transformed into the same normalized `TribunalSetupDraft`. Minimum planned input support:
+
+- `.txt`
+- `.md`
+- text-extractable `.pdf`
+
+PDF support belongs to M7A, not Milestone 5. Scanned-document OCR is not automatically included and requires a separate explicit scope decision.
+
+The smart extraction flow is:
+
+```text
+Free-form document
+  -> safe file validation
+  -> deterministic text extraction
+  -> one setup-time structured extraction model call
+  -> strict schema validation
+  -> application normalization
+  -> Review
+  -> human correction/confirmation
+  -> explicit Convene Tribunal
+  -> 7 Tribunal participant logical calls
+```
+
+The extraction call:
+
+- is a setup/import operation before run creation
+- is not one of the seven Tribunal participant logical calls
+- does not create an eighth Tribunal participant
+- receives no tools or privileged authority
+- must use strict structured output
+- must not assign models, roles, sides, prompts, pricing, or execution mode
+- must permit unresolved/null fields rather than fabricate required data
+- must surface incomplete or ambiguous extraction as needing review
+- must never automatically start Tribunal execution
+- must never hard-code a lecturer-provided dossier
+
+Before M7A implementation, `docs/economics.md` must define explicit extraction spend, token/output, retry, telemetry, model eligibility, and display policy. No unbounded extraction call is permitted.
+
+## 20. Browser / Server Authority Boundary
 
 The browser handles interaction and presentation. It is not authoritative for security, cost, model execution, or persistence rules.
 
@@ -573,7 +772,7 @@ Client validation may improve UX but does not replace server validation.
 
 ---
 
-## 20. Prompt Requirements
+## 21. Prompt Requirements
 
 Important runtime base prompts are version-controlled.
 
@@ -592,7 +791,7 @@ Prompt changes are behavioural changes and require review like code changes.
 
 ---
 
-## 21. UI Behaviour Requirements
+## 22. UI Behaviour Requirements
 
 The detailed design contract is `docs/ui-spec.md`. At minimum:
 
@@ -613,7 +812,7 @@ A failed run must be visually and semantically distinct from a completed verdict
 
 ---
 
-## 22. Validation Strategy
+## 23. Validation Strategy
 
 ### 22.1 Unit tests
 
@@ -677,6 +876,7 @@ Test intentionally:
 - terminal judge failure
 - invalid/oversized/non-UTF-8 upload
 - missing/duplicate Charge Sheet marker
+- strict Tribunal Package header, section, unsupported-field, and fixed-seat validation
 - budget preflight block
 - retry blocked by budget
 - missing usage/cost telemetry on otherwise successful response
@@ -686,7 +886,7 @@ Test intentionally:
 
 ---
 
-## 23. Known Pitfalls
+## 24. Known Pitfalls
 
 - Fluent invalid model output can appear trustworthy.
 - A keyword such as “guilty” in reasoning is not a verdict contract.
@@ -705,7 +905,7 @@ Test intentionally:
 
 ---
 
-## 24. Acceptance Criteria
+## 25. Acceptance Criteria
 
 These are target criteria, not claims that implementation already exists.
 
@@ -718,6 +918,11 @@ These are target criteria, not claims that implementation already exists.
 - **CASE-005** — Valid structured `.md` input is parsed deterministically.
 - **CASE-006** — Unsupported, non-UTF-8, malformed, duplicate-marker, or oversized files are rejected visibly.
 - **CASE-007** — File parsing performs no LLM call.
+- **CASE-008** — Valid structured Tribunal Package `.txt` input atomically populates the Charge Sheet and seven fixed participant drafts.
+- **CASE-009** — Valid structured Tribunal Package `.md` input atomically populates the Charge Sheet and seven fixed participant drafts.
+- **CASE-010** — Invalid package header, missing/duplicate section, unknown section, unsupported structural field, invalid participant personality, invalid profile name, invalid Charge Sheet, unsupported extension, oversize, or non-UTF-8 package is rejected visibly without partially overwriting setup.
+- **CASE-011** — Package import never changes participant count, participant role, advocate side, execution mode, model assignment, prompt version, security policy, or economics policy.
+- **CASE-012** — Import never automatically starts Tribunal execution.
 
 ### PARTICIPANTS
 
@@ -727,6 +932,7 @@ These are target criteria, not claims that implementation already exists.
 - **PART-004** — Users cannot add/remove participants or alter advocate sides in V1.
 - **PART-005** — Every participant has independent non-empty personality context.
 - **PART-006** — Manual and supported-file personality input both work within limits.
+- **PART-007** — Optional participant `profileName` is editable/importable, limited to 120 characters, and remains human-facing metadata.
 
 ### OUTPUT
 
@@ -780,6 +986,7 @@ These are target criteria, not claims that implementation already exists.
 - **HIST-003** — Stored majority/protocol/economics correspond to the original run.
 - **HIST-004** — Failed runs retain enough audit data for diagnosis.
 - **HIST-005** — V1 UI warns that demo submissions may be retained/visible and should not contain sensitive data.
+- **HIST-006** — Milestone 5 stored cases survive reload and can be reopened at a basic case-detail level without fabricated verdicts, speeches, protocol, or model economics.
 
 ### SECURITY
 
@@ -792,7 +999,7 @@ These are target criteria, not claims that implementation already exists.
 
 ---
 
-## 25. Architectural Guidance
+## 26. Architectural Guidance
 
 The architecture must preserve four explicit parts:
 
@@ -807,7 +1014,7 @@ Concrete technology and data relationships are defined in `ARCHITECTURE.md`.
 
 ---
 
-## 26. Scope Deferred Beyond V1
+## 27. Scope Deferred Beyond V1
 
 Unless intent/spec is deliberately changed:
 
