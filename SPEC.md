@@ -952,20 +952,40 @@ These are target criteria, not claims that implementation already exists.
 - **CONFIG-006** — A malformed model configuration (empty/oversized/unsafe
   `model_id`) is rejected before any persistence occurs.
 - **CONFIG-007** — Once accepted, a run's participant configuration is
-  immutable: no API/database path can update or delete an accepted run's
-  `tribunal_runs` or `participant_configs` rows.
+  immutable: no database role, including the server's own, has an
+  `UPDATE`/`DELETE` grant on `tribunal_runs` or `participant_configs`; the
+  one function that can write either table is not itself an update path.
 - **CONFIG-008** — Accepting a run is idempotent on `client_request_id`; a
-  repeated request with the same identifier returns the already-accepted
-  run rather than creating a second one.
-- **CONFIG-009** — An accepted run references a valid, existing case; if
-  the current setup's case was not already saved, Convene creates it using
-  the same validated case-creation path as `Save Case` before freezing the
-  run.
+  repeated request with the same identifier **and** an unchanged
+  normalized configuration returns the already-accepted run rather than
+  creating a second one.
+- **CONFIG-008A** — A repeated `client_request_id` whose normalized
+  configuration has materially changed is rejected with `409` and a
+  stable `idempotency_conflict` category; it never silently returns an
+  unrelated run and never creates a second one.
+- **CONFIG-009** — An accepted run references a valid, existing case,
+  selected by an unambiguous request (an existing `caseId` or new case
+  fields — never both). If the current setup's case was not already
+  saved, Convene creates it using the same validated case-creation path as
+  `Save Case`, as a step before — not inside the same atomic operation
+  as — freezing the run; a case may remain persisted even if the
+  subsequent freeze fails or conflicts.
+- **CONFIG-009A** — Only `tribunal_runs` together with its exactly seven
+  `participant_configs` rows is guaranteed atomic; a failed or conflicting
+  freeze never leaves a partial run or a `participant_configs` row count
+  other than 0 or 7 for that run.
 - **CONFIG-010** — Accepting a run performs zero OpenRouter/model calls and
   produces no advocate speech, judge verdict, or economics data.
 - **CONFIG-011** — A package-imported `TribunalSetupDraft` (Milestone 5)
   can be accepted/frozen through the same path as a manually-configured
   draft, with no additional constraints.
+- **CONFIG-012** — A run's `prompt_version` is application-owned, never
+  user/import-controlled; a run frozen with the pre-Milestone-7 prompt
+  placeholder is a configuration-stage record only, and a later milestone
+  must not execute it while that placeholder remains. `READY` means
+  accepted/frozen configuration, not execution-eligible.
+- **CONFIG-013** — A successful Milestone 6 Convene never navigates to, or
+  displays content from, a mock/fabricated deliberation or result state.
 
 ### OUTPUT
 

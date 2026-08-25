@@ -353,17 +353,35 @@ Use database constraints and transactional updates where possible for:
 Once a run begins, participant/model/prompt configuration is frozen.
 
 Milestone 6 enforces this immutability structurally, not only
-procedurally: `tribunal_runs` and `participant_configs` follow the same
-least-privilege pattern established for `cases` in Milestone 5 —
-`service_role` is granted only `SELECT` and `INSERT` on both tables, with
-no `UPDATE`/`DELETE` grant at all. There is no code path, authorized or
-not, that can alter an accepted run's configuration, because the database
-role the server uses cannot perform that statement regardless of what the
-application code attempts. RLS is enabled on both tables with no
+procedurally, and goes one step further than the Milestone 5 `cases`
+pattern: `service_role` is granted **`SELECT` only** on `tribunal_runs`
+and `participant_configs` — no `INSERT`, `UPDATE`, or `DELETE` grant at
+all. The only way either table is ever written is through one narrowly
+scoped `SECURITY DEFINER` Postgres function (`SET search_path = ''`,
+every referenced object schema-qualified, no dynamic SQL, no
+user-controlled identifiers, `role`/`side`/`prompt_version` derived
+internally rather than caller-supplied), whose `EXECUTE` privilege is
+explicitly revoked from `PUBLIC`/`anon`/`authenticated` and granted only
+to `service_role` in the same migration that creates it. That function
+independently re-validates exactly seven known participant keys and
+performs the idempotency-fingerprint check atomically with the insert
+(see `docs/adr/0002-participant-configuration-freeze.md` Decisions 5 and
+8) — a same-key/different-payload retry is rejected with
+`409 idempotency_conflict`, never silently merged into or replacing the
+original. There is no code path, authorized or not, that can insert a
+partial configuration or alter an accepted run, because the database role
+the server uses cannot perform an ordinary `INSERT`/`UPDATE`/`DELETE`
+statement against either table regardless of what the application code
+attempts — only the one function can, and only for a complete
+seven-participant set. RLS is enabled on both tables with no
 anon/authenticated policy, matching the Milestone 5 `cases` pattern.
-"Exactly seven participant configs per run" is enforced atomically via one
-Postgres function (see `docs/adr/0002-participant-configuration-freeze.md`)
-rather than left to sequential application-level inserts.
+
+Case persistence remains the independent Milestone 5 entity boundary: if
+Convene needs to create a case, that happens as an ordinary, separately
+atomic insert immediately before the run/config freeze, not inside the
+same transaction. If the freeze subsequently fails, the created case may
+remain — it is a legitimately valid, independently persistable case, not
+a partial or orphaned record.
 
 Completed historical outputs/economics/protocol are immutable through normal V1 APIs.
 

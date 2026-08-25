@@ -268,7 +268,9 @@ Never show stale pricing as guaranteed current billing. Review preflight is auth
 
 ## 10. Screen 4 — Review
 
-This is the last human gate before cost-bearing execution.
+This is the last human gate before cost-bearing execution — true from
+Milestone 8 onward, once real Tribunal execution exists. See "Milestone 6
+transitional behavior" below for what Convene does before then.
 
 ### Information hierarchy
 
@@ -317,6 +319,23 @@ Review should show all fixed seats, optional profile names, personalities, and m
 `Convene Tribunal`
 
 The button must resist accidental duplicate activation while the start request is pending, but backend idempotency remains the real duplicate-spend control.
+
+### Milestone 6 transitional behavior
+
+Milestone 6 wires `Convene Tribunal` to a real, permanent configuration
+freeze (`POST /api/runs`) with zero model calls — it does not yet begin a
+deliberation, because no Tribunal execution engine exists until Milestone
+8. On success:
+
+- remain on the Review screen (no navigation to a deliberation route)
+- show a clear, non-deceptive success state, for example:
+  > Tribunal configuration frozen. Model execution is not enabled yet.
+- optionally show the accepted run ID for debugging/audit
+- show no fabricated advocate/judge/progress/result content of any kind
+
+This note is removed once Milestone 8 ships real execution and Convene's
+behavior matches "last human gate before cost-bearing execution" above
+without qualification.
 
 ---
 
