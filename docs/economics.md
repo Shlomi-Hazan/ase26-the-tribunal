@@ -458,3 +458,30 @@ It does not promise that every model offered by OpenRouter is supported by The T
 It does not treat cost estimates as exact billing predictions.
 
 It does not count OpenRouter credit-purchase fees as per-run inference cost; the product economics view focuses on model inference charges attributable to the run.
+
+---
+
+## 22. Future Smart Extraction Economics
+
+`M7A - Smart Tribunal Package Extraction` may add one setup-time structured extraction model call for free-form full-document import after OpenRouter infrastructure exists.
+
+That extraction call is not a Tribunal participant logical call. A successful Tribunal run still has:
+
+```text
+4 advocate logical calls
++ 3 judge logical calls
+= 7 Tribunal logical calls
+```
+
+The extraction call occurs before run creation and must be displayed/accounted separately from the seven-call Tribunal run cost.
+
+Before M7A can be implemented, this document must define:
+
+- explicit maximum spend policy for document extraction
+- token and output bounds
+- model eligibility requirements
+- usage/cost telemetry requirements
+- failure and retry policy
+- display treatment for extraction cost versus Tribunal-run cost
+
+No unbounded extraction call is permitted. The existing `$5.00` ceiling remains the hard intentional model-spend policy for the seven-participant Tribunal run and must not be disguised by folding extraction into a fake seven-call count.

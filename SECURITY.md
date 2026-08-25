@@ -178,17 +178,33 @@ V1 accepts only text-based imports.
 - UTF-8
 - normalized text max 4000 characters
 
+### Full Tribunal Package
+
+- `.txt`, `.md`
+- max 192 KiB
+- UTF-8
+- strict `TRIBUNAL_PACKAGE_V1` structure
+- fixed participant seats only
+- no model/provider/execution/prompt/pricing/budget fields
+
 Validate server-side:
 
 - extension / intended content type
 - byte size before expensive processing
 - UTF-8 decoding
 - required markers/structure for Charge Sheet
+- required header/sections/fields for Tribunal Package
 - normalized content limits
+- unsupported structural fields
+- malicious/path-like filenames before storing source metadata
 
 Do not execute uploaded content.
 
 Raw file bytes are transient and should not be stored in V1 after successful normalization.
+
+Strict Tribunal Package import is atomic. Invalid package content must not leave the browser setup partially overwritten.
+
+Future M7A Smart Tribunal Package Extraction may use one setup-time model call only after OpenRouter infrastructure exists. That call is not a Tribunal participant, receives no privileged tools, must use strict structured output, and must never automatically convene the Tribunal.
 
 ---
 

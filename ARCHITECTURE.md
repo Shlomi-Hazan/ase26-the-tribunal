@@ -411,7 +411,16 @@ Exact route filenames are implementation details, but the V1 HTTP contract shoul
 `POST /api/import/personality`
 
 - validates `.txt`/`.md`, bytes, UTF-8, normalized character limit
-- returns normalized text
+- returns normalized text and safe source metadata
+
+`POST /api/import/tribunal-package`
+
+- validates `.txt`/`.md`, bytes, UTF-8, strict `TRIBUNAL_PACKAGE_V1` grammar, required sections, and field limits
+- returns one normalized Tribunal Setup Draft that targets exactly the seven fixed participant seats
+- rejects unsupported structural fields such as model/provider/execution/prompt/pricing/budget fields
+- does not persist raw file bytes
+- performs no LLM call
+- never starts Tribunal execution
 
 ### 7.2 Models
 
@@ -470,12 +479,20 @@ id                  uuid PK
 defendant           text NOT NULL
 act                 text NOT NULL
 exact_question      text NOT NULL
-source_type         text NOT NULL   -- MANUAL | FILE
+source_type         text NOT NULL   -- MANUAL | CHARGE_SHEET_FILE | TRIBUNAL_PACKAGE_FILE
 source_filename     text NULL
 created_at          timestamptz NOT NULL
 ```
 
 Server validation remains authoritative even if DB checks are also added.
+
+Milestone 5 source types distinguish at minimum:
+
+- `MANUAL`
+- `CHARGE_SHEET_FILE`
+- `TRIBUNAL_PACKAGE_FILE`
+
+Milestone 5 persists normalized case data only. It does not create participant/run/output/protocol tables early.
 
 ### 8.2 `tribunal_runs`
 
@@ -831,3 +848,30 @@ The following require an approved architecture/specification change to violate:
 12. Historical runs do not rerun models when opened.
 13. Runtime model calls receive no privileged arbitrary tools.
 14. Model/user/external data is validated before trust.
+
+---
+
+## 19. Future Smart Tribunal Package Extraction
+
+`M7A - Smart Tribunal Package Extraction` is planned after OpenRouter infrastructure and before real Tribunal orchestration.
+
+Future flow:
+
+```text
+Free-form document
+  -> safe file validation
+  -> deterministic text extraction
+  -> one setup-time structured extraction model call
+  -> strict schema validation
+  -> application normalization
+  -> Review
+  -> human correction/confirmation
+  -> explicit Convene Tribunal
+  -> 7 Tribunal participant logical calls
+```
+
+The extraction call is a setup/import operation. It is not one of the seven Tribunal participant logical calls, does not create an eighth participant, and occurs before run creation.
+
+This future path must share the same normalized Tribunal Setup Draft target as deterministic Milestone 5 imports. It must not hard-code any lecturer/course dossier, fictional character set, judicial profile set, or specific case as product configuration.
+
+M7A may support text-extractable PDF. It must not add OCR unless separately approved.

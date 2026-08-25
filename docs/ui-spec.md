@@ -127,8 +127,13 @@ Allow either:
 
 - manual text entry
 - supported `.txt` / `.md` import
+- strict structured Full Tribunal Package import
 
 Import is a convenience, not a separate case type. After successful import, the normalized three fields become visible/editable before continuing.
+
+Charge Sheet import fills only the three case fields. Full Tribunal Package import fills the case plus all seven participant profile names/personalities, preserves application-owned execution/model configuration, and navigates to Review.
+
+Full Tribunal Package import must never automatically convene the Tribunal.
 
 ### File error states
 
@@ -139,6 +144,9 @@ Show specific failure, for example:
 - invalid text encoding
 - missing `QUESTION:` section
 - duplicate section marker
+- missing `[JUDGE_2]` package section
+- unknown package section such as `[PRO_3]`
+- unsupported package field such as model/provider assignment
 
 Do not display “Something went wrong” when the validation reason is known.
 
@@ -169,6 +177,7 @@ On smaller screens, cards stack while preserving order/grouping.
 
 - participant label
 - fixed side
+- optional profile name
 - personality input
 - manual / upload personality option
 - validation feedback
@@ -197,6 +206,7 @@ Judge I    Judge II    Judge III
 Each contains:
 
 - participant label
+- optional profile name
 - personality input/manual-upload control
 - model assignment in Separate-Model Mode
 - validation state
@@ -293,6 +303,14 @@ Before convening:
 > This V1 course demo stores submitted cases in shared demo history. Do not submit sensitive, private, confidential, or identifying information.
 
 This notice should not be buried in a footer.
+
+### Import notice
+
+After a successful Full Tribunal Package import, Review should clearly state:
+
+> Imported Tribunal package — review all extracted fields before convening.
+
+Review should show all fixed seats, optional profile names, personalities, and model/execution configuration. The user must be able to return and edit imported fields before explicit convening.
 
 ### Primary action
 
@@ -516,10 +534,9 @@ Each entry may show:
 - Defendant
 - shortened Exact Question
 - date/time
-- execution mode
-- completed/failed state
-- majority verdict for completed runs
-- total cost for completed/partial run where appropriate
+- source type
+
+Before real Tribunal runs exist, stored cases must not fabricate execution mode, completed/failed run state, majority verdict, cost, speeches, reasoning, protocol, or model economics.
 
 Do not show a verdict for failed runs.
 

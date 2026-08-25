@@ -40,10 +40,11 @@ Do not begin later milestones by destabilizing incomplete earlier work.
 | 1 | Project Conception | ✅ Complete |
 | 2 | Engineering Contract | ✅ Complete |
 | 3 | Application Skeleton | ✅ Complete |
-| 4 | UI Shell with Mock Data | 🟡 Current |
-| 5 | Case Persistence & File Input | ⬜ Planned |
+| 4 | UI Shell with Mock Data | ✅ Complete |
+| 5 | Case Persistence & Import | 🟡 Current |
 | 6 | Participant Configuration | ⬜ Planned |
 | 7 | OpenRouter Infrastructure | ⬜ Planned |
+| 7A | Smart Tribunal Package Extraction | ⬜ Planned |
 | 8 | Shared-Model Tribunal | ⬜ Planned |
 | 9 | Separate-Model Tribunal | ⬜ Planned |
 | 10 | Protocol & Economics | ⬜ Planned |
@@ -235,11 +236,11 @@ A reviewer can walk the entire product story with mock data and understand every
 
 ---
 
-# M5 — Case Persistence & File Input
+# M5 — Case Persistence & Import
 
 ## Goal
 
-Make cases durable and implement deterministic text/file intake.
+Make cases durable and implement deterministic text/file intake, including one strict structured Full Tribunal Package format.
 
 ## Scope
 
@@ -247,9 +248,13 @@ Make cases durable and implement deterministic text/file intake.
 - Charge Sheet manual validation
 - `.txt` / `.md` deterministic parser
 - personality manual/file validation
+- optional participant `profileName` metadata in the setup draft
+- strict deterministic Full Tribunal Package import
+- normalized Tribunal Setup Draft import contract
 - source filename/type metadata
 - History can display stored cases at a basic level
 - raw files discarded after normalization
+- M7A Smart Tribunal Package Extraction documented for later
 
 ## Verification
 
@@ -257,12 +262,14 @@ Make cases durable and implement deterministic text/file intake.
 - UTF-8 validation
 - size/type checks
 - missing/duplicate markers
+- full package header/section/fixed-seat validation
+- package import atomicity
 - non-LLM parsing proof
 - DB persistence/reload
 
 ## Exit condition
 
-Valid cases/personality text persist deterministically; malformed input cannot reach later execution.
+Valid cases/personality/package text persist or populate setup deterministically; malformed input cannot reach later execution.
 
 ---
 
@@ -286,6 +293,7 @@ Per participant:
 
 - stable participant key
 - role/side
+- optional `profileName` / display-name metadata
 - personality
 - personality source metadata
 - model assignment
@@ -343,6 +351,49 @@ Build and verify the model gateway safely before orchestrating seven calls.
 ## Exit condition
 
 One logical participant call can be made and audited safely, while normal automated tests remain free of real model spend.
+
+---
+
+# M7A — Smart Tribunal Package Extraction
+
+## Goal
+
+Allow a user to upload a complete free-form Tribunal dossier and transform it into the same normalized Tribunal Setup Draft used by deterministic M5 imports.
+
+## Scope
+
+- generic free-form document intake
+- safe file validation
+- deterministic text extraction
+- support for `.txt`, `.md`, and text-extractable `.pdf`
+- one setup-time structured extraction model call after OpenRouter infrastructure exists
+- strict schema validation for Charge Sheet plus exactly `PRO_1`, `PRO_2`, `CON_1`, `CON_2`, `JUDGE_1`, `JUDGE_2`, and `JUDGE_3`
+- unresolved/null fields for incomplete or ambiguous extraction
+- Review screen with human correction and confirmation before any run starts
+- explicit extraction cost/telemetry/budget policy before implementation
+
+## Explicit non-goals
+
+- no hard-coded lecturer/course dossier
+- no arbitrary participant creation
+- no participant role or side changes
+- no model assignment import
+- no automatic Tribunal execution
+- no OCR unless separately approved
+- no eighth Tribunal participant or eighth Tribunal logical call
+
+## Verification
+
+- free-form extraction uses strict structured output
+- extracted setup maps only to fixed application seats
+- ambiguity becomes `needs review`
+- normal setup validation blocks convening until required fields are complete
+- extraction cost is displayed separately from seven-call Tribunal run cost
+- upload never automatically convenes the Tribunal
+
+## Exit condition
+
+A free-form text or text-extractable PDF dossier can be converted into a reviewable generic Tribunal setup draft, with no hard-coded dossier and no automatic run execution.
 
 ---
 
