@@ -2,31 +2,36 @@ import {
   allParticipants,
   defaultPersonalityByParticipant,
   mockModels,
-  type ExecutionMode,
-  type ParticipantId
+  type ExecutionMode
 } from "../../mocks/tribunalMockData";
+import {
+  chargeSheetLimits,
+  personalityLimit,
+  profileNameLimit,
+  type CaseSourceType,
+  type ChargeSheet,
+  type ParticipantId,
+  type PersonalitySource,
+  type TribunalSetupDraft
+} from "../../schemas/tribunalSetup";
 
-export const chargeSheetLimits = {
-  defendant: 200,
-  act: 6000,
-  exactQuestion: 1000
-} as const;
-
-export const personalityLimit = 4000;
-
-type ChargeSheet = {
-  defendant: string;
-  act: string;
-  exactQuestion: string;
-};
+export { chargeSheetLimits, personalityLimit, profileNameLimit };
 
 type ParticipantConfig = {
+  profileName: string;
   personality: string;
+  personalitySource: PersonalitySource;
+  personalitySourceFilename?: string;
   modelId: string;
 };
 
 export type SetupState = {
   chargeSheet: ChargeSheet;
+  caseSource: {
+    type: CaseSourceType;
+    filename?: string;
+  };
+  importNotice: string;
   executionMode: ExecutionMode;
   sharedModelId: string;
   participants: Record<ParticipantId, ParticipantConfig>;
@@ -34,9 +39,19 @@ export type SetupState = {
 
 export type SetupAction =
   | { type: "setChargeField"; field: keyof ChargeSheet; value: string }
+  | { type: "applyChargeSheetImport"; chargeSheet: ChargeSheet; filename: string }
+  | { type: "applyTribunalPackageImport"; draft: TribunalSetupDraft }
+  | { type: "clearImportNotice" }
   | { type: "setExecutionMode"; mode: ExecutionMode }
   | { type: "setSharedModel"; modelId: string }
+  | { type: "setParticipantProfileName"; participantId: ParticipantId; value: string }
   | { type: "setParticipantPersonality"; participantId: ParticipantId; value: string }
+  | {
+      type: "applyParticipantPersonalityImport";
+      participantId: ParticipantId;
+      personality: string;
+      filename: string;
+    }
   | { type: "setParticipantModel"; participantId: ParticipantId; modelId: string };
 
 export type SetupContextValue = {
@@ -50,7 +65,9 @@ const initialParticipants = allParticipants.reduce(
   (configs, participant, index) => ({
     ...configs,
     [participant.id]: {
+      profileName: "",
       personality: defaultPersonalityByParticipant[participant.id],
+      personalitySource: "manual",
       modelId: mockModels[index % mockModels.length].id
     }
   }),
@@ -63,6 +80,10 @@ export const initialSetupState: SetupState = {
     act: "",
     exactQuestion: ""
   },
+  caseSource: {
+    type: "MANUAL"
+  },
+  importNotice: "",
   executionMode: "shared",
   sharedModelId: defaultModelId,
   participants: initialParticipants
@@ -76,7 +97,50 @@ export function setupReducer(state: SetupState, action: SetupAction): SetupState
         chargeSheet: {
           ...state.chargeSheet,
           [action.field]: action.value
-        }
+        },
+        caseSource: {
+          type: "MANUAL"
+        },
+        importNotice: ""
+      };
+    case "applyChargeSheetImport":
+      return {
+        ...state,
+        chargeSheet: action.chargeSheet,
+        caseSource: {
+          type: "CHARGE_SHEET_FILE",
+          filename: action.filename
+        },
+        importNotice: "Imported Charge Sheet — review the fields before continuing."
+      };
+    case "applyTribunalPackageImport":
+      return {
+        ...state,
+        chargeSheet: action.draft.chargeSheet,
+        caseSource: action.draft.importSource,
+        importNotice:
+          "Imported Tribunal package — review all extracted fields before convening.",
+        participants: Object.fromEntries(
+          allParticipants.map((participant) => {
+            const imported = action.draft.participants[participant.id];
+
+            return [
+              participant.id,
+              {
+                ...state.participants[participant.id],
+                profileName: imported.profileName ?? "",
+                personality: imported.personality,
+                personalitySource: imported.personalitySource,
+                personalitySourceFilename: imported.personalitySourceFilename
+              }
+            ];
+          })
+        ) as SetupState["participants"]
+      };
+    case "clearImportNotice":
+      return {
+        ...state,
+        importNotice: ""
       };
     case "setExecutionMode":
       return {
@@ -88,6 +152,17 @@ export function setupReducer(state: SetupState, action: SetupAction): SetupState
         ...state,
         sharedModelId: action.modelId
       };
+    case "setParticipantProfileName":
+      return {
+        ...state,
+        participants: {
+          ...state.participants,
+          [action.participantId]: {
+            ...state.participants[action.participantId],
+            profileName: action.value
+          }
+        }
+      };
     case "setParticipantPersonality":
       return {
         ...state,
@@ -95,7 +170,22 @@ export function setupReducer(state: SetupState, action: SetupAction): SetupState
           ...state.participants,
           [action.participantId]: {
             ...state.participants[action.participantId],
-            personality: action.value
+            personality: action.value,
+            personalitySource: "manual",
+            personalitySourceFilename: undefined
+          }
+        }
+      };
+    case "applyParticipantPersonalityImport":
+      return {
+        ...state,
+        participants: {
+          ...state.participants,
+          [action.participantId]: {
+            ...state.participants[action.participantId],
+            personality: action.personality,
+            personalitySource: "individual_file",
+            personalitySourceFilename: action.filename
           }
         }
       };
@@ -145,22 +235,37 @@ export function validateParticipantPersonality(value: string) {
   return "";
 }
 
+export function validateParticipantProfileName(value: string) {
+  const trimmed = value.trim();
+
+  if (trimmed.length > profileNameLimit) {
+    return `Profile name must be ${profileNameLimit.toLocaleString()} characters or fewer.`;
+  }
+
+  return "";
+}
+
 export function isChargeSheetValid(chargeSheet: ChargeSheet) {
   return Object.values(validateChargeSheet(chargeSheet)).every((error) => !error);
 }
 
-function areParticipantPersonalitiesValid(
+function areParticipantsValid(
   state: SetupState,
   participantIds: ParticipantId[]
 ) {
   return participantIds.every(
     (participantId) =>
-      !validateParticipantPersonality(state.participants[participantId].personality)
+      !validateParticipantPersonality(
+        state.participants[participantId].personality
+      ) &&
+      !validateParticipantProfileName(
+        state.participants[participantId].profileName
+      )
   );
 }
 
 export function areAdvocatePersonalitiesValid(state: SetupState) {
-  return areParticipantPersonalitiesValid(
+  return areParticipantsValid(
     state,
     allParticipants
       .filter((participant) => participant.kind === "advocate")
@@ -169,7 +274,7 @@ export function areAdvocatePersonalitiesValid(state: SetupState) {
 }
 
 export function areJudgePersonalitiesValid(state: SetupState) {
-  return areParticipantPersonalitiesValid(
+  return areParticipantsValid(
     state,
     allParticipants
       .filter((participant) => participant.kind === "judge")

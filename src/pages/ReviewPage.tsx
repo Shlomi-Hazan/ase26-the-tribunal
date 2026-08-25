@@ -42,6 +42,7 @@ export function ReviewPage() {
         title="Review Tribunal"
         description="This is the final mock review gate before the UI-only deliberation route."
       />
+      {state.importNotice ? <Alert severity="info">{state.importNotice}</Alert> : null}
       <Card>
         <CardContent>
           <Stack spacing={2}>
@@ -58,6 +59,10 @@ export function ReviewPage() {
             <Typography>
               <strong>Exact Question:</strong>{" "}
               {state.chargeSheet.exactQuestion || "Not entered yet"}
+            </Typography>
+            <Typography color="text.secondary" variant="body2">
+              Source: {formatSourceType(state.caseSource.type)}
+              {state.caseSource.filename ? ` (${state.caseSource.filename})` : ""}
             </Typography>
           </Stack>
         </CardContent>
@@ -115,6 +120,28 @@ export function ReviewPage() {
                       {state.executionMode === "shared"
                         ? sharedModel?.displayName
                         : model?.displayName}
+                    </Typography>
+                    <Typography color="text.secondary" variant="body2">
+                      Profile name:{" "}
+                      {state.participants[participant.id].profileName ||
+                        "Not provided"}
+                    </Typography>
+                    <Typography color="text.secondary" variant="body2">
+                      Personality source:{" "}
+                      {formatPersonalitySource(
+                        state.participants[participant.id].personalitySource
+                      )}
+                      {state.participants[participant.id].personalitySourceFilename
+                        ? ` (${
+                            state.participants[participant.id]
+                              .personalitySourceFilename
+                          })`
+                        : ""}
+                    </Typography>
+                    <Typography variant="body2">
+                      Personality:{" "}
+                      {state.participants[participant.id].personality ||
+                        "Not entered yet"}
                     </Typography>
                   </Box>
                 );
@@ -192,4 +219,26 @@ export function ReviewPage() {
       </Stack>
     </Stack>
   );
+}
+
+function formatSourceType(sourceType: string) {
+  switch (sourceType) {
+    case "CHARGE_SHEET_FILE":
+      return "Charge Sheet file";
+    case "TRIBUNAL_PACKAGE_FILE":
+      return "Full Tribunal Package";
+    default:
+      return "Manual";
+  }
+}
+
+function formatPersonalitySource(source: string) {
+  switch (source) {
+    case "individual_file":
+      return "Individual file";
+    case "tribunal_package":
+      return "Full Tribunal Package";
+    default:
+      return "Manual";
+  }
 }
