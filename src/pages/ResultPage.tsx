@@ -3,20 +3,44 @@ import {
   AccordionDetails,
   AccordionSummary,
   Alert,
+  Button,
   Card,
   CardContent,
   Stack,
   Typography
 } from "@mui/material";
-import { useSearchParams } from "react-router-dom";
+import { Link as RouterLink, useSearchParams } from "react-router-dom";
 import { EconomicsSummary } from "../components/EconomicsSummary";
 import { JudgeVoteGroup } from "../components/JudgeVoteGroup";
-import { PageHeader } from "../components/PageHeader";
-import { mockAdvocateSpeeches, mockJudgeVotes } from "../mocks/tribunalMockData";
+import { mockResultFixtures } from "../mocks/tribunalMockData";
 
 export function ResultPage() {
   const [searchParams] = useSearchParams();
   const historical = searchParams.get("source") === "history";
+  const historicalCaseId = searchParams.get("case");
+  const resultFixture = historical
+    ? historicalCaseId
+      ? mockResultFixtures[historicalCaseId]
+      : undefined
+    : mockResultFixtures.current;
+
+  if (!resultFixture) {
+    return (
+      <Stack spacing={4}>
+        {historical ? (
+          <Alert severity="info">
+            Historical run — model calls are not being repeated.
+          </Alert>
+        ) : null}
+        <Alert severity="warning">
+          This mock historical result could not be found.
+        </Alert>
+        <Button component={RouterLink} to="/history" variant="contained">
+          Return to Past Cases
+        </Button>
+      </Stack>
+    );
+  }
 
   return (
     <Stack spacing={4}>
@@ -31,7 +55,7 @@ export function ResultPage() {
             TRIBUNAL VERDICT
           </Typography>
           <Typography component="h1" sx={{ mt: 1 }} variant="h2">
-            GUILTY
+            {resultFixture.majorityVerdict}
           </Typography>
           <Typography color="text.secondary">
             Deterministic majority of the three judge votes, not a fourth AI
@@ -39,12 +63,16 @@ export function ResultPage() {
           </Typography>
         </CardContent>
       </Card>
-      <JudgeVoteGroup />
-      <PageHeader
-        title="Judge reasoning"
-        description="Mock reasoning follows the majority and grouped judge votes."
-      />
-      {mockJudgeVotes.map((vote) => (
+      <JudgeVoteGroup votes={resultFixture.judgeVotes} />
+      <Stack spacing={1}>
+        <Typography component="h2" variant="h4">
+          Judge reasoning
+        </Typography>
+        <Typography color="text.secondary">
+          Mock reasoning follows the majority and grouped judge votes.
+        </Typography>
+      </Stack>
+      {resultFixture.judgeVotes.map((vote) => (
         <Accordion key={vote.judge}>
           <AccordionSummary>
             <Typography sx={{ fontWeight: 800 }}>
@@ -60,11 +88,15 @@ export function ResultPage() {
           </AccordionDetails>
         </Accordion>
       ))}
-      <PageHeader
-        title="Advocate speeches"
-        description="Four mock speeches are grouped after judge reasoning."
-      />
-      {mockAdvocateSpeeches.map((speech) => (
+      <Stack spacing={1}>
+        <Typography component="h2" variant="h4">
+          Advocate speeches
+        </Typography>
+        <Typography color="text.secondary">
+          Four mock speeches are grouped after judge reasoning.
+        </Typography>
+      </Stack>
+      {resultFixture.advocateSpeeches.map((speech) => (
         <Accordion key={speech.participant}>
           <AccordionSummary>
             <Typography sx={{ fontWeight: 800 }}>

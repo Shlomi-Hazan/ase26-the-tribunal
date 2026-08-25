@@ -12,6 +12,9 @@ describe("mock history", () => {
     expect(screen.getByText("Verdict: NOT_GUILTY")).toBeVisible();
     expect(screen.getByText("No verdict")).toBeVisible();
     expect(screen.getByText(/static mock history only/i)).toBeVisible();
+    expect(
+      screen.queryByRole("heading", { name: "No cases yet" })
+    ).not.toBeInTheDocument();
   });
 
   it("renders the empty-state component", () => {

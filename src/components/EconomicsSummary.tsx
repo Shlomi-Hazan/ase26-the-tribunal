@@ -4,6 +4,7 @@ import {
   Table,
   TableBody,
   TableCell,
+  TableContainer,
   TableHead,
   TableRow,
   Typography
@@ -25,36 +26,44 @@ export function EconomicsSummary({ detailed = false }: { detailed?: boolean }) {
           billing.
         </Typography>
         {detailed ? (
-          <Table aria-label="Mock economics attempts" sx={{ mt: 2 }}>
-            <TableHead>
-              <TableRow>
-                <TableCell>Participant</TableCell>
-                <TableCell>Attempt</TableCell>
-                <TableCell>Model</TableCell>
-                <TableCell>Input</TableCell>
-                <TableCell>Output</TableCell>
-                <TableCell>Total</TableCell>
-                <TableCell>Cost</TableCell>
-                <TableCell>Latency</TableCell>
-                <TableCell>Status</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {mockEconomicsRows.map((row) => (
-                <TableRow key={`${row.participant}-${row.attempt}`}>
-                  <TableCell>{row.participant}</TableCell>
-                  <TableCell>{row.attempt}</TableCell>
-                  <TableCell>{row.model}</TableCell>
-                  <TableCell>{row.input}</TableCell>
-                  <TableCell>{row.output}</TableCell>
-                  <TableCell>{row.total}</TableCell>
-                  <TableCell>{row.cost}</TableCell>
-                  <TableCell>{row.latency}</TableCell>
-                  <TableCell>{row.status}</TableCell>
+          <TableContainer
+            data-testid="economics-table-scroll"
+            sx={{ mt: 2, maxWidth: "100%", overflowX: "auto" }}
+          >
+            <Table
+              aria-label="Mock economics attempts"
+              sx={{ minWidth: 840, whiteSpace: "nowrap" }}
+            >
+              <TableHead>
+                <TableRow>
+                  <TableCell>Participant</TableCell>
+                  <TableCell>Attempt</TableCell>
+                  <TableCell>Model</TableCell>
+                  <TableCell>Input</TableCell>
+                  <TableCell>Output</TableCell>
+                  <TableCell>Total</TableCell>
+                  <TableCell>Cost</TableCell>
+                  <TableCell>Latency</TableCell>
+                  <TableCell>Status</TableCell>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHead>
+              <TableBody>
+                {mockEconomicsRows.map((row) => (
+                  <TableRow key={`${row.participant}-${row.attempt}`}>
+                    <TableCell>{row.participant}</TableCell>
+                    <TableCell>{row.attempt}</TableCell>
+                    <TableCell>{row.model}</TableCell>
+                    <TableCell>{row.input}</TableCell>
+                    <TableCell>{row.output}</TableCell>
+                    <TableCell>{row.total}</TableCell>
+                    <TableCell>{row.cost}</TableCell>
+                    <TableCell>{row.latency}</TableCell>
+                    <TableCell>{row.status}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
         ) : null}
       </CardContent>
     </Card>

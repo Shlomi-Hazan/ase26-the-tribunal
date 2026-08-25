@@ -1,12 +1,17 @@
-import { Box, Button, Paper, Stack } from "@mui/material";
+import { Box, Button, Paper, Stack, Typography } from "@mui/material";
 import { Link as RouterLink } from "react-router-dom";
 import { ExecutionModeControl } from "../components/ExecutionModeControl";
 import { PageHeader } from "../components/PageHeader";
 import { ParticipantCard } from "../components/ParticipantCard";
 import { SetupStepper } from "../components/SetupStepper";
+import { areJudgePersonalitiesValid } from "../features/case-setup/setupState";
+import { useSetup } from "../features/case-setup/useSetup";
 import { judgeParticipants } from "../mocks/tribunalMockData";
 
 export function JudgesPage() {
+  const { state } = useSetup();
+  const canContinue = areJudgePersonalitiesValid(state);
+
   return (
     <Stack spacing={4}>
       <SetupStepper />
@@ -33,10 +38,21 @@ export function JudgesPage() {
         <Button component={RouterLink} to="/new/advocates" variant="outlined">
           Back
         </Button>
-        <Button component={RouterLink} to="/new/review" variant="contained">
-          Review Tribunal
-        </Button>
+        {canContinue ? (
+          <Button component={RouterLink} to="/new/review" variant="contained">
+            Review Tribunal
+          </Button>
+        ) : (
+          <Button disabled variant="contained">
+            Review Tribunal
+          </Button>
+        )}
       </Stack>
+      {!canContinue ? (
+        <Typography color="text.secondary" variant="body2">
+          Complete all three judge personalities before review.
+        </Typography>
+      ) : null}
     </Stack>
   );
 }

@@ -12,6 +12,8 @@ export const chargeSheetLimits = {
   exactQuestion: 1000
 } as const;
 
+export const personalityLimit = 4000;
+
 type ChargeSheet = {
   defendant: string;
   act: string;
@@ -127,6 +129,60 @@ export function validateChargeSheet(chargeSheet: ChargeSheet) {
       chargeSheetLimits.exactQuestion
     )
   };
+}
+
+export function validateParticipantPersonality(value: string) {
+  const trimmed = value.trim();
+
+  if (trimmed.length === 0) {
+    return "Personality is required.";
+  }
+
+  if (trimmed.length > personalityLimit) {
+    return `Personality must be ${personalityLimit.toLocaleString()} characters or fewer.`;
+  }
+
+  return "";
+}
+
+export function isChargeSheetValid(chargeSheet: ChargeSheet) {
+  return Object.values(validateChargeSheet(chargeSheet)).every((error) => !error);
+}
+
+function areParticipantPersonalitiesValid(
+  state: SetupState,
+  participantIds: ParticipantId[]
+) {
+  return participantIds.every(
+    (participantId) =>
+      !validateParticipantPersonality(state.participants[participantId].personality)
+  );
+}
+
+export function areAdvocatePersonalitiesValid(state: SetupState) {
+  return areParticipantPersonalitiesValid(
+    state,
+    allParticipants
+      .filter((participant) => participant.kind === "advocate")
+      .map((participant) => participant.id)
+  );
+}
+
+export function areJudgePersonalitiesValid(state: SetupState) {
+  return areParticipantPersonalitiesValid(
+    state,
+    allParticipants
+      .filter((participant) => participant.kind === "judge")
+      .map((participant) => participant.id)
+  );
+}
+
+export function isMockSetupReady(state: SetupState) {
+  return (
+    isChargeSheetValid(state.chargeSheet) &&
+    areAdvocatePersonalitiesValid(state) &&
+    areJudgePersonalitiesValid(state)
+  );
 }
 
 function validateTextField(label: string, value: string, limit: number) {

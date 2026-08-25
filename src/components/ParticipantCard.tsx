@@ -6,6 +6,10 @@ import {
   TextField,
   Typography
 } from "@mui/material";
+import {
+  personalityLimit,
+  validateParticipantPersonality
+} from "../features/case-setup/setupState";
 import { useSetup } from "../features/case-setup/useSetup";
 import type { Participant } from "../mocks/tribunalMockData";
 import { ModelSelect } from "./ModelSelect";
@@ -13,7 +17,8 @@ import { ModelSelect } from "./ModelSelect";
 export function ParticipantCard({ participant }: { participant: Participant }) {
   const { state, dispatch } = useSetup();
   const config = state.participants[participant.id];
-  const missingPersonality = config.personality.trim().length === 0;
+  const personalityError = validateParticipantPersonality(config.personality);
+  const hasPersonalityError = Boolean(personalityError);
 
   return (
     <Card
@@ -41,13 +46,14 @@ export function ParticipantCard({ participant }: { participant: Participant }) {
             </Typography>
           </Stack>
           <TextField
-            error={missingPersonality}
+            error={hasPersonalityError}
             fullWidth
             helperText={
-              missingPersonality
-                ? "Personality is required."
-                : "Personality is user-provided behavioural context."
+              hasPersonalityError
+                ? `${personalityError} ${config.personality.length}/${personalityLimit} characters.`
+                : `Personality is user-provided behavioural context. ${config.personality.length}/${personalityLimit} characters.`
             }
+            id={`${participant.id}-personality`}
             label={`${participant.label} personality`}
             minRows={5}
             multiline
@@ -58,6 +64,12 @@ export function ParticipantCard({ participant }: { participant: Participant }) {
                 value: event.target.value
               })
             }
+            required
+            slotProps={{
+              htmlInput: {
+                maxLength: personalityLimit
+              }
+            }}
             value={config.personality}
           />
           <Button disabled variant="outlined">

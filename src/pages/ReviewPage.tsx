@@ -12,12 +12,27 @@ import { Link as RouterLink } from "react-router-dom";
 import { EconomicsSummary } from "../components/EconomicsSummary";
 import { PageHeader } from "../components/PageHeader";
 import { SetupStepper } from "../components/SetupStepper";
+import {
+  areAdvocatePersonalitiesValid,
+  areJudgePersonalitiesValid,
+  isChargeSheetValid,
+  isMockSetupReady
+} from "../features/case-setup/setupState";
 import { useSetup } from "../features/case-setup/useSetup";
 import { allParticipants, mockModels } from "../mocks/tribunalMockData";
 
 export function ReviewPage() {
   const { state } = useSetup();
   const sharedModel = mockModels.find((model) => model.id === state.sharedModelId);
+  const chargeSheetValid = isChargeSheetValid(state.chargeSheet);
+  const advocatesValid = areAdvocatePersonalitiesValid(state);
+  const judgesValid = areJudgePersonalitiesValid(state);
+  const canConvene = isMockSetupReady(state);
+  const blockedReasons = [
+    !chargeSheetValid ? "Charge Sheet fields must be complete and valid." : "",
+    !advocatesValid ? "All four advocate personalities must be valid." : "",
+    !judgesValid ? "All three judge personalities must be valid." : ""
+  ].filter(Boolean);
 
   return (
     <Stack spacing={4}>
@@ -128,6 +143,31 @@ export function ReviewPage() {
         </CardContent>
       </Card>
       <EconomicsSummary />
+      {!canConvene ? (
+        <Alert severity="error">
+          <Stack spacing={1}>
+            <Typography sx={{ fontWeight: 800 }}>
+              Mock Tribunal cannot be convened yet.
+            </Typography>
+            {blockedReasons.map((reason) => (
+              <Typography key={reason} variant="body2">
+                {reason}
+              </Typography>
+            ))}
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+              <Button component={RouterLink} to="/new/charge-sheet" variant="outlined">
+                Edit Charge Sheet
+              </Button>
+              <Button component={RouterLink} to="/new/advocates" variant="outlined">
+                Edit Advocates
+              </Button>
+              <Button component={RouterLink} to="/new/judges" variant="outlined">
+                Edit Judges
+              </Button>
+            </Stack>
+          </Stack>
+        </Alert>
+      ) : null}
       <Alert severity="warning">
         This V1 course demo stores submitted cases in shared demo history. Do
         not submit sensitive, private, confidential, or identifying information.
@@ -136,13 +176,19 @@ export function ReviewPage() {
         <Button component={RouterLink} to="/new/judges" variant="outlined">
           Back
         </Button>
-        <Button
-          component={RouterLink}
-          to="/demo/deliberation?scenario=running"
-          variant="contained"
-        >
-          Convene Tribunal
-        </Button>
+        {canConvene ? (
+          <Button
+            component={RouterLink}
+            to="/demo/deliberation?scenario=running"
+            variant="contained"
+          >
+            Convene Tribunal
+          </Button>
+        ) : (
+          <Button disabled variant="contained">
+            Convene Tribunal
+          </Button>
+        )}
       </Stack>
     </Stack>
   );

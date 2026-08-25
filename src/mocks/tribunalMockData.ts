@@ -46,6 +46,29 @@ export type EconomicsRow = {
   status: "Success" | "Failed";
 };
 
+export type MockJudgeVote = {
+  judge: string;
+  verdict: Verdict;
+  model: string;
+  personality: string;
+  reasoning: string;
+};
+
+export type MockAdvocateSpeech = {
+  participant: string;
+  side: AdvocateSide;
+  model: string;
+  personality: string;
+  speech: string;
+};
+
+export type MockResultFixture = {
+  id: string;
+  majorityVerdict: Verdict;
+  judgeVotes: MockJudgeVote[];
+  advocateSpeeches: MockAdvocateSpeech[];
+};
+
 export const advocateParticipants: Participant[] = [
   { id: "advocate-pro-1", label: "PRO I", kind: "advocate", side: "PRO" },
   { id: "advocate-pro-2", label: "PRO II", kind: "advocate", side: "PRO" },
@@ -95,7 +118,7 @@ export const defaultPersonalityByParticipant: Record<ParticipantId, string> = {
   "judge-3": "Strict about evidence quality and explicit uncertainty."
 };
 
-export const mockJudgeVotes = [
+export const mockJudgeVotes: MockJudgeVote[] = [
   {
     judge: "Judge I",
     verdict: "GUILTY" as Verdict,
@@ -122,7 +145,7 @@ export const mockJudgeVotes = [
   }
 ];
 
-export const mockAdvocateSpeeches = [
+export const mockAdvocateSpeeches: MockAdvocateSpeech[] = [
   {
     participant: "PRO I",
     side: "PRO",
@@ -156,6 +179,52 @@ export const mockAdvocateSpeeches = [
       "A practical reading leaves room for mistake, ambiguity, or incomplete context. The Tribunal should resist turning an incomplete record into certainty."
   }
 ];
+
+export const mockResultFixtures: Record<string, MockResultFixture> = {
+  current: {
+    id: "current",
+    majorityVerdict: "GUILTY",
+    judgeVotes: mockJudgeVotes,
+    advocateSpeeches: mockAdvocateSpeeches
+  },
+  "hist-1": {
+    id: "hist-1",
+    majorityVerdict: "GUILTY",
+    judgeVotes: mockJudgeVotes,
+    advocateSpeeches: mockAdvocateSpeeches
+  },
+  "hist-2": {
+    id: "hist-2",
+    majorityVerdict: "NOT_GUILTY",
+    judgeVotes: [
+      {
+        judge: "Judge I",
+        verdict: "NOT_GUILTY",
+        model: "Mock Free Deliberator",
+        personality: defaultPersonalityByParticipant["judge-1"],
+        reasoning:
+          "The first judge finds the outage evidence plausible but not specific enough to resolve responsibility against Dana."
+      },
+      {
+        judge: "Judge II",
+        verdict: "NOT_GUILTY",
+        model: "Mock Low-Cost Judge",
+        personality: defaultPersonalityByParticipant["judge-2"],
+        reasoning:
+          "The second judge gives weight to competing system-failure explanations and treats the record as incomplete."
+      },
+      {
+        judge: "Judge III",
+        verdict: "GUILTY",
+        model: "Mock Deep Review",
+        personality: defaultPersonalityByParticipant["judge-3"],
+        reasoning:
+          "The third judge reads the timeline as enough to attribute responsibility, but remains in the minority."
+      }
+    ],
+    advocateSpeeches: mockAdvocateSpeeches
+  }
+};
 
 export const mockEconomicsRows: EconomicsRow[] = [
   {

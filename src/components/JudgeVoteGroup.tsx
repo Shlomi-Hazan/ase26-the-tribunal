@@ -1,7 +1,7 @@
 import { Box, Card, CardContent, Stack, Typography } from "@mui/material";
-import { mockJudgeVotes } from "../mocks/tribunalMockData";
+import type { MockJudgeVote } from "../mocks/tribunalMockData";
 
-export function JudgeVoteGroup() {
+export function JudgeVoteGroup({ votes }: { votes: MockJudgeVote[] }) {
   return (
     <Card component="section" data-testid="judge-vote-group">
       <CardContent>
@@ -16,7 +16,7 @@ export function JudgeVoteGroup() {
             mt: 2
           }}
         >
-          {mockJudgeVotes.map((vote) => (
+          {votes.map((vote) => (
             <Stack
               key={vote.judge}
               spacing={0.5}

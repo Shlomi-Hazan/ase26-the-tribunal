@@ -14,7 +14,10 @@ describe("mock result hierarchy", () => {
     const economics = screen.getByTestId("economics-section");
 
     expect(verdict).toBeVisible();
-    expect(screen.getByRole("heading", { name: "GUILTY" })).toBeVisible();
+    expect(
+      screen.getByRole("heading", { level: 1, name: "GUILTY" })
+    ).toBeVisible();
+    expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
     expect(screen.getByText(/deterministic majority/i)).toBeVisible();
     expect(within(voteGroup).getByText("Judge I")).toBeVisible();
     expect(within(voteGroup).getByText("Judge II")).toBeVisible();
@@ -33,9 +36,66 @@ describe("mock result hierarchy", () => {
     ).toBeTruthy();
   });
 
-  it("discloses historical result reopening", () => {
-    renderWithAppProviders(<AppRoutes />, "/demo/result?source=history");
+  it("uses subordinate heading levels for result sections", () => {
+    renderWithAppProviders(<AppRoutes />, "/demo/result");
+
+    expect(screen.getByRole("heading", { level: 2, name: "Three judge votes" }))
+      .toBeVisible();
+    expect(screen.getByRole("heading", { level: 2, name: "Judge reasoning" }))
+      .toBeVisible();
+    expect(screen.getByRole("heading", { level: 2, name: "Advocate speeches" }))
+      .toBeVisible();
+    expect(screen.getByRole("heading", { level: 2, name: "Mock economics" }))
+      .toBeVisible();
+  });
+
+  it("renders historical GUILTY and NOT_GUILTY fixtures consistently", () => {
+    const guiltyResult = renderWithAppProviders(
+      <AppRoutes />,
+      "/demo/result?source=history&case=hist-1"
+    );
 
     expect(screen.getByText(/model calls are not being repeated/i)).toBeVisible();
+    expect(
+      screen.getByRole("heading", { level: 1, name: "GUILTY" })
+    ).toBeVisible();
+    guiltyResult.unmount();
+
+    renderWithAppProviders(
+      <AppRoutes />,
+      "/demo/result?source=history&case=hist-2"
+    );
+
+    expect(screen.getByText(/model calls are not being repeated/i)).toBeVisible();
+    expect(
+      screen.getByRole("heading", { level: 1, name: "NOT_GUILTY" })
+    ).toBeVisible();
+
+    const voteGroup = screen.getByTestId("judge-vote-group");
+    expect(within(voteGroup).getAllByText("NOT_GUILTY")).toHaveLength(2);
+    expect(within(voteGroup).getAllByText("GUILTY")).toHaveLength(1);
+  });
+
+  it("shows a safe mock not-found state for unknown historical result ids", () => {
+    renderWithAppProviders(
+      <AppRoutes />,
+      "/demo/result?source=history&case=unknown"
+    );
+
+    expect(
+      screen.getByText(/mock historical result could not be found/i)
+    ).toBeVisible();
+    expect(
+      screen.getByRole("link", { name: "Return to Past Cases" })
+    ).toBeVisible();
+  });
+
+  it("contains detailed economics in a scrollable table region", () => {
+    renderWithAppProviders(<AppRoutes />, "/demo/result");
+
+    const scrollRegion = screen.getByTestId("economics-table-scroll");
+    expect(
+      within(scrollRegion).getByRole("table", { name: "Mock economics attempts" })
+    ).toBeVisible();
   });
 });

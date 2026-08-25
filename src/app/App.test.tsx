@@ -1,4 +1,5 @@
 import { screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { AppShell } from "../layout/AppShell";
 import { renderWithAppProviders } from "../test/renderWithAppProviders";
@@ -21,6 +22,20 @@ describe("application shell and routing", () => {
     expect(screen.getByRole("link", { name: "New Case" })).toBeVisible();
     expect(screen.getByRole("link", { name: "Past Cases" })).toBeVisible();
     expect(screen.getByText(/not legal advice/i)).toBeVisible();
+  });
+
+  it("supports keyboard traversal through primary navigation", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.tab();
+    expect(screen.getByRole("link", { name: "The Tribunal" })).toHaveFocus();
+
+    await user.tab();
+    expect(screen.getByRole("link", { name: "New Case" })).toHaveFocus();
+
+    await user.tab();
+    expect(screen.getByRole("link", { name: "Past Cases" })).toHaveFocus();
   });
 
   it("renders New Case and Past Cases routes", () => {

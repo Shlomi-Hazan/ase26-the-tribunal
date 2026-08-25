@@ -1,12 +1,17 @@
-import { Box, Button, Paper, Stack } from "@mui/material";
+import { Box, Button, Paper, Stack, Typography } from "@mui/material";
 import { Link as RouterLink } from "react-router-dom";
 import { ExecutionModeControl } from "../components/ExecutionModeControl";
 import { PageHeader } from "../components/PageHeader";
 import { ParticipantCard } from "../components/ParticipantCard";
 import { SetupStepper } from "../components/SetupStepper";
+import { areAdvocatePersonalitiesValid } from "../features/case-setup/setupState";
+import { useSetup } from "../features/case-setup/useSetup";
 import { advocateParticipants } from "../mocks/tribunalMockData";
 
 export function AdvocatesPage() {
+  const { state } = useSetup();
+  const canContinue = areAdvocatePersonalitiesValid(state);
+
   return (
     <Stack spacing={4}>
       <SetupStepper />
@@ -33,10 +38,21 @@ export function AdvocatesPage() {
         <Button component={RouterLink} to="/new/charge-sheet" variant="outlined">
           Back
         </Button>
-        <Button component={RouterLink} to="/new/judges" variant="contained">
-          Continue to Judges
-        </Button>
+        {canContinue ? (
+          <Button component={RouterLink} to="/new/judges" variant="contained">
+            Continue to Judges
+          </Button>
+        ) : (
+          <Button disabled variant="contained">
+            Continue to Judges
+          </Button>
+        )}
       </Stack>
+      {!canContinue ? (
+        <Typography color="text.secondary" variant="body2">
+          Complete all four advocate personalities before continuing.
+        </Typography>
+      ) : null}
     </Stack>
   );
 }
