@@ -1,6 +1,8 @@
 import type { HandlerEvent } from "@netlify/functions";
 import { describe, expect, it } from "vitest";
 import { FakeOpenRouterProvider } from "../../server/openrouter/fakeProvider";
+import { ModelMetadataCache } from "../../server/openrouter/cache";
+import type { RawOpenRouterEndpoint, RawOpenRouterModel } from "../../server/openrouter/schemas";
 import { handleModelsRequest } from "../models";
 
 function providerWithModels() {
@@ -60,7 +62,7 @@ describe("GET /api/models", () => {
   it("returns only eligible, sanitized models -- never the raw catalog shape", async () => {
     const response = await handleModelsRequest(
       { httpMethod: "GET" } as HandlerEvent,
-      providerWithModels()
+      { provider: providerWithModels() }
     );
     const payload = JSON.parse(response.body ?? "");
 
@@ -74,7 +76,7 @@ describe("GET /api/models", () => {
   it("marks the zero-priced model as FREE and the paid one as a paid tier", async () => {
     const response = await handleModelsRequest(
       { httpMethod: "GET" } as HandlerEvent,
-      providerWithModels()
+      { provider: providerWithModels() }
     );
     const payload = JSON.parse(response.body ?? "");
     const byId = Object.fromEntries(
@@ -89,7 +91,7 @@ describe("GET /api/models", () => {
   it("never exposes a credential in the response", async () => {
     const response = await handleModelsRequest(
       { httpMethod: "GET" } as HandlerEvent,
-      providerWithModels()
+      { provider: providerWithModels() }
     );
 
     expect(response.body).not.toContain("OPENROUTER_API_KEY");
@@ -99,9 +101,44 @@ describe("GET /api/models", () => {
   it("rejects non-GET methods safely", async () => {
     const response = await handleModelsRequest(
       { httpMethod: "POST" } as HandlerEvent,
-      providerWithModels()
+      { provider: providerWithModels() }
     );
 
     expect(response.statusCode).toBe(405);
+  });
+
+  it("exposes conservativeFullTribunalEstimateUsd (never the old misleading single-call name)", async () => {
+    const response = await handleModelsRequest(
+      { httpMethod: "GET" } as HandlerEvent,
+      { provider: providerWithModels() }
+    );
+    const payload = JSON.parse(response.body ?? "");
+    const paid = payload.models.find((m: { id: string }) => m.id === "openai/gpt-5-paid");
+
+    expect(paid).toHaveProperty("conservativeFullTribunalEstimateUsd");
+    expect(paid).not.toHaveProperty("conservativeSingleCallEstimateUsd");
+    expect(typeof paid.conservativeFullTribunalEstimateUsd).toBe("string");
+    expect(Number(paid.conservativeFullTribunalEstimateUsd)).toBeGreaterThan(0);
+  });
+
+  it("reuses fresh metadata across a warm invocation within the TTL (module-scope cache wiring)", async () => {
+    const provider = providerWithModels();
+    const modelCache = new ModelMetadataCache<RawOpenRouterModel[]>();
+    const endpointCache = new ModelMetadataCache<RawOpenRouterEndpoint[]>();
+
+    await handleModelsRequest({ httpMethod: "GET" } as HandlerEvent, {
+      provider,
+      modelCache,
+      endpointCache
+    });
+    const callCountAfterFirst = provider.listModelsCallCount;
+
+    await handleModelsRequest({ httpMethod: "GET" } as HandlerEvent, {
+      provider,
+      modelCache,
+      endpointCache
+    });
+
+    expect(provider.listModelsCallCount).toBe(callCountAfterFirst);
   });
 });

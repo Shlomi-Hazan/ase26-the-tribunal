@@ -9,6 +9,10 @@ import {
   toPreflightResponse
 } from "../server/openrouter/preflightResponses";
 import { runPreflight, type PreflightServiceDeps } from "../server/openrouter/preflight";
+import {
+  sharedEndpointCache,
+  sharedModelCache
+} from "../server/openrouter/sharedMetadataCache";
 import { RunValidationError } from "../server/runs";
 import { createSupabaseIdempotentCaseRepository } from "../server/cases";
 import { createSupabaseRunRepository } from "../server/runs";
@@ -17,9 +21,17 @@ const preflightRequestSchema = z.strictObject({
   runId: z.string().uuid("runId must be a valid UUID.")
 });
 
+// Correction (independent review, pre-live gate): modelCache/endpointCache
+// are no longer excluded here -- the real `handler` below now injects the
+// shared, module-scope cache singletons (sharedMetadataCache.ts) so warm
+// invocations actually reuse fresh metadata within the 5-minute TTL
+// instead of recreating an empty cache on every request. Tests still
+// call handlePreflightRequest directly with their own fakes and simply
+// omit modelCache/endpointCache/clock, which runPreflight's own defaults
+// (a fresh per-call cache) already handle safely.
 export async function handlePreflightRequest(
   event: HandlerEvent,
-  deps: Omit<PreflightServiceDeps, "clock" | "modelCache" | "endpointCache">
+  deps: Omit<PreflightServiceDeps, "clock">
 ) {
   try {
     if (event.httpMethod !== "POST") {
@@ -42,7 +54,13 @@ export const handler: Handler = async (event) => {
         createSupabaseRunRepository(),
         createSupabaseIdempotentCaseRepository()
       ),
-      provider: new RealOpenRouterProvider(readOpenRouterServerConfig())
+      provider: new RealOpenRouterProvider(readOpenRouterServerConfig()),
+      // Shared with GET /api/models (netlify/functions/models.ts) --
+      // module-scope singletons that persist across warm invocations of
+      // this function container, giving the approved 5-minute TTL cache
+      // its intended effect in production.
+      modelCache: sharedModelCache,
+      endpointCache: sharedEndpointCache
     });
   } catch (error) {
     // Repository/provider construction (e.g. missing server config) can

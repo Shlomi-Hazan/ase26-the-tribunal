@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ADVOCATE_PROMPT_VERSION, JUDGE_PROMPT_VERSION } from "../../../src/prompts/versions";
 import { participantIds, type ParticipantId } from "../../../src/schemas/tribunalSetup";
 import { FakeOpenRouterProvider } from "./fakeProvider";
-import { ModelMetadataCache } from "./cache";
+import { MODEL_METADATA_TTL_MS, ModelMetadataCache } from "./cache";
 import { ProviderError } from "./errors";
 import {
   PreflightPersistenceError,
@@ -296,7 +296,7 @@ describe("runPreflight -- response contract", () => {
 
     const result = await runPreflight(testRun.id, { runLoader: loader, provider });
 
-    expect(result.hardBudgetUsd).toBe("5.000000");
+    expect(result.hardBudgetUsd).toBe("5");
   });
 
   it("preserves canonical participant order in the response", async () => {
@@ -376,5 +376,98 @@ describe("runPreflight -- deterministic repeat with a fresh cache", () => {
     expect(second.participants.map((p) => p.pricing?.effectiveInputPricePerToken)).toEqual(
       first.participants.map((p) => p.pricing?.effectiveInputPricePerToken)
     );
+  });
+
+  // Cache production-wiring tests (independent review, pre-live gate,
+  // Section 18). These exercise the actual runPreflight/service dependency
+  // boundary, not cache.ts in isolation (already covered by cache.test.ts).
+
+  it("A: the first invocation calls the provider for metadata", async () => {
+    const testRun = run();
+    const loader = new FakeRunLoader({ [testRun.id]: testRun });
+    const provider = providerFor(cheapModel());
+    const modelCache = new ModelMetadataCache<RawOpenRouterModel[]>();
+    const endpointCache = new ModelMetadataCache<RawOpenRouterEndpoint[]>();
+
+    await runPreflight(testRun.id, { runLoader: loader, provider, modelCache, endpointCache });
+
+    expect(provider.listModelsCallCount).toBeGreaterThan(0);
+  });
+
+  it("C: a second invocation at exactly the TTL boundary refetches (stale, not fresh)", async () => {
+    const testRun = run();
+    const loader = new FakeRunLoader({ [testRun.id]: testRun });
+    const provider = providerFor(cheapModel());
+    let now = 1_000_000;
+    const clock = () => now;
+    const modelCache = new ModelMetadataCache<RawOpenRouterModel[]>(undefined, clock);
+    const endpointCache = new ModelMetadataCache<RawOpenRouterEndpoint[]>(undefined, clock);
+
+    await runPreflight(testRun.id, {
+      runLoader: loader,
+      provider,
+      modelCache,
+      endpointCache,
+      clock
+    });
+    const callCountAfterFirst = provider.listModelsCallCount;
+
+    now += MODEL_METADATA_TTL_MS; // exactly at the TTL boundary -- stale
+    await runPreflight(testRun.id, {
+      runLoader: loader,
+      provider,
+      modelCache,
+      endpointCache,
+      clock
+    });
+
+    expect(provider.listModelsCallCount).toBe(callCountAfterFirst + 1);
+  });
+
+  it("D: stale cache + provider failure on refetch blocks with a safe reason code, never serves stale metadata as fresh", async () => {
+    const testRun = run();
+    const loader = new FakeRunLoader({ [testRun.id]: testRun });
+    const provider = providerFor(cheapModel());
+    let now = 1_000_000;
+    const clock = () => now;
+    const modelCache = new ModelMetadataCache<RawOpenRouterModel[]>(undefined, clock);
+    const endpointCache = new ModelMetadataCache<RawOpenRouterEndpoint[]>(undefined, clock);
+
+    await runPreflight(testRun.id, {
+      runLoader: loader,
+      provider,
+      modelCache,
+      endpointCache,
+      clock
+    });
+
+    now += MODEL_METADATA_TTL_MS; // stale
+    provider.listModelsError = new ProviderError("PROVIDER_5XX", "provider down");
+
+    const result = await runPreflight(testRun.id, {
+      runLoader: loader,
+      provider,
+      modelCache,
+      endpointCache,
+      clock
+    });
+
+    expect(result.eligible).toBe(false);
+    expect(result.blockedReasonCodes).toContain("PRICING_UNAVAILABLE");
+  });
+
+  it("runPreflight defaults to a fresh per-call cache when none is injected (never shares state across unrelated calls)", async () => {
+    const testRun = run();
+    const loader = new FakeRunLoader({ [testRun.id]: testRun });
+    const provider = providerFor(cheapModel());
+
+    await runPreflight(testRun.id, { runLoader: loader, provider });
+    const callCountAfterFirst = provider.listModelsCallCount;
+
+    await runPreflight(testRun.id, { runLoader: loader, provider });
+
+    // No cache injected on either call -> each call gets its own fresh
+    // cache internally, so the provider is called again the second time.
+    expect(provider.listModelsCallCount).toBeGreaterThan(callCountAfterFirst);
   });
 });

@@ -1,46 +1,36 @@
 // Milestone 7 -- sanitized model/route discovery surface
 // (ARCHITECTURE.md Sec 5.3). Never proxies the raw OpenRouter catalog
-// directly, never exposes credentials. Independent of any specific frozen
-// run -- uses a worst-case-length synthetic input (the same conservative
-// philosophy as docs/economics.md Sec 10.1's Hebrew-input rationale, since
-// no real participant text exists yet at discovery time) so a route is
-// never optimistically classified against a shorter estimate than a real
-// run could actually need.
+// directly, never exposes credentials.
+//
+// Corrections (independent review, pre-live gate):
+//   - the tier is now the SAME centralized complete-Tribunal route-tier
+//     figure preflight.ts uses for `participant.priceTier`
+//     (routeTierEconomics.ts) -- previously this endpoint classified the
+//     tier from a single advocate attempt's cost only (no retry reserve,
+//     no judge economics at all), which could materially understate a
+//     route's real Tribunal-scale cost category.
+//   - metadata fetches now go through the shared, injectable
+//     ModelMetadataCache (cache.ts) instead of calling the provider
+//     directly on every invocation, so a warm production container
+//     reuses fresh metadata within the 5-minute TTL exactly like
+//     preflight.ts already does, and stale metadata never authorizes
+//     discovery.
+//   - the returned field is renamed from the misleading
+//     `conservativeSingleCallEstimateUsd` (it was never just one call)
+//     to `conservativeFullTribunalEstimateUsd`, matching what it now
+//     actually contains.
 
-import {
-  chargeSheetLimits,
-  personalityLimit
-} from "../../../src/schemas/tribunalSetup";
-import { buildAdvocateSystemPrompt } from "../../../src/prompts/advocate-system";
+import { cachedFetch, ModelMetadataCache, type Clock } from "./cache";
 import type { PriceTier } from "./pricing";
-import { classifyPriceTier } from "./pricing";
-import {
-  computeCandidateAttemptCostUsd,
-  resolveModelRoute
-} from "./routeResolution";
+import { classifyPriceTier, toDecimalString, TIER_THRESHOLDS_USD } from "./pricing";
+import { resolveModelRoute } from "./routeResolution";
+import { computeConservativeFullTribunalCostForRoute } from "./routeTierEconomics";
 import {
   ADVOCATE_OUTPUT_CAP_TOKENS,
-  FIXED_PROMPT_OVERHEAD_TOKENS
+  worstCaseAdvocateInputTokens
 } from "./tokenEstimation";
 import type { OpenRouterProvider } from "./provider";
-import { toDecimalString, TIER_THRESHOLDS_USD } from "./pricing";
-
-// 2-byte UTF-8 character, matching docs/economics.md Sec 10.1's
-// Hebrew-input conservative rationale -- biases the worst-case synthetic
-// estimate higher than an ASCII-only worst case would.
-const WORST_CASE_CHAR = "א";
-
-function worstCaseInputTokens(): number {
-  const chargeSheetChars =
-    chargeSheetLimits.defendant + chargeSheetLimits.act + chargeSheetLimits.exactQuestion;
-  const worstCaseText =
-    buildAdvocateSystemPrompt("PRO") +
-    WORST_CASE_CHAR.repeat(personalityLimit) +
-    WORST_CASE_CHAR.repeat(chargeSheetChars);
-  const byteLength = new TextEncoder().encode(worstCaseText).length;
-
-  return Math.ceil(byteLength / 2) + FIXED_PROMPT_OVERHEAD_TOKENS;
-}
+import type { RawOpenRouterEndpoint, RawOpenRouterModel } from "./schemas";
 
 export type EligibleModel = {
   id: string;
@@ -52,8 +42,19 @@ export type EligibleModel = {
   completionPricePerMillion: string;
   isFree: boolean;
   priceTier: PriceTier;
-  conservativeSingleCallEstimateUsd: string;
+  // Renamed (independent review, pre-live gate) from
+  // conservativeSingleCallEstimateUsd -- this is the complete, retry-
+  // reserved, safety-factored 4-advocate/3-judge Tribunal shape costed
+  // on this exact route, not one call.
+  conservativeFullTribunalEstimateUsd: string;
   supportsStructuredOutput: boolean;
+};
+
+export type ModelDiscoveryDeps = {
+  provider: OpenRouterProvider;
+  modelCache?: ModelMetadataCache<RawOpenRouterModel[]>;
+  endpointCache?: ModelMetadataCache<RawOpenRouterEndpoint[]>;
+  clock?: Clock;
 };
 
 // Section 34: "follow ADR policy for ABOVE_PREMIUM exactly" -- ABOVE_PREMIUM
@@ -65,23 +66,35 @@ export type EligibleModel = {
 // it is returned, correctly labelled, so the (future) UI can make the
 // separate decision about how prominently to surface it, rather than the
 // API silently deciding for it.
-export async function listEligibleModels(
-  provider: OpenRouterProvider
-): Promise<EligibleModel[]> {
-  const models = await provider.listModels();
-  const estimatedInputTokens = worstCaseInputTokens();
-  const observedAt = new Date().toISOString();
+export async function listEligibleModels(deps: ModelDiscoveryDeps): Promise<EligibleModel[]> {
+  const clock = deps.clock ?? Date.now;
+  const modelCache =
+    deps.modelCache ?? new ModelMetadataCache<RawOpenRouterModel[]>(undefined, clock);
+  const endpointCache =
+    deps.endpointCache ?? new ModelMetadataCache<RawOpenRouterEndpoint[]>(undefined, clock);
+
+  // Eligibility filtering itself still uses the same worst-case advocate
+  // estimate as before (a route with too little context/prompt capacity
+  // for even the worst-case advocate request is never eligible at all);
+  // the TIER shown once eligible now comes from the centralized
+  // full-Tribunal helper, not this narrower per-endpoint figure.
+  const estimatedInputTokens = worstCaseAdvocateInputTokens();
+  const observedAt = new Date(clock()).toISOString();
   const results: EligibleModel[] = [];
+
+  const models = await cachedFetch(modelCache, "models", () => deps.provider.listModels());
 
   for (const model of models) {
     const separatorIndex = model.id.indexOf("/");
     const author = separatorIndex === -1 ? model.id : model.id.slice(0, separatorIndex);
     const slug = separatorIndex === -1 ? "" : model.id.slice(separatorIndex + 1);
 
-    let endpoints;
+    let endpoints: RawOpenRouterEndpoint[];
 
     try {
-      endpoints = await provider.listEndpoints(author, slug);
+      endpoints = await cachedFetch(endpointCache, model.id, () =>
+        deps.provider.listEndpoints(author, slug)
+      );
     } catch {
       continue;
     }
@@ -101,12 +114,10 @@ export async function listEligibleModels(
     }
 
     const { route } = resolution;
-    const attemptCostUsd = computeCandidateAttemptCostUsd(
-      route.pricing,
-      estimatedInputTokens,
-      ADVOCATE_OUTPUT_CAP_TOKENS
+    const conservativeFullTribunalCostUsd = computeConservativeFullTribunalCostForRoute(
+      route.pricing
     );
-    const priceTier = classifyPriceTier(attemptCostUsd);
+    const priceTier = classifyPriceTier(conservativeFullTribunalCostUsd);
 
     if (priceTier === "HARD_BLOCK") {
       continue;
@@ -122,7 +133,7 @@ export async function listEligibleModels(
       completionPricePerMillion: toDecimalString(route.pricing.completionPricePerMillion),
       isFree: priceTier === "FREE",
       priceTier,
-      conservativeSingleCallEstimateUsd: toDecimalString(attemptCostUsd),
+      conservativeFullTribunalEstimateUsd: toDecimalString(conservativeFullTribunalCostUsd),
       supportsStructuredOutput: route.supportedParameters.includes("response_format")
     });
   }
