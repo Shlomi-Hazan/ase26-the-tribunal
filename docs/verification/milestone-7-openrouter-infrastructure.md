@@ -62,7 +62,23 @@ table is the commit index only.
 |---|---|---|
 | 14 | `b1d0e45` | `fix: require complete Tribunal capability in model discovery` |
 | 15 | `ffa871f` | `fix: make M7 token bounds and pricing timestamps conservative` |
-| 16 | *(this evidence-update commit)* | `docs: finalize M7 pre-live correction evidence` |
+| 16 | `6846319` | `docs: finalize M7 pre-live correction evidence` |
+
+Exact-head CI on commit 16 (`6846319`): run `33011546917`, conclusion
+`success`, 27 files / 333 tests.
+
+## Third independent-review micro-correction pass (pre-live gate)
+
+A final, narrow source-level audit of the second correction pass above
+approved everything in it except two remaining implementation details
+that still violated the exact conservative/audit contract. See "Third
+independent review corrections" below for the full explanation; this
+table is the commit index only.
+
+| # | SHA | Message |
+|---|---|---|
+| 17 | `c47c8f2` | `fix: align M7 worst-case estimation with real request shape and fail closed on missing pricing timestamps` |
+| 18 | *(this evidence-update commit)* | `docs: record final M7 pre-live micro-corrections` |
 
 ## Scope implemented
 
@@ -189,7 +205,14 @@ speeches before any advocate has run. Output caps are hard ceilings:
 second independent-review pass** (see "Second independent review
 corrections," item 2, below) — the true conservative maximum under this
 application's actual validation semantics is a 3-byte-UTF-8 BMP
-character, not the originally-used 2-byte Hebrew character.
+character, not the originally-used 2-byte Hebrew character. **The
+canonical worst-case text SHAPE was further corrected in the third
+pass** (see "Third independent review corrections," item 1, below) — the
+right character alone was not sufficient; the synthetic text also needed
+the same application-added Charge Sheet separators and real "PRO"/"CON"
+side text the actual preflight estimator includes. Both corrections
+compose: the third pass's shared `serializeChargeSheetForModelContext`
+helper is filled with the second pass's corrected 3-byte character.
 
 ## Preflight service and API
 
@@ -236,7 +259,11 @@ resolved and evaluated candidates as ADVOCATE only, so a route could be
 returned as "eligible for a complete Tribunal" while actually failing
 judge output/context capacity. See "Second independent review
 corrections," item 1, below. `EligibleModel` also gained
-`pricingObservedAt` (item 3, below).
+`pricingObservedAt` (item 3, below). **Corrected in the third pass:**
+`pricingObservedAt` can no longer be a fabricated invocation-time value
+when the endpoint cache's true fetch timestamp is unexpectedly
+unavailable — the model is skipped instead. See "Third independent
+review corrections," item 2, below.
 
 ## Error / timeout normalization
 
@@ -597,28 +624,116 @@ correctly wired on its own — but correctness never depends on one
 function's fetch priming the other's cache; if the platform happens to
 colocate them, that is a harmless bonus, never a requirement.
 
+## Third independent review corrections (pre-live gate)
+
+A final, narrow source-level audit of the second correction pass above
+(commits 14–15) approved everything in it except two remaining
+implementation details that still violated the exact conservative/audit
+contract. This section is additive audit history, exactly like the two
+sections above — nothing recorded earlier in this document is retracted
+or rewritten.
+
+### 1. The canonical worst-case token helper now reproduces the real request shape
+
+**Before:** the second pass corrected the worst-case synthetic-text
+CHARACTER (item 2, above) but not its SHAPE.
+`worstCaseChargeSheetText()` concatenated the three Charge Sheet field
+limits (`defendant + act + exactQuestion`) into one run of characters
+with no separators, while the real `runPreflight` estimator
+(`preflight.ts`) joins `[defendant, act, exactQuestion]` with `"\n"` —
+two application-added separator bytes were missing from the canonical
+bound. `worstCaseAdvocateInputTokens()` also passed
+`sideInstructions: ""`, but a real `ADVOCATE` participant's `side` is
+always `"PRO"` or `"CON"` (`SIDE_BY_PARTICIPANT_ID` never maps an
+advocate seat to `null`) — those bytes were missing too. Together, this
+meant the canonical bound could be smaller than at least one valid
+maximum real advocate estimate, violating the required invariant
+"canonical worst-case estimate >= every valid actual estimate admitted
+by current application validation."
+
+**After:** `tokenEstimation.ts` adds ONE shared
+`serializeChargeSheetForModelContext({ defendant, act, exactQuestion })`
+helper, used by BOTH `runPreflight`'s real per-participant estimation
+and the synthetic worst-case text — the field order and the two `"\n"`
+separators can no longer silently drift apart into two independently-
+written copies. `worstCaseChargeSheetText()` now fills three separate
+`defendant`/`act`/`exactQuestion` fields (each at its own real limit)
+and serializes them through that shared helper.
+`worstCaseAdvocateInputTokens()` now computes both the real `"PRO"` and
+`"CON"` variants and takes the max, rather than assuming the two prompt
+variants are byte-identical today — a future wording change to only one
+side's prompt can never silently make the bound too small again.
+`worstCaseJudgeInputTokens()` inherits the corrected Charge Sheet
+serialization automatically; `routeTierEconomics.ts` and
+`modelDiscovery.ts`'s eligibility/tier checks, which consume these
+functions, inherit the full correction with no duplicated formula.
+
+### 2. `PricingSnapshot.observedAt` can no longer be fabricated
+
+**Before:** the second pass corrected `preflight.ts`/`modelDiscovery.ts`
+to prefer the endpoint cache's real fetch timestamp
+(`endpointCache.observedAt(key)`) over the current invocation time — but
+both still fell back to the invocation time
+(`endpointCache.observedAt(key) ?? currentInvocationTime`) if the cache
+timestamp was ever unexpectedly unavailable. That fallback fabricates an
+audit timestamp the application does not actually have — violating the
+stronger conservative/audit invariant that an unknown observation time
+must never be invented.
+
+**After:** `cache.ts` adds `requireCacheObservedAt(cache, key)`, which
+throws a dedicated `CacheObservedAtUnavailableError` instead of
+returning `null` or silently substituting `Date.now()`. Both
+`preflight.ts` and `modelDiscovery.ts` now call it immediately after
+their endpoint `cachedFetch`, inside the same `try` block that already
+handles metadata-fetch failures — a missing timestamp is treated exactly
+like any other fetch failure: `preflight.ts` blocks the affected
+participant with `PRICING_UNAVAILABLE`; `modelDiscovery.ts` skips the
+model entirely. Neither ever emits a fabricated `observedAt`/
+`pricingObservedAt`.
+
+### No-fabricated-telemetry review (Section 13 of the correction task)
+
+Reviewed nearby M7 telemetry/economics code for this same class of
+issue. Every other `??`/fallback pattern found was either: (a)
+unreachable dead code already gated by an earlier eligibility check
+(`endpoint.context_length ?? 0` / `supported_parameters ?? []` in
+`routeResolution.ts`/`modelDiscovery.ts` — `evaluateEndpoint` already
+requires these fields present and sufficient before route construction
+is ever reached); (b) a genuinely-optional-and-zero-meaning documented
+field (`pricing.request`'s absent-means-no-fee default, and the
+`cacheRead`/`cacheWrite ?? Decimal(0)` defaults inside `pricing.ts`'s
+`MAX(...)` formula, where "this endpoint doesn't report a cache rate"
+correctly contributes zero to the conservative maximum); or (c) a
+fallback that can only ever make eligibility MORE conservative, never
+silently accept unknown data as safe (`supported_parameters ?? []`
+causes a `.includes(...)` check to correctly fail closed, never pass, if
+the field were ever actually absent). No further fabricated-telemetry
+defect was found; `telemetry.ts`'s existing null-for-unavailable
+contract (never a fabricated zero) is unaffected and remains correct.
+
 ## Tests added
 
 162 tests across 12 test files were added by the initial implementation
 (commits 5–7). The first correction pass (commits 10–12) added 36 more.
-This second correction pass (commits 14–15) adds **23 more** across 1
-new file and 3 modified files, for **221 M7 tests total** (plus the 112
-pre-existing tests from Milestones 1–6 — **333 total** in the
+The second correction pass (commits 14–15) added 23 more. This third,
+final micro-correction pass (commit 17) adds **4 more** across 3
+modified files (no new files), for **225 M7 tests total** (plus the 112
+pre-existing tests from Milestones 1–6 — **337 total** in the
 repository, all passing, matching CI exactly):
 
 | File | Tests | New this pass | Category |
 |---|---|---|---|
 | `netlify/server/openrouter/pricing.test.ts` | 48 | — | Pricing normalization, overrides, discount validation, cache-write economics, tiers, unknown-key fail-closed, lossless serialization |
-| `netlify/server/openrouter/preflight.test.ts` | 26 | +5 | Preflight service: run/case loading, prompt-version gate, eligibility, response contract, zero side effects, deterministic repeat, cache production-wiring, observedAt fetch-timestamp semantics |
+| `netlify/server/openrouter/preflight.test.ts` | 27 | +1 | Preflight service: run/case loading, prompt-version gate, eligibility, response contract, zero side effects, deterministic repeat, cache production-wiring, observedAt fetch-timestamp semantics incl. missing-timestamp fail-closed regression |
 | `netlify/server/openrouter/routeResolution.test.ts` | 32 | — | Alias/dynamic blocking, unique pinnability, endpoint eligibility, deterministic selection |
 | `netlify/server/runs.test.ts` | 33 | — | (pre-existing M6 file) run validation, fingerprint determinism incl. role-specific prompt-version regression tests |
+| `netlify/server/openrouter/tokenEstimation.test.ts` | 17 | +2 | UTF-8 byte-length estimation, advocate/judge bounds, output caps; canonical worst-case-bound conservativeness proofs now against the REAL preflight request shape (shared Charge Sheet serializer, real PRO/CON side text) |
 | `netlify/functions/__tests__/runs.test.ts` | 16 | — | (pre-existing M6 file) `POST /api/runs` HTTP contract incl. fingerprint-uses-current-versions regression test |
-| `netlify/server/openrouter/tokenEstimation.test.ts` | 15 | +7 | UTF-8 byte-length estimation, advocate/judge bounds, output caps, canonical worst-case-bound conservativeness proofs (ASCII/2-byte/3-byte/4-byte) |
 | `src/prompts/schemas.test.ts` | 16 | — | Advocate/judge structured-output schemas, prompt content/side-enforcement, no-secrets check |
 | `netlify/server/openrouter/provider.test.ts` | 15 | — | Server config, real provider parsing/error normalization/timeout |
 | `netlify/server/openrouter/cache.test.ts` | 11 | — | TTL boundary, refresh-with-fallback semantics, deterministic eviction |
-| `netlify/server/openrouter/modelDiscovery.test.ts` | 9 | +9 (new file) | Dual-role (advocate + judge) endpoint eligibility, selection, and observedAt fetch-timestamp semantics for Shared-Tribunal discovery |
-| `netlify/functions/__tests__/models.test.ts` | 8 | +2 | `GET /api/models` HTTP contract incl. renamed field, cache-reuse, dual-role-eligibility, and pricingObservedAt regression tests |
+| `netlify/server/openrouter/modelDiscovery.test.ts` | 10 | +1 | Dual-role (advocate + judge) endpoint eligibility, selection, observedAt fetch-timestamp semantics, and missing-timestamp fail-closed regression for Shared-Tribunal discovery |
+| `netlify/functions/__tests__/models.test.ts` | 8 | — | `GET /api/models` HTTP contract incl. renamed field, cache-reuse, dual-role-eligibility, and pricingObservedAt regression tests |
 | `netlify/functions/__tests__/preflight.test.ts` | 9 | — | `POST /api/preflight` HTTP contract |
 | `netlify/server/openrouter/executionRequest.test.ts` | 8 | — | Future execution route/request-builder contract incl. max_price string-serialization regression tests |
 | `src/prompts/promptVersionDrift.test.ts` | 6 | — | Anti-drift check incl. fingerprint-source-uses-current-constants check |
@@ -626,7 +741,7 @@ repository, all passing, matching CI exactly):
 | `netlify/server/openrouter/telemetry.test.ts` | 3 | — | Telemetry schema |
 | `netlify/server/openrouter/sharedMetadataCache.test.ts` | 3 | — | Shared cache singleton wiring, boundedness |
 
-All 221 M7 tests run against the fake provider / mocked `fetch` — zero
+All 225 M7 tests run against the fake provider / mocked `fetch` — zero
 real OpenRouter network requests anywhere in the automated suite
 (explicitly asserted in `preflight.test.ts` and both HTTP-layer test
 files via a `fetch`-call-tracking guard).
@@ -636,7 +751,7 @@ files via a `fetch`-call-tracking guard).
 ```sh
 npm run lint          # 0 errors, 0 warnings
 npm run typecheck      # 0 errors
-npm run test           # 333 tests passed, 27 files, 0 failed
+npm run test           # 337 tests passed, 27 files, 0 failed
 npm run build           # succeeds
 npm run verify:client-bundle   # passed
 npm run verify           # full pipeline, all green
@@ -665,18 +780,17 @@ the built client bundle at all (it is a server-only dependency; no
 ## Verification evidence
 
 - `git diff --check origin/main...HEAD` — no whitespace errors (reverified
-  after both correction passes).
+  after all three correction passes).
 - No source file under `supabase/migrations/2026082500*` or
   `20260825214212*` (the M5/M6 migrations) is touched by this branch —
   `git diff --stat origin/main...HEAD -- <those three files>` is empty.
   The M7 migration file itself (`20260826173253_...sql`) was also
   reverified unchanged since the first correction pass's starting HEAD
-  (`637804a`) AND since the second correction pass's starting HEAD
-  (`8dc151a`) — no SQL edit was needed for either pass (the prompt-
-  version fingerprint fix and this pass's three fixes are all Node-layer
-  only).
+  (`637804a`), the second pass's starting HEAD (`8dc151a`), AND the
+  third pass's starting HEAD (`6846319`) — no SQL edit was needed for
+  any pass (every fix across all three passes is Node-layer only).
 - Read-only `npx supabase@2.115.0 migration list --linked`, reverified
-  before and after BOTH correction passes:
+  before and after ALL THREE correction passes:
   `{"local":"20260826173253","remote":"","...}"` — M7 migration remains
   local-only; M5/M6 remain local==remote. No `supabase db push` was ever
   run.
@@ -702,7 +816,13 @@ was appended recording, without erasing the original wording: (1) the
 `POST /api/runs` fingerprint-computation correction and why it does not
 violate ADR Decision 14's execution-wiring scope boundary; (2) the
 dual-role Shared-Tribunal discovery requirement; (3) the corrected UTF-8
-worst-case bound. Issue #11 remains **OPEN**, not closed.
+worst-case bound. **Updated again in the third pass** with a short
+addendum to item 3, clarifying that the character-choice correction
+alone was not sufficient — the synthetic text's shape (separators, real
+side text) also needed correcting — and noting the `observedAt`
+fail-closed fix, so item 3's wording could no longer be read as implying
+the worst-case bound was already fully complete. Issue #11 remains
+**OPEN**, not closed.
 
 ## Not yet live-verified
 
