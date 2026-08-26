@@ -156,6 +156,58 @@ real OpenAPI `PublicPricing`/`PricingOverride` schemas:
   mathematically impossible for `(1 - discount)` with `discount ∈ [0, 1]`
   to exceed `1` — see Decision 7A.
 
+**Additional verification (this pass — cache economics)**, against the
+real OpenAPI `PublicPricing` schema and OpenRouter's official prompt-
+caching guide
+(`https://openrouter.ai/docs/guides/best-practices/prompt-caching`):
+
+- **The schema exposes three cache-related price fields**, all currently
+  documented on `PublicPricing`: `input_cache_read` ("Price in USD per
+  cached input token (read)"), `input_cache_write` ("Price per
+  cache-write token, in USD per token. For providers with multiple cache
+  TTLs (e.g. Anthropic), this is the default (5-minute) cache-write
+  rate."), and `input_cache_write_1h` ("Price per 1-hour cache-write
+  token, in USD per token. Only present for providers that price an
+  extended (1-hour) cache TTL separately, such as Anthropic."). This
+  directly falsifies the second pass's claim that all
+  caching/implicit-caching behavior is one-directional (cheaper) —
+  `input_cache_write`/`input_cache_write_1h` are distinct, real,
+  **write** rates, not read discounts.
+- **Cache writes cost more than ordinary input for both major
+  providers, confirmed in OpenRouter's own guide.** Anthropic: "Cache
+  writes: charged at 1.25x the price of the original input pricing" for
+  the default 5-minute TTL, and "charged at 2x the price of the original
+  input pricing" for the 1-hour TTL. OpenAI (GPT-5.6+ family): "Cache
+  writes: no cost on models before the GPT-5.6 family. GPT-5.6 and later
+  charge cache writes at 1.25x the price of the original input pricing,
+  even with automatic caching — no opt-in required." Cache **reads** are
+  confirmed cheaper on both: Anthropic "charged at 0.1x," OpenAI
+  "charged at 0.25x or 0.50x."
+- **Cache-write triggering differs materially by provider — this is the
+  root cause of the risk.** OpenAI's guide states plainly: "Prompt
+  caching with OpenAI is automated and does not require any additional
+  configuration" — and, per the quote above, GPT-5.6+ cache-write
+  charges apply "even with automatic caching — no opt-in required," i.e.
+  purely by virtue of the request shape, with **zero** app-side action.
+  Anthropic, by contrast, requires an explicit `cache_control` field
+  added to the request content — "Automatic caching: Add a single
+  `cache_control` field at the top level of your request" — and the
+  1-hour tier requires a further explicit `"ttl": "1h"` inside that same
+  `cache_control` object. If the Tribunal request contract never sends
+  `cache_control` at all (it does not, V1 requests no caching feature of
+  any kind), an Anthropic cache-write charge cannot be triggered by the
+  Tribunal's own request; an OpenAI (GPT-5.6+ family) cache-write charge
+  *can* be triggered purely by the request's shape, with no Tribunal
+  opt-in at all.
+- **Consequence:** the second pass's claim — "provider *implicit*
+  caching... may reduce *actual* realized cost below the conservative
+  bound... that is safe" — is **false** as a universal statement. It was
+  true only insofar as it considered *cache reads*; it did not account
+  for *cache writes*, which the schema and the provider docs both
+  confirm are real, currently non-zero-priced, and — for at least one
+  major model family reachable through OpenRouter — triggerable with
+  zero Tribunal-side opt-in. See Decision 7B.
+
 ## Decision 1 — One provider abstraction, one fake
 
 Unchanged from the first pass. M7 introduces exactly one server-side
@@ -297,8 +349,11 @@ endpoint actually selected:
 6. `contextLength` is sufficient for the conservative input bound
    (`docs/economics.md` §10.1–§10.3) plus the applicable output cap
 7. pricing is complete and representable per Decision 7 (billable
-   dimensions) and carries no unrepresentable conditional pricing per
-   Decision 7A
+   dimensions), carries no unrepresentable conditional pricing per
+   Decision 7A (`overrides`/malformed `discount`), and its cache-related
+   pricing is either impossible-to-invoke or safely bounded per Decision
+   7B (`effectiveInputPricePerToken`) — never silently assumed one-
+   directional
 8. the endpoint is **uniquely pinnable** — see Decision 4A; an endpoint
    whose `tag` cannot be proven to identify exactly one endpoint is never
    eligible
@@ -413,51 +468,67 @@ something M7 executes.
 
 Confirmed real OpenRouter pricing dimensions (Current OpenRouter API
 verification, above): `prompt`, `completion`, `request`, `image`,
-`web_search`, `internal_reasoning`, `input_cache_read`,
-`input_cache_write`, plus (this pass) the two pricing *modifiers*
-`overrides` and `discount` — see Decision 7A for their dedicated policy.
-V1 Tribunal is text-only, sends no image content, enables no web-search
-plugin, and requests no explicit prompt caching.
+`image_output`, `image_token`, `audio`, `audio_output`,
+`input_audio_cache`, `web_search`, `internal_reasoning`,
+`input_cache_read`, `input_cache_write`, `input_cache_write_1h`, plus
+the two pricing *modifiers* `overrides` and `discount` — see Decision 7A
+for the overrides/discount policy and Decision 7B for the cache-write
+policy (corrected this pass — the prior "caching can only reduce spend"
+claim was false, see "Additional verification — cache economics,"
+above). V1 Tribunal is text-only, sends no image/audio content, enables
+no web-search plugin, and sends no explicit cache-control request field
+of any kind.
 
 Every dimension and modifier is classified into exactly one of three
 buckets — no current or future field may pass eligibility unclassified:
 
 1. **Ignored because impossible for the Tribunal's request to invoke**:
-   `image`, `web_search` — no such plugin/content is ever sent, so these
-   dimensions structurally cannot be charged; exclusion is justified by
-   the request contract itself, not by assumption.
-2. **Ignored (or bounded down) because it can only ever reduce realized
-   spend below the conservative bound, never increase it**: provider
-   *implicit* caching (`input_cache_read`/`input_cache_write` realized
-   values, gated by `supports_implicit_caching`) and `pricing.discount`
-   (Decision 7A) — both are safe to ignore for the conservative upper
-   bound precisely because they are mathematically one-directional
-   (discount) or opt-in-only-beneficial (implicit cache reads are cheaper
-   than a full prompt token, never more expensive).
-3. **Blocked because the dimension can increase or alter the effective
-   price and is not (yet) representable in the conservative bound**:
-   `internal_reasoning` when non-zero (reasoning-token count is not
-   bounded by the Tribunal's request contract — V1 does not request or
-   cap reasoning tokens), and `pricing.overrides` when non-empty
-   (Decision 7A — the top-level price is only the *default-conditions*
-   price; a non-empty `overrides` array means some request could be
-   billed at a different, conditionally-selected price the V1 preflight
-   does not evaluate). Both block eligibility with `PRICING_UNREPRESENTABLE`.
+   `image`, `image_output`, `image_token`, `audio`, `audio_output`,
+   `input_audio_cache`, `web_search` — no such plugin/content is ever
+   sent, so these dimensions structurally cannot be charged; exclusion
+   is justified by the request contract itself, not by assumption.
+2. **Ignored because it can only ever reduce realized spend below the
+   conservative bound, never increase it**: `pricing.discount` alone
+   (Decision 7A) — safe to ignore for the conservative upper bound
+   precisely because it is mathematically one-directional
+   (`(1 - discount) ∈ [0, 1]`, so it can only lower or hold equal the
+   price). **Cache pricing is explicitly NOT in this bucket** (corrected
+   this pass) — see Decision 7B; a cache *write* rate can exceed the
+   ordinary input rate, so it cannot be safely ignored the way a pure
+   discount can.
+3. **Represented as an upper bound, or blocked, because the dimension
+   can increase or alter the effective price**: `internal_reasoning`
+   when non-zero blocks (`PRICING_UNREPRESENTABLE` — reasoning-token
+   count is not bounded by the Tribunal's request contract);
+   `pricing.overrides` when non-empty blocks (`PRICING_UNREPRESENTABLE`
+   — Decision 7A, the top-level price is only the *default-conditions*
+   price); `input_cache_read`/`input_cache_write` are folded into a
+   conservative `effectiveInputPricePerToken` upper bound rather than
+   blocking outright (Decision 7B); `input_cache_write_1h` is excluded
+   as impossible for the current request contract to invoke (Decision
+   7B) — not because it is one-directional, but because the Tribunal
+   request contract structurally cannot trigger it.
 
 Concretely for the dimensions already covered before this pass:
 
 - **Always included** in the conservative bound: `prompt`, `completion`
-  (the two dimensions every text completion always incurs).
+  (the two dimensions every text completion always incurs) — `prompt`'s
+  role in the bound is superseded where applicable by
+  `effectiveInputPricePerToken` (Decision 7B), which is never lower than
+  `promptPricePerToken`.
 - **Included once per attempt, reserved twice per logical call** (initial
   + the one permitted retry) when non-zero: `request` — a flat per-call
   fee is incurred again on a retry, so the retry reserve must include it
   too, not just the token cost.
 - **`internal_reasoning`**: bucket 3 above — non-zero blocks with
   `PRICING_UNREPRESENTABLE`.
-- **Any other current or future non-zero billable dimension** the
-  Tribunal's request contract cannot structurally rule out (bucket 1) or
-  prove one-directional (bucket 2) is blocked the same way as bucket 3,
-  never assumed zero.
+- **Cache dimensions**: see Decision 7B — no longer assumed one-
+  directional.
+- **Any other current or future non-zero/non-empty billable dimension**
+  the Tribunal's request contract cannot structurally rule out (bucket 1)
+  or prove one-directional (bucket 2) is blocked or bounded per bucket 3,
+  never assumed zero and never assumed safe-to-ignore without a proof
+  like discount's closed-form `(1 - discount)` property.
 
 ## Decision 7A — `pricing.overrides` and `pricing.discount` policy (new this pass)
 
@@ -513,6 +584,129 @@ in the first two planning passes.
   reduce actual realized spend below the computed bound, ignoring it
   never causes the bound to understate risk; it can only make the bound
   more conservative than strictly necessary.
+- **Metadata validation, hardened this pass:** `discount` is not merely
+  ignored blindly — it is validated first. Absent `discount` is accepted
+  (equivalent to `0`, no discount). A present `discount` within the
+  documented semantic range `[0, 1]` is accepted and ignored per the
+  policy above. A present `discount` that is malformed, non-finite
+  (`NaN`/`Infinity`), negative, or greater than `1` is **not** silently
+  clamped or ignored — the field no longer matches its own documented
+  contract, so the endpoint is **not eligible**, `PRICING_UNREPRESENTABLE`.
+  This closes a gap the first two passes left open: malformed discount
+  metadata must never be able to silently become a hidden price increase
+  by falling through an assumption that `discount` is always safely
+  ignorable regardless of its actual value.
+
+## Decision 7B — Cache-aware effective input price (corrects the second pass)
+
+**Locked invariant: A CACHE-RELATED PRICE FIELD MAY NEVER BE ASSUMED TO
+ONLY LOWER SPEND.** The second pass's Decision 7 claimed provider
+implicit caching "may reduce *actual* realized cost below the
+conservative bound... that is safe." **This is false and is retracted.**
+Verified this pass (see "Additional verification — cache economics,"
+above): OpenRouter's `PublicPricing` schema exposes a genuine **write**
+rate (`input_cache_write`, and a separate extended-TTL
+`input_cache_write_1h`) alongside the read rate (`input_cache_read`);
+provider documentation confirms cache writes are billed at a **premium**
+over ordinary input — Anthropic 1.25x (default 5-minute TTL) or 2x
+(1-hour TTL), OpenAI (GPT-5.6+ family) 1.25x, with OpenAI's write charge
+triggerable by request shape alone, "even with automatic caching — no
+opt-in required."
+
+**Effective conservative input price.** For every resolved endpoint, the
+conservative estimator computes an `effectiveInputPricePerToken` used in
+place of the raw `promptPricePerToken` wherever input-token cost is
+estimated:
+
+```text
+effectiveInputPricePerToken = MAX(
+  promptPricePerToken,
+  automaticallyApplicableCacheReadPricePerToken,   -- input_cache_read, when present
+  automaticallyApplicableCacheWritePricePerToken   -- input_cache_write, when present
+)
+```
+
+Computed via exact `Decimal` arithmetic (Decision 10), never binary
+floating point. This is deliberately an **upper bound, not a
+prediction** — overestimation is acceptable and expected (a real request
+may only cache a prefix, or hit no cache at all); underestimation, by
+assuming a cache write can never exceed ordinary input, is not.
+
+**Cache-read policy (`input_cache_read`).** Never relied on as a
+discount. When present, it is included in the `MAX(...)` calculation
+above like every other candidate rate. In the documented common case
+(`0.1x`–`0.5x` of input price) it is below `promptPricePerToken` and
+therefore does not change the bound. If provider metadata were ever to
+report a cache-read price above the prompt price, the `MAX(...)`
+formula remains safe by construction — it does not special-case "reads
+are always cheap."
+
+**Default/automatic cache-write policy (`input_cache_write`).** When an
+endpoint's pricing exposes a non-zero `input_cache_write` rate, it is
+treated as **automatically/potentially applicable** and is included in
+the `MAX(...)` calculation — the conservative estimator does not attempt
+to determine, per model family, whether a given endpoint's provider
+requires an explicit opt-in field (as Anthropic's `cache_control` does)
+before a write can occur, because OpenRouter's endpoint metadata schema
+does not expose that distinction as a structured, machine-checkable
+field; hard-coding undocumented per-provider trigger behavior into the
+authoritative contract would be brittle and could silently go stale. The
+one exception is `input_cache_write_1h`, addressed separately below,
+whose own schema description ties it to a *narrower and more clearly
+gated* trigger than the base rate. Example, per the task's own worked
+case: `promptPricePerToken = $3.00/M`, `input_cache_read = $0.30/M`,
+`input_cache_write = $3.75/M` → `effectiveInputPricePerToken = $3.75/M`.
+The estimator may conservatively apply this maximum rate to the full
+estimated input-token count, even though a real request would typically
+only pay the write premium on the cached prefix — this is intentional
+overestimation, not a claimed prediction of actual spend.
+
+**Explicit 1-hour cache write (`input_cache_write_1h`) — narrow,
+provable exclusion.** The Tribunal V1 request contract never sends a
+cache-control request field of any kind, so it cannot request the
+1-hour TTL Anthropic's own documentation requires an explicit
+`"ttl": "1h"` control (nested inside the `cache_control` object the
+Tribunal also never sends) to enable. `input_cache_write_1h` is
+therefore excluded from `effectiveInputPricePerToken`, documented
+precisely as **"impossible for the current request contract to
+invoke"** — never as "cache pricing can only reduce spend." If a future
+OpenRouter/provider change ever exposes an extended-TTL cache-write rate
+triggerable without an explicit, Tribunal-never-sent request control,
+this exclusion no longer holds and must be revisited before that
+provider's endpoints remain eligible.
+
+**Unknown/unclassifiable cache pricing.** No cache-related price field
+may silently pass eligibility without classification:
+
+- **Impossible for the Tribunal request to invoke** → documented
+  exclusion (currently: `input_cache_write_1h` only).
+- **Automatically/default applicable, or not provably excludable** →
+  represented conservatively inside the `effectiveInputPricePerToken`
+  `MAX(...)` (currently: `input_cache_read`, `input_cache_write`).
+- **A future cache-related field whose applicability cannot be
+  established safely from documented, structural request/endpoint
+  metadata** → the endpoint is **not eligible**,
+  `PRICING_UNREPRESENTABLE`. This follows the pre-existing M7 rule
+  (Decision 7) that unknown billable behavior is always blocked, never
+  assumed zero or assumed safe.
+
+**Retry reserve — no assumed cache hit.** The cache-safe
+`effectiveInputPricePerToken` applies **independently** to every
+permitted provider attempt. Preflight's ×2 retry reserve (Decision 7)
+uses the same `effectiveInputPricePerToken` for the retry attempt as for
+the initial attempt — a retry is never assumed to land on a warm cache,
+receive a cache-read discount, or otherwise cost less than the initial
+attempt's worst case. The retry reserve must remain economically safe
+even if the retry happens after the cache expired, on a cold cache, or
+without any usable cache hit at all.
+
+**Tier impact.** `FREE` (Decision 12) requires the *complete* conservative
+route economics — including any automatically-applicable cache-write
+exposure and the request fee, not merely `promptPricePerToken` — to be
+exactly `$0.00`. A route with `promptPricePerToken = 0` but a non-zero
+automatically-applicable `input_cache_write` rate is **not** `FREE`;
+its tier is computed from `effectiveInputPricePerToken`, not
+`promptPricePerToken` alone.
 
 ## Decision 8 — Alias / dynamic-router policy
 
@@ -554,12 +748,29 @@ type PricingSnapshot = {
   promptPricePerToken: Decimal;      // parsed exactly from the pricing.prompt string
   completionPricePerToken: Decimal;  // parsed exactly from pricing.completion string
   requestPriceUsd: Decimal;          // parsed exactly from pricing.request string
+  cacheReadPricePerToken: Decimal | null;      // NEW (this pass) -- parsed from
+                                                // pricing.input_cache_read, when present
+  cacheWritePricePerToken: Decimal | null;     // NEW (this pass) -- parsed from
+                                                // pricing.input_cache_write (default/
+                                                // 5-minute-equivalent rate), when present
+  effectiveInputPricePerToken: Decimal;        // NEW (this pass) -- MAX(promptPricePerToken,
+                                                // cacheReadPricePerToken,
+                                                // cacheWritePricePerToken); the value the
+                                                // conservative estimator actually uses in
+                                                // place of promptPricePerToken (Decision 7B)
   promptPricePerMillion: Decimal;    // display convenience = promptPricePerToken * 1_000_000
   completionPricePerMillion: Decimal;// display convenience
   currency: "USD";
   observedAt: string;            // ISO 8601 fetch timestamp
 };
 ```
+
+`input_cache_write_1h` is deliberately **not** a `PricingSnapshot` field
+in V1 — it is excluded from the estimator entirely (Decision 7B), not
+merely recorded and ignored, since V1's request contract structurally
+cannot invoke it. No unnecessary raw provider metadata beyond what the
+audit trail needs is exposed to the browser (unchanged principle,
+`ARCHITECTURE.md` §5.3).
 
 - Rate strings are parsed directly into the decimal type (Decision 10) —
   never round-tripped through a JS `number` first. **This authoritative
@@ -703,10 +914,14 @@ never a model-family average):
 ```text
 FREE           == $0.00 exactly (every V1-relevant billable dimension
                    authoritatively zero for this exact route -- never
-                   inferred from name/marketing/history, and computed
-                   from the UNDISCOUNTED base rate per Decision 7A's
-                   discount policy -- a discounted-toward-zero non-zero
-                   base rate is never classified FREE)
+                   inferred from name/marketing/history, computed from
+                   the UNDISCOUNTED base rate per Decision 7A's discount
+                   policy -- a discounted-toward-zero non-zero base rate
+                   is never classified FREE -- AND computed from
+                   effectiveInputPricePerToken per Decision 7B, so an
+                   automatically-applicable non-zero cache-write rate
+                   also disqualifies a route from FREE even when
+                   promptPricePerToken alone is zero)
 BUDGET         >  $0.00  and <= $0.50
 PREMIUM        >  $0.50  and <= $2.00
 ABOVE_PREMIUM  >  $2.00  and <= $5.00   -- technically satisfies the hard
@@ -732,12 +947,12 @@ is authoritative.
 Tiering pipeline (Decision 2's resolution pipeline, continued):
 `configured model` → `canonical model` → `eligible exact provider
 endpoints` (Decision 4) → `deterministic resolved route` (Decision 5) →
-`normalized route pricing` (Decision 9) → `conservative Tribunal
-estimate` (`docs/economics.md` §10) → `FREE`/`BUDGET`/`PREMIUM`/
-`ABOVE_PREMIUM`/`HARD_BLOCK`. The same model through two different
-provider endpoints can land in two different tiers — they are not
-economically equivalent, and the tier belongs to the resolved route, not
-the model.
+`normalized route pricing incl. effectiveInputPricePerToken` (Decisions
+9, 7B) → `conservative Tribunal estimate` (`docs/economics.md` §10) →
+`FREE`/`BUDGET`/`PREMIUM`/`ABOVE_PREMIUM`/`HARD_BLOCK`. The same model
+through two different provider endpoints can land in two different
+tiers — they are not economically equivalent, and the tier belongs to
+the resolved route, not the model.
 
 ## Decision 13 — Model discovery contract for a later UI
 
@@ -986,6 +1201,43 @@ the fake provider; none require a real OpenRouter call.
   on it afterward — verified by asserting no second `Number(...)`
   round-trip occurs anywhere downstream of the initial conversion.
 
+**Cache-write economics (Decision 7B, new this pass):**
+
+- **K.** An endpoint with `promptPricePerToken < automaticallyApplicable
+  input_cache_write` → `effectiveInputPricePerToken` equals the
+  cache-write rate, not the prompt rate.
+- **L.** An endpoint with `input_cache_read < promptPricePerToken` (the
+  documented common case) → the conservative bound stays at
+  `MAX(promptPricePerToken, cacheWritePricePerToken)`; the cheaper read
+  rate never lowers it.
+- **M.** An endpoint whose `input_cache_read` unexpectedly exceeds
+  `promptPricePerToken` → `MAX(...)` still keeps the estimate
+  conservative; no special-cased "reads are always cheap" branch exists
+  to be wrong.
+- **N.** An endpoint with `promptPricePerToken == 0` and a non-zero
+  automatically-applicable `input_cache_write` → the route is **not**
+  `FREE`; its tier is computed from `effectiveInputPricePerToken`.
+- **O.** The retry reserve computation uses the same
+  `effectiveInputPricePerToken` for the retry attempt as for the initial
+  attempt — no test may assert a cheaper retry-reserve number derived
+  from an assumed cache hit or cache discount.
+- **P.** An endpoint's `input_cache_write_1h` rate is excluded from
+  `effectiveInputPricePerToken` — and this exclusion is asserted to be
+  documented/labelled as "impossible for the current request contract to
+  invoke," never as "cache pricing can only reduce spend."
+- **Q.** A future/unclassifiable cache-related pricing field (neither
+  `input_cache_read`, `input_cache_write`, nor the excluded
+  `input_cache_write_1h`) → the endpoint is not eligible,
+  `PRICING_UNREPRESENTABLE`.
+- **R.** `pricing.discount` present and within `[0, 1]` → ignored for the
+  conservative bound, per Decision 7A's existing policy, unaffected by
+  this pass.
+- **S.** `pricing.discount` present but negative, greater than `1`, or
+  non-finite (`NaN`/`Infinity`) → the endpoint is not eligible,
+  `PRICING_UNREPRESENTABLE` (hardened validation, Decision 7A, this
+  pass) — malformed discount metadata never silently passes as if it
+  were `0`.
+
 ## Consequences
 
 - M7 adds one new environment variable read path
@@ -1009,15 +1261,24 @@ the fake provider; none require a real OpenRouter call.
   prompt-version contract; and a `PreflightResult` it can call before
   wiring `BLOCKED_BUDGET` into real execution — without inheriting a
   `model_call_attempts` table it doesn't yet need, or a `POST /api/runs`
-  behavior change it hasn't asked for yet.
+  behavior change it hasn't asked for yet — and now also a cache-aware
+  `effectiveInputPricePerToken` (Decision 7B) that can never underestimate
+  a route's true worst-case input cost due to an automatically-applicable
+  cache-write premium.
 - Every M7 test runs against the fake provider; CI never spends money or
   depends on OpenRouter's availability. Exactly one manual, cost-free,
   metadata-only live check (Decision 19) is required once, before merge.
-- **This pass's corrections are conservative-only**: both the
-  pinnability rule (Decision 4A) and the overrides/discount policy
-  (Decision 7A) can only cause the system to *decline* a route it might
-  previously have accepted too permissively (first pass) or to compute a
-  cost bound that is *equal to or higher* than the discount-naive number
-  would have been — neither correction weakens the $5.00 ceiling, the
+- **This pass's corrections are conservative-only**: the pinnability rule
+  (Decision 4A), the overrides/discount policy (Decision 7A, including
+  this pass's hardened malformed-discount validation), and the
+  cache-write-aware effective input price (Decision 7B, this pass) can
+  only cause the system to *decline* a route it might previously have
+  accepted too permissively, or to compute a cost bound that is *equal
+  to or higher* than a cache-naive/discount-naive number would have
+  been — none of these corrections weakens the $5.00 ceiling, the
   FREE/BUDGET/PREMIUM/ABOVE_PREMIUM/HARD_BLOCK thresholds, or any other
-  previously locked decision.
+  previously locked decision. **This pass specifically retracts the
+  second pass's false claim that provider implicit caching can only
+  reduce spend** — cache *writes* are a real, currently-documented,
+  provider-confirmed premium-priced dimension, now bounded rather than
+  ignored.

@@ -342,8 +342,13 @@ M7 executes zero advocates, zero judges, zero logical Tribunal calls.
 - deterministic endpoint eligibility + cheapest-*eligible*-endpoint
   selection; dynamic/alias models (Auto Router, "latest" aliases) blocked;
   a candidate endpoint with a non-empty conditional `pricing.overrides`
-  is blocked as unrepresentable, and `pricing.discount` is never relied
-  upon for tier/eligibility
+  or a malformed `pricing.discount` is blocked as unrepresentable, and a
+  valid `pricing.discount` is never relied upon for tier/eligibility
+- cache-write-aware conservative input pricing (`effectiveInputPricePerToken`)
+  — provider prompt-caching **writes** can cost more than ordinary input
+  (not only less, as caching **reads** can); a non-zero
+  automatically-applicable cache-write rate is bounded into every
+  estimate and retry reserve, never assumed away as a pure discount
 - bounded in-process cache with a locked 5-minute authoritative TTL (no
   new infrastructure); stale/unavailable metadata never authorizes
 - strict JSON Schema structured output; `require_parameters`;
@@ -376,6 +381,10 @@ M7 executes zero advocates, zero judges, zero logical Tribunal calls.
 - provider error
 - missing usage/cost behaviour
 - pricing/model-endpoint metadata parsing; exact route/price binding
+- cache-write pricing never underestimated: a non-zero automatically-
+  applicable `input_cache_write` rate raises `effectiveInputPricePerToken`
+  above the raw prompt rate when higher, and the retry reserve never
+  assumes a cheaper cache hit
 - decimal budget correctness at the `$0.50`/`$2.00`/`$5.00` boundaries
 - no real OpenRouter network call anywhere in the automated test suite
 - the one mandatory live metadata smoke passes before merge

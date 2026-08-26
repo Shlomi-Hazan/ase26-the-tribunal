@@ -127,7 +127,25 @@ eligibility (Decision 7A) — the top-level price alone is not trusted as
 an upper bound when a condition could select a different price at
 request time; a `pricing.discount` is never relied upon to justify a
 cheaper tier or FREE classification, since preflight always prices the
-undiscounted base rate.
+undiscounted base rate, and a malformed `discount` (negative, `>1`, or
+non-finite) blocks eligibility rather than being silently treated as
+`0`.
+
+Preflight's input-cost bound is **cache-write aware** (Decision 7B): a
+prior planning pass assumed provider prompt-caching behavior could only
+ever reduce realized spend — this was false and is retracted. OpenRouter
+endpoint pricing exposes a genuine cache-**write** rate
+(`input_cache_write`) that provider documentation confirms can cost
+*more* than ordinary input (e.g. Anthropic's 1.25x/2x TTL multipliers,
+OpenAI's 1.25x for its GPT-5.6+ family, triggerable with no request-side
+opt-in). Preflight therefore computes `effectiveInputPricePerToken =
+MAX(promptPricePerToken, cacheReadPricePerToken,
+cacheWritePricePerToken)` and uses it — never the raw prompt rate
+alone — everywhere input cost is estimated, including the retry reserve,
+which never assumes a warm cache or a cache discount. Only the
+separately-priced `input_cache_write_1h` is excluded, and only because
+the Tribunal request contract provably cannot trigger it (it never sends
+the explicit 1-hour cache-control field that rate requires).
 
 The one mandatory live OpenRouter integration check required before
 Milestone 7 merges (`docs/adr/0003-openrouter-infrastructure.md`
@@ -516,7 +534,18 @@ Before relevant milestones merge, verify as applicable:
       top-level default-conditions price alone
 - [ ] (Milestone 7) `pricing.discount` is never relied upon to justify a
       cheaper tier or a `FREE` classification; tier/eligibility always
-      use the undiscounted base rate
+      use the undiscounted base rate; a malformed `discount` (negative,
+      `>1`, non-finite) blocks eligibility rather than being treated as `0`
+- [ ] (Milestone 7) preflight's input-cost bound is cache-write aware:
+      `effectiveInputPricePerToken = MAX(promptPricePerToken,
+      cacheReadPricePerToken, cacheWritePricePerToken)`; a non-zero
+      automatically-applicable `input_cache_write` rate is never assumed
+      to only lower spend, including in the retry reserve
+- [ ] (Milestone 7) `input_cache_write_1h` is excluded from the bound only
+      because the request contract provably cannot invoke it — never
+      documented as "cache pricing can only reduce spend"
+- [ ] (Milestone 7) a route with a zero prompt rate but a non-zero
+      automatically-applicable cache-write rate is never classified `FREE`
 - [ ] (Milestone 7) a dynamic/non-deterministic model construct (Auto
       Router, "latest"-style alias) blocks explicitly rather than being
       silently resolved or substituted

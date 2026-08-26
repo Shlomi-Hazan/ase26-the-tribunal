@@ -1035,18 +1035,22 @@ These are target criteria, not claims that implementation already exists.
   to seven distinct routes/prices with no cross-participant substitution.
 - **MODEL-004** — A route whose pricing cannot be reliably established is
   blocked; a route's zero price is accepted only when OpenRouter metadata
-  authoritatively reports the **undiscounted** base rate as free for that
-  exact endpoint, never assumed, fabricated, or inferred from a
-  `pricing.discount` value alone. A route with a non-empty conditional
-  `pricing.overrides` array is blocked (`PRICING_UNREPRESENTABLE`)
-  regardless of its top-level default-conditions price. See
+  authoritatively reports the **undiscounted, cache-write-inclusive**
+  rate as free for that exact endpoint, never assumed, fabricated, or
+  inferred from a `pricing.discount` value alone. A route with a
+  non-empty conditional `pricing.overrides` array, or a `pricing.discount`
+  outside its documented `[0, 1]` range (negative, `>1`, or non-finite),
+  is blocked (`PRICING_UNREPRESENTABLE`) regardless of its top-level
+  default-conditions price. See
   `docs/adr/0003-openrouter-infrastructure.md` Decision 7A.
 - **MODEL-005** — Preflight computes a conservative worst-case cost for
-  the resolved configuration (bounded input estimate, output caps, the
-  full permitted retry exposure, and the approved safety margin) using
-  exact decimal arithmetic — never binary floating point for an
-  authoritative comparison — and reports eligible/blocked with reason
-  codes, performing zero Tribunal model calls.
+  the resolved configuration (bounded input estimate using the
+  cache-aware effective input price — `MODEL-014` — output caps, the full
+  permitted retry exposure computed with that same effective input price,
+  never a discounted/cache-hit-assumed one, and the approved safety
+  margin) using exact decimal arithmetic — never binary floating point
+  for an authoritative comparison — and reports eligible/blocked with
+  reason codes, performing zero Tribunal model calls.
 - **MODEL-006** — A run whose `prompt_version` is the pre-Milestone-7
   placeholder (`unassigned-pre-m7`) is never reported execution-eligible
   by any Milestone 7 check, regardless of model/pricing eligibility.
@@ -1090,6 +1094,20 @@ These are target criteria, not claims that implementation already exists.
   a more precise "true" mathematical price than the protocol supplied.
   Authoritative preflight pricing is unaffected — it always uses the
   provider's string rate fields parsed directly into decimal.
+- **MODEL-014** — A candidate endpoint's provider-reported cache pricing
+  is never assumed to only reduce spend. The conservative estimator's
+  input price is `effectiveInputPricePerToken = MAX(promptPricePerToken,
+  cacheReadPricePerToken, cacheWritePricePerToken)` (exact decimal
+  arithmetic); a non-zero automatically-applicable `input_cache_write`
+  rate — even when it exceeds the prompt rate — is represented in this
+  bound, never ignored. `input_cache_write_1h` is excluded only because
+  the Tribunal request contract never sends the explicit 1-hour
+  cache-control field that rate requires — documented as "impossible to
+  invoke," not "safe to ignore." A cache-related pricing field that
+  cannot be classified this way blocks the route
+  (`PRICING_UNREPRESENTABLE`). A route with a zero prompt rate but a
+  non-zero automatically-applicable cache-write rate is never classified
+  `FREE`. See `docs/adr/0003-openrouter-infrastructure.md` Decision 7B.
 - **MODEL-010** — Each eligible resolved route is assigned a discovery
   price tier (`FREE`/`BUDGET`/`PREMIUM`/`ABOVE_PREMIUM`) computed from its
   own conservative complete-Tribunal cost estimate; a tier label is

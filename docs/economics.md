@@ -127,42 +127,94 @@ reviewed decimal-arithmetic dependency).
 
 ### 5.2 Billable dimensions actually representable by V1
 
-V1 Tribunal requests are text-only, send no image content, and enable no
-web-search or explicit prompt-caching feature. Every pricing dimension
-and modifier is classified into exactly one of three buckets — nothing
-current or future may pass eligibility unclassified:
+V1 Tribunal requests are text-only, send no image/audio content, enable
+no web-search plugin, and send no explicit cache-control request field
+of any kind. Every pricing dimension and modifier is classified into
+exactly one of three buckets — nothing current or future may pass
+eligibility unclassified:
 
-1. **Impossible for the request to invoke**: `image`, `web_search` —
-   excluded because no such plugin/content is ever sent.
+1. **Impossible for the request to invoke**: `image`, `image_output`,
+   `image_token`, `audio`, `audio_output`, `input_audio_cache`,
+   `web_search` — excluded because no such plugin/content is ever sent.
 2. **Can only ever reduce realized spend, never increase it, so it is
-   safely ignored for the conservative bound**: provider *implicit*
-   caching discounts, and a non-zero `pricing.discount` (which by its own
-   documented definition multiplies price by `(1 − discount)` with
-   `discount ∈ [0, 1]`, so it can only lower or hold equal the effective
-   price — never raise it).
+   safely ignored for the conservative bound**: a non-zero
+   `pricing.discount` within its documented `[0, 1]` range (which by its
+   own definition multiplies price by `(1 − discount)`, so it can only
+   lower or hold equal the effective price — never raise it). **Cache
+   pricing is explicitly not in this bucket** (corrected — see §5.2.1).
 3. **Can increase or alter the effective price and is not representable
    by V1's estimator, so it blocks eligibility**
    (`PRICING_UNREPRESENTABLE`): a non-zero `internal_reasoning` rate
-   (reasoning-token count is not bounded by V1's request contract), and a
+   (reasoning-token count is not bounded by V1's request contract); a
    non-empty conditional `pricing.overrides` array — OpenRouter's
    top-level pricing fields "reflect the price that applies under default
    conditions" only, so a non-empty `overrides` means the true request
    price could differ from the default price the estimator would
-   otherwise use; V1 does not implement a conditional-pricing evaluation
-   engine, so any such route is blocked rather than mispriced.
+   otherwise use, so V1 blocks rather than mispricing it; and a malformed
+   `pricing.discount` (negative, greater than `1`, or non-finite) — never
+   silently treated as `0`.
 
 Concretely: the conservative bound always includes prompt/completion
-token cost; includes a non-zero flat request fee once per attempt
-(reserved twice per logical call, since the retry attempt incurs it
-again); excludes image/web-search pricing dimensions (bucket 1); ignores
-implicit-caching discounts and `pricing.discount` (bucket 2 — safe,
-since both can only make the actual cost lower than the bound, never
-higher); and blocks any route with a non-zero `internal_reasoning` rate
-or a non-empty `pricing.overrides` (bucket 3). A route's `FREE`
-classification (§14.1) is always based on the **undiscounted** base
-rate — a route that is merely discounted toward zero is never classified
-`FREE`. See `docs/adr/0003-openrouter-infrastructure.md` Decisions 7 and
-7A.
+token cost, computed using the **effective input price** (§5.2.1) rather
+than the raw prompt rate alone; includes a non-zero flat request fee once
+per attempt (reserved twice per logical call, since the retry attempt
+incurs it again); excludes image/audio/web-search pricing dimensions
+(bucket 1); ignores a validated in-range `pricing.discount` (bucket 2 —
+safe, since it can only make the actual cost lower than the bound, never
+higher); and blocks any route with a non-zero `internal_reasoning` rate,
+a non-empty `pricing.overrides`, or a malformed `discount` (bucket 3). A
+route's `FREE` classification (§14.1) is always based on the
+**undiscounted, cache-write-inclusive** economics — a route that is
+merely discounted toward zero, or that has a zero prompt rate but a
+non-zero automatically-applicable cache-write rate, is never classified
+`FREE`. See `docs/adr/0003-openrouter-infrastructure.md` Decisions 7,
+7A, and 7B.
+
+#### 5.2.1 Cache economics: effective input price (corrected this pass)
+
+**Corrected claim:** a prior pass of this document assumed provider
+implicit/prompt caching "can only reduce spend." **That is false and is
+retracted.** OpenRouter's endpoint pricing metadata exposes a genuine
+**cache-write** rate (`input_cache_write`, and a separately-priced
+extended-TTL `input_cache_write_1h`) in addition to the cheaper
+cache-*read* rate (`input_cache_read`). Provider documentation confirms
+cache writes are billed at a **premium** over ordinary input — for
+example, Anthropic's documented 1.25x (default 5-minute TTL) or 2x
+(1-hour TTL) multipliers, and OpenAI's documented 1.25x multiplier for
+its GPT-5.6+ family, triggerable "even with automatic caching — no
+opt-in required." A cache write is therefore a dimension that **can**
+increase cost above the raw prompt rate, not one that can only reduce
+it.
+
+**V1 policy — conservative effective input price:** for every resolved
+route, the estimator computes
+
+```text
+effectiveInputPricePerToken = MAX(
+  promptPricePerToken,
+  cacheReadPricePerToken,     -- input_cache_read, when present
+  cacheWritePricePerToken     -- input_cache_write (default/5-minute-
+)                                equivalent rate), when present
+```
+
+using exact decimal arithmetic, and uses this value — never the raw
+`promptPricePerToken` alone — everywhere input-token cost is estimated,
+including the retry reserve (§10.4): the retry reserve never assumes a
+warm cache, a cache-read discount, or any other reduced cost for the
+retry attempt. This is deliberately an upper bound: overestimating is
+acceptable (a real request may cache only a prefix, or hit no cache at
+all); underestimating, because a cache write turned out to cost more
+than ordinary input, is not.
+
+`input_cache_write_1h` is excluded from this calculation — documented
+precisely as **"impossible for the current request contract to
+invoke"** (V1 never sends the explicit 1-hour cache-control request
+field this rate requires), never as "cache pricing can only reduce
+spend." A future, unclassifiable cache-related pricing field blocks the
+endpoint (`PRICING_UNREPRESENTABLE`) rather than being assumed safe. See
+`docs/adr/0003-openrouter-infrastructure.md` Decision 7B for the full
+rule, including the pinnability-style "no silent assumption" reasoning
+and the schema citations.
 
 ---
 
@@ -231,6 +283,12 @@ input_cost = input_tokens / 1,000,000 × input_price_per_million
 output_cost = output_tokens / 1,000,000 × output_price_per_million
 base_token_cost = input_cost + output_cost
 ```
+
+**`input_price_per_million` is the cache-aware `effectiveInputPricePerToken`
+(§5.2.1) expressed per million tokens, not the raw prompt rate alone** —
+this is where the cache-write-safety correction actually takes effect;
+every conservative bound computed by this formula automatically inherits
+it.
 
 Then add any V1-supported request-level/billable dimension represented by the pricing snapshot.
 
@@ -310,6 +368,14 @@ worst_case_run_bound
 ```
 
 This is stricter than assuming retries are rare, but it guarantees the configured retry policy fits inside the same economic blast radius.
+
+The retry reserve uses the same cache-aware `effectiveInputPricePerToken`
+(§5.2.1) for both the initial attempt and its one permitted retry — a
+retry is never assumed to land on a warm cache, receive a cache-read
+discount, or otherwise cost less than the initial attempt's worst case.
+The retry attempt may in reality happen after the cache expired, on a
+cold cache, or without any usable cache hit at all; no cache discount
+ever reduces the required reserve.
 
 ### 10.5 Safety factor
 
@@ -403,9 +469,13 @@ cost estimate:
 
 ```text
 FREE           == $0.00 exactly, authoritative provider metadata only --
-                   never inferred from name/marketing/history, and
-                   computed from the UNDISCOUNTED base rate (a route
-                   discounted toward zero is never FREE, see §5.2)
+                   never inferred from name/marketing/history, computed
+                   from the UNDISCOUNTED base rate (a route discounted
+                   toward zero is never FREE) AND from the cache-write-
+                   inclusive effectiveInputPricePerToken (a route with a
+                   zero prompt rate but a non-zero automatically-
+                   applicable cache-write rate is never FREE, see §5.2/
+                   §5.2.1)
 BUDGET         >  $0.00  and <= $0.50
 PREMIUM        >  $0.50  and <= $2.00
 ABOVE_PREMIUM  >  $2.00  and <= $5.00
@@ -439,7 +509,8 @@ V1 execution should reject/exclude a model if any of these are true:
 - required max output parameter cannot be enforced
 - context capacity is insufficient
 - pricing cannot be represented conservatively, including a non-empty
-  conditional `pricing.overrides` (§5.2)
+  conditional `pricing.overrides`, a malformed `pricing.discount`, or an
+  unclassifiable cache-related pricing field (§5.2/§5.2.1)
 - the candidate endpoint is not uniquely pinnable (`ENDPOINT_NOT_PINNABLE`,
   `docs/adr/0003-openrouter-infrastructure.md` Decision 4A)
 - successful usage/cost telemetry cannot be relied on for the required audit contract

@@ -336,8 +336,8 @@ never a different, cheaper endpoint than the one actually selected. See
 for the full `ResolvedModelRoute` contract, eligibility checklist,
 unique-pinnability rule, and deterministic selection algorithm.
 
-**Corrected this pass:** an endpoint's provider-routing `tag` alone is
-not automatically proof it identifies exactly one endpoint —
+**Corrected (route-pinning pass):** an endpoint's provider-routing `tag`
+alone is not automatically proof it identifies exactly one endpoint —
 OpenRouter's provider slugs have base-slug-matches-multiple-variants
 semantics (e.g. base slug `deepinfra` can match several
 region/quantization variants including `deepinfra/turbo`). A candidate
@@ -346,6 +346,18 @@ pinnable** in the current candidate set (`ResolvedModelRoute.isUniquelyPinnable`
 Decision 4A); otherwise it is blocked with `ENDPOINT_NOT_PINNABLE`,
 regardless of price.
 
+**Corrected (cache-economics pass):** pricing is bound conservatively
+using a cache-aware `effectiveInputPricePerToken`, never the raw
+`promptPricePerToken` alone. OpenRouter endpoint pricing exposes a
+genuine cache-**write** rate (`input_cache_write`, and a
+separately-priced `input_cache_write_1h`) alongside the cheaper
+cache-read rate (`input_cache_read`); provider docs confirm cache writes
+can cost *more* than ordinary input (e.g. Anthropic's documented 1.25x/
+2x multipliers, OpenAI's documented 1.25x for its GPT-5.6+ family,
+triggerable with no request-side opt-in). A prior pass's assumption that
+implicit caching "can only reduce spend" was false and is retracted —
+see `docs/adr/0003-openrouter-infrastructure.md` Decision 7B.
+
 Backend filtering keeps only models/endpoints meeting V1 needs, including:
 
 - text/chat capability
@@ -353,7 +365,9 @@ Backend filtering keeps only models/endpoints meeting V1 needs, including:
 - the current (non-deprecated) bounded-output parameter support
 - adequate context length for judge prompts
 - pricing that can be represented/bounded by V1 economics rules, with no
-  unrepresentable conditional `pricing.overrides` (Decision 7A)
+  unrepresentable conditional `pricing.overrides`, no malformed
+  `pricing.discount`, and no cache-related pricing field outside the
+  documented, conservatively-bounded set (Decisions 7A, 7B)
 - a **uniquely pinnable** provider-routing identity (never a dynamic/alias
   construct whose executed model cannot be fixed before execution, and
   never a base provider slug that currently matches more than one
