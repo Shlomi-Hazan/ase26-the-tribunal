@@ -102,6 +102,23 @@ abstraction and its fakeable boundary; normal automated tests inject a
 deterministic fake and never reach the real OpenRouter network — see
 `docs/adr/0003-openrouter-infrastructure.md`.
 
+The price authoritative preflight accepts must correspond to the exact
+model and provider endpoint a later execution attempt is restricted to
+(`provider.only` pinned to that endpoint's real routing tag,
+`allow_fallbacks: false`) — never a different, cheaper, or otherwise
+unverified endpoint. A configured model that OpenRouter documents as a
+dynamic/non-deterministic construct (its Auto Router, or a "latest"-style
+alias whose executed model can move over time) is blocked explicitly,
+never silently substituted or treated as a fixed auditable model. Model
+catalog/endpoint metadata past its authoritative freshness window is
+treated as unavailable, never used to authorize spend.
+
+The one mandatory live OpenRouter integration check required before
+Milestone 7 merges (`docs/adr/0003-openrouter-infrastructure.md`
+Decision 19) is metadata-only: it performs zero model inference, sends no
+Charge Sheet/personality/case content, and its evidence record contains
+no secret value.
+
 ---
 
 ## 6. Prompt Injection and Instruction Hierarchy
@@ -470,6 +487,17 @@ Before relevant milestones merge, verify as applicable:
       silently served
 - [ ] (Milestone 7) a run frozen with the pre-Milestone-7 `prompt_version`
       placeholder (`unassigned-pre-m7`) is never reported execution-eligible
+- [ ] (Milestone 7) preflight prices the exact provider endpoint a future
+      execution attempt would be pinned to, never a model-level average
+      or a different endpoint
+- [ ] (Milestone 7) a dynamic/non-deterministic model construct (Auto
+      Router, "latest"-style alias) blocks explicitly rather than being
+      silently resolved or substituted
+- [ ] (Milestone 7) no authoritative budget/tier comparison uses
+      `Number(...)` or native binary floating-point arithmetic
+- [ ] (Milestone 7) the one mandatory live metadata integration check
+      required before merge performed zero model inference, sent no
+      case/prompt content, and recorded no secret
 
 ---
 

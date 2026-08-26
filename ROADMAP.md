@@ -333,24 +333,35 @@ M7 executes zero advocates, zero judges, zero logical Tribunal calls.
 ## Scope
 
 - server-side OpenRouter service behind one fakeable provider interface
-- eligible model catalog/filter, bounded in-process cache (no new
-  infrastructure)
-- strict JSON Schema structured output
-- `require_parameters`
-- fallback policy
-- price metadata retrieval; conservative preflight per `docs/economics.md`
-- per-attempt timeout
-- normalized errors
-- usage/cost extraction (telemetry schema only — `model_call_attempts` is
-  not created until a later milestone has a real write path)
-- prompt-version bridge: new runs frozen after M7 exists receive a real
-  version-controlled `prompt_version`; M6 placeholder runs are never
-  mutated and never become execution-eligible
+  (model catalog + per-model endpoint discovery + chat completion)
+- exact provider-endpoint resolution (`ResolvedModelRoute`) — pricing is
+  bound to the specific endpoint a later execution attempt would be
+  pinned to, never a model-level average
+- deterministic endpoint eligibility + cheapest-*eligible*-endpoint
+  selection; dynamic/alias models (Auto Router, "latest" aliases) blocked
+- bounded in-process cache with a locked 5-minute authoritative TTL (no
+  new infrastructure); stale/unavailable metadata never authorizes
+- strict JSON Schema structured output; `require_parameters`;
+  `allow_fallbacks: false`
+- decimal-safe pricing normalization (a small reviewed dependency, never
+  binary floating point for an authoritative comparison) and FREE/BUDGET/
+  PREMIUM/ABOVE_PREMIUM/HARD_BLOCK discovery tiers, computed per resolved
+  route
+- standalone, read-only `POST /api/preflight` per `docs/economics.md` —
+  does not modify `POST /api/runs`; execution-time integration is M8's
+- per-attempt timeout; normalized provider-error taxonomy
+- usage/cost telemetry schema only — `model_call_attempts` is not created
+  until a later milestone has a real write path
+- role-specific prompt-version bridge (`ADVOCATE_PROMPT_VERSION`/
+  `JUDGE_PROMPT_VERSION`): new runs frozen after M7 exists receive a real
+  version-controlled prompt version per role; M6 placeholder runs are
+  never mutated and never become execution-eligible
 - fake/mock service boundary — normal tests never reach the real network
-- **no real OpenRouter smoke call is required before this milestone
-  merges** (see the Issue's testing-strategy recommendation); if a human
-  wants one, it is a separate, explicit, cost-bounded, manually-authorized
-  action outside the automated gate
+- **one mandatory, manual, metadata-only live OpenRouter integration
+  check is required before this milestone merges** (zero model
+  inference, no case/prompt data, no secret recorded — see the Issue);
+  a further optional real-completion smoke remains separately,
+  explicitly, human-authorized and is never part of the automated gate
 
 ## Verification
 
@@ -359,8 +370,10 @@ M7 executes zero advocates, zero judges, zero logical Tribunal calls.
 - timeout
 - provider error
 - missing usage/cost behaviour
-- pricing/model metadata parsing
+- pricing/model-endpoint metadata parsing; exact route/price binding
+- decimal budget correctness at the `$0.50`/`$2.00`/`$5.00` boundaries
 - no real OpenRouter network call anywhere in the automated test suite
+- the one mandatory live metadata smoke passes before merge
 
 ## Exit condition
 

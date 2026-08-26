@@ -89,6 +89,46 @@ Store enough information to audit at least:
 
 V1 should exclude models whose pricing model cannot be conservatively represented by the approved estimator without additional specification.
 
+Pricing belongs to the exact resolved provider endpoint, never a model
+family or model-level average — one OpenRouter model may be served by
+several endpoints with different rates
+(`docs/adr/0003-openrouter-infrastructure.md` Decisions 2, 4–5). The
+"model ID" recorded in the audit trail above is the configured M6
+`model_id` together with the resolved endpoint's provider-routing
+identity, not the model ID alone.
+
+### 5.1 Raw units and decimal-safe normalization
+
+OpenRouter's catalog/endpoint pricing rate fields (prompt/completion/
+request/etc.) are returned as **decimal strings**, specifically to avoid
+floating-point precision loss — parse them directly into a decimal type,
+never through a JS `Number()` round-trip. A completed request's *actual*
+`usage.cost`, by contrast, is returned as a JSON **number**, not a
+string — convert it to the same decimal type exactly once, at receipt,
+and never re-derive it through further floating-point arithmetic
+afterward. All authoritative comparisons (including the `$5.00` ceiling
+and the tier boundaries in §14 below) use that decimal type — never
+`Number(...)` or ordinary binary floating point. See
+`docs/adr/0003-openrouter-infrastructure.md` Decisions 9–10 for the exact
+`PricingSnapshot` shape and the locked implementation choice (a small,
+reviewed decimal-arithmetic dependency).
+
+### 5.2 Billable dimensions actually representable by V1
+
+V1 Tribunal requests are text-only, send no image content, and enable no
+web-search or explicit prompt-caching feature. The conservative bound
+therefore always includes prompt/completion token cost; includes a
+non-zero flat request fee once per attempt (reserved twice per logical
+call, since the retry attempt incurs it again); excludes image/web-search
+pricing dimensions because the request contract cannot trigger them; and
+**blocks** (`PRICING_UNREPRESENTABLE`) any route whose pricing reports a
+non-zero dimension the request contract *can* trigger but the estimator
+cannot bound — for example a non-zero `internal_reasoning` rate, since
+reasoning-token count is not bounded by V1's request contract. An
+implicit-caching discount some providers may apply is never assumed in
+the conservative estimate (safe, since it can only make the actual cost
+lower than the bound, never higher).
+
 ---
 
 ## 6. Successful Actual Usage — Source Precedence
@@ -172,9 +212,10 @@ It is intentionally conservative; it is not intended to predict exact final cost
 Milestone 7 builds the real preflight service implementing this section's
 formulas, as a standalone read-only computation over a frozen run — see
 `docs/adr/0003-openrouter-infrastructure.md`. It performs zero Tribunal
-model calls itself. Whether it is also wired synchronously into `POST
-/api/runs`'s write path (persisting `BLOCKED_BUDGET`) is left open in
-that ADR (Decision 5), not decided by this document.
+model calls itself. **Locked:** Milestone 7 does not wire this into `POST
+/api/runs`'s write path and does not persist `BLOCKED_BUDGET` — that
+execution-time integration is Milestone 8's, once real execution exists
+to gate (ADR Decision 14).
 
 ### 10.1 Input estimate
 
@@ -309,6 +350,39 @@ A zero-price model is preferred when it satisfies V1 capability requirements.
 Therefore a free model is still validated through the same current metadata and model eligibility flow.
 
 A free model does not remove the need for token/latency audit evidence.
+
+### 14.1 Model price tiers (discovery metadata, not budget authority)
+
+The product must expose meaningful cost choice, not merely "the cheapest
+model." Each eligible resolved route (§5.1, never a model-level average)
+is assigned a discovery tier from its own conservative complete-Tribunal
+cost estimate:
+
+```text
+FREE           == $0.00 exactly, authoritative provider metadata only --
+                   never inferred from name/marketing/history
+BUDGET         >  $0.00  and <= $0.50
+PREMIUM        >  $0.50  and <= $2.00
+ABOVE_PREMIUM  >  $2.00  and <= $5.00
+HARD_BLOCK     >  $5.00   -- ineligible
+```
+
+`$5.00` is the architectural safety ceiling (§2), not the normal target
+price; `PREMIUM` must remain materially below it. `ABOVE_PREMIUM`
+technically satisfies the hard budget but must not automatically appear
+as a normal recommended V1 choice — surfacing it requires a separate
+later product decision. **A tier label is discovery/display metadata
+only and never replaces or bypasses the exact `$5.00` preflight
+decision** — two provider endpoints for the same model can land in
+different tiers because pricing belongs to the resolved route, not the
+model family.
+
+Shared Mode later lets a user compare FREE/BUDGET/PREMIUM options for the
+one model applied to all seven participants. Separate Mode allows
+independent per-participant tier choices; the final authoritative
+preflight always evaluates the exact combined seven-participant
+configuration — tier labels never independently grant eligibility. See
+`docs/adr/0003-openrouter-infrastructure.md` Decision 12.
 
 ---
 

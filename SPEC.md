@@ -1014,31 +1014,65 @@ These are target criteria, not claims that implementation already exists.
 ### MODEL (Milestone 7)
 
 - **MODEL-001** — A configured `model_id` (frozen unchanged by Milestone 6)
-  is resolved against current OpenRouter catalog metadata: the model must
-  exist, be usable through the intended endpoint/routing configuration,
-  have pricing metadata that is representable by the approved conservative
-  estimator, and satisfy required structured-output, `max_tokens`
-  parameter, and context-length support.
-- **MODEL-002** — A model that fails any `MODEL-001` check is blocked
-  explicitly with a reason code; there is no silent substitution to a
-  different model and no silent fallback to another paid model.
-- **MODEL-003** — Shared-Model Mode resolves one model/price applied to
-  all seven participants; Separate-Model Mode independently resolves up to
-  seven distinct models/prices with no cross-participant substitution.
-- **MODEL-004** — A model whose pricing cannot be reliably established is
-  blocked; a model's zero price is accepted only when OpenRouter metadata
-  authoritatively reports it as free, never assumed or fabricated.
+  is resolved to an exact, pinnable provider endpoint — never a
+  model-level average — that must exist, support the required
+  structured-output request, support the current (non-deprecated)
+  bounded-output parameter, have pricing metadata representable by the
+  approved conservative estimator, and satisfy required context-length
+  support. See `docs/adr/0003-openrouter-infrastructure.md` Decisions 2
+  and 4 for the exact `ResolvedModelRoute` contract and eligibility
+  checklist.
+- **MODEL-002** — A model/endpoint that fails any `MODEL-001` check is
+  blocked explicitly with a reason code; there is no silent substitution
+  to a different model or endpoint and no silent fallback to another paid
+  route.
+- **MODEL-003** — Shared-Model Mode resolves one route/price applied to
+  all seven participants; Separate-Model Mode independently resolves up
+  to seven distinct routes/prices with no cross-participant substitution.
+- **MODEL-004** — A route whose pricing cannot be reliably established is
+  blocked; a route's zero price is accepted only when OpenRouter metadata
+  authoritatively reports it as free for that exact endpoint, never
+  assumed or fabricated.
 - **MODEL-005** — Preflight computes a conservative worst-case cost for
   the resolved configuration (bounded input estimate, output caps, the
-  full permitted retry exposure, and the approved safety margin) and
-  reports eligible/blocked with reason codes, performing zero Tribunal
-  model calls.
+  full permitted retry exposure, and the approved safety margin) using
+  exact decimal arithmetic — never binary floating point for an
+  authoritative comparison — and reports eligible/blocked with reason
+  codes, performing zero Tribunal model calls.
 - **MODEL-006** — A run whose `prompt_version` is the pre-Milestone-7
   placeholder (`unassigned-pre-m7`) is never reported execution-eligible
   by any Milestone 7 check, regardless of model/pricing eligibility.
+  Once Milestone 7 prompts exist, newly-frozen runs receive role-specific
+  versions (`ADVOCATE_PROMPT_VERSION`/`JUDGE_PROMPT_VERSION`); historical
+  Milestone 6 runs are never mutated to backfill one.
 - **MODEL-007** — No automated test suite run makes a real network request
   to OpenRouter; every model/pricing/preflight code path is exercised
-  through an injectable fake provider.
+  through an injectable fake provider. Exactly one manual, cost-free,
+  metadata-only live integration check is required once before Milestone
+  7 merges (not part of the automated suite).
+- **MODEL-008** — A configured model that is OpenRouter's dynamic Auto
+  Router (`openrouter/auto`) or a `~`-prefixed "latest"-style alias whose
+  exact executed model cannot be fixed and priced before execution is
+  blocked explicitly (`DYNAMIC_MODEL_UNSUPPORTED` /
+  `MODEL_ALIAS_NOT_PINNED`), never silently resolved to whatever it
+  currently happens to mean.
+- **MODEL-009** — The provider endpoint priced by preflight is the exact
+  endpoint a later execution attempt is restricted to
+  (`provider.only`/`allow_fallbacks: false`); if that exact endpoint is
+  unavailable at execution time, the attempt fails/blocks — it never
+  silently moves to a different endpoint or model. (Execution itself is
+  Milestone 8 scope; this criterion binds the *contract* Milestone 7
+  defines.)
+- **MODEL-010** — Each eligible resolved route is assigned a discovery
+  price tier (`FREE`/`BUDGET`/`PREMIUM`/`ABOVE_PREMIUM`) computed from its
+  own conservative complete-Tribunal cost estimate; a tier label is
+  informational only and never itself grants or bypasses budget
+  eligibility — the exact `$5.00` decimal comparison remains sole
+  authority.
+- **MODEL-011** — Decimal budget comparisons at the `$0.50`, `$2.00`, and
+  `$5.00` tier/hard-ceiling boundaries are exact; a configuration
+  fractionally under a boundary is never misclassified by floating-point
+  rounding.
 
 ### OUTPUT
 

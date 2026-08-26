@@ -319,19 +319,34 @@ For V1 model calls:
 
 Disabling automatic provider fallback makes the actual route and pricing more auditable; the application itself already owns the single permitted retry.
 
-### 5.3 Model catalog
+### 5.3 Model catalog vs. resolved execution route (Milestone 7)
 
 `GET /api/models` does not blindly proxy the entire OpenRouter model list.
 
-Backend filtering should keep only models meeting V1 needs, including:
+**Model catalog (`GET /models`, OpenRouter's top-level model list,
+including its `top_provider` summary) is coarse discovery metadata —
+enough to say "this model exists," not enough to authorize spend.** One
+OpenRouter model can be served by multiple provider endpoints with
+different pricing, capabilities, context limits, and availability
+(`GET /models/{author}/{slug}/endpoints`). Authoritative preflight
+(Milestone 7) always resolves and prices the exact endpoint a later
+execution attempt would be pinned to — never a model-level average, and
+never a different, cheaper endpoint than the one actually selected. See
+`docs/adr/0003-openrouter-infrastructure.md` Decisions 2, 4, and 5 for the
+full `ResolvedModelRoute` contract, eligibility checklist, and
+deterministic selection algorithm.
+
+Backend filtering keeps only models/endpoints meeting V1 needs, including:
 
 - text/chat capability
 - structured-output support
-- required max-token parameter support
+- the current (non-deprecated) bounded-output parameter support
 - adequate context length for judge prompts
 - pricing that can be represented/bounded by V1 economics rules
+- a pinnable provider-routing identity (never a dynamic/alias construct
+  whose executed model cannot be fixed before execution)
 
-Return a sanitized model view to the browser, for example:
+Return a sanitized model/route view to the browser, for example:
 
 ```ts
 type EligibleModel = {
@@ -341,10 +356,9 @@ type EligibleModel = {
   promptPricePerMillion: string;
   completionPricePerMillion: string;
   isFree: boolean;
+  priceTier: "FREE" | "BUDGET" | "PREMIUM" | "ABOVE_PREMIUM";
 };
 ```
-
-Cache model metadata briefly server-side/in memory where useful, but refresh it before authoritative preflight according to `docs/economics.md`.
 
 ### 5.4 Fakeable provider boundary (Milestone 7)
 
@@ -353,29 +367,38 @@ All OpenRouter interaction is behind one small interface:
 ```ts
 interface OpenRouterProvider {
   listModels(): Promise<RawOpenRouterModel[]>;
+  listEndpoints(author: string, slug: string): Promise<RawOpenRouterEndpoint[]>;
   createChatCompletion(request: ProviderChatRequest): Promise<ProviderChatResult>;
 }
 ```
 
-One real (`fetch`-based) and one deterministic in-memory fake
-implementation satisfy every consumer — model catalog resolution,
-preflight, and later Milestone 8 execution. No second provider abstraction
-is introduced for hypothetical future gateways; OpenRouter is the only V1
-gateway (`SPEC.md` §8). Normal automated tests inject the fake and never
-make a real network call. See
+`listEndpoints` resolves `GET /models/{author}/{slug}/endpoints` — the
+call that actually returns per-provider pricing/capability/routing-tag
+data (§5.3). One real (`fetch`-based) and one deterministic in-memory
+fake implementation satisfy every consumer — route resolution,
+preflight, and later Milestone 8 execution. No second provider
+abstraction is introduced for hypothetical future gateways; OpenRouter is
+the only V1 gateway (`SPEC.md` §8). Normal automated tests inject the
+fake and never make a real network call. See
 `docs/adr/0003-openrouter-infrastructure.md` Decision 1.
 
-### 5.5 Model catalog caching (Milestone 7)
+### 5.5 Model/endpoint metadata caching (Milestone 7)
 
-The fetched catalog is cached in an in-process, per-Function-instance
-bounded cache keyed by model ID with a stored fetch timestamp — not a
-database table, not Redis, not a queue (§16). It is treated as fresh only
-within a short TTL (implementation/tuning detail, not a product
-requirement). Past that TTL, or when the catalog cannot be fetched and no
-fresh cached copy exists, authoritative preflight treats pricing as
-unavailable and **blocks** — it never serves stale pricing to an
+The fetched catalog/endpoint data is cached in an in-process,
+per-Function-instance bounded cache keyed by model ID with a stored fetch
+timestamp — not a database table, not Redis, not a queue (§16). It is
+treated as fresh only within a locked, exact TTL:
+
+```ts
+const MODEL_METADATA_TTL_MS = 300_000; // 5 minutes
+```
+
+Past that TTL, or when metadata cannot be fetched and no fresh cached
+copy exists, authoritative preflight treats pricing as unavailable and
+**blocks** — it never serves stale pricing to an
 eligibility decision and never invents economics (`docs/economics.md`
-§15). See `docs/adr/0003-openrouter-infrastructure.md` Decision 2.
+§15). Injectable clock in tests. See
+`docs/adr/0003-openrouter-infrastructure.md` Decision 3.
 
 ---
 
@@ -461,14 +484,28 @@ Exact route filenames are implementation details, but the V1 HTTP contract shoul
 - no API key exposed
 - eligible models only
 
-### 7.3 Preflight
+### 7.3 Preflight (Milestone 7 — standalone, locked)
 
 `POST /api/preflight`
 
-- validates complete case/configuration
-- resolves current eligible model pricing
-- returns conservative estimate and eligibility
-- performs no model inference
+Request: `{ "runId": "<UUID>" }` — operates on an already-frozen run.
+
+- rejects a run whose `prompt_version` is still the pre-M7 placeholder
+- resolves each participant's exact `ResolvedModelRoute` (§5.3), not a
+  model-level average
+- validates endpoint-level eligibility and computes conservative cost
+  using exact decimal arithmetic
+- assigns discovery price tier (`FREE`/`BUDGET`/`PREMIUM`/
+  `ABOVE_PREMIUM`) per participant, informational only
+- returns eligibility, per-participant reason codes, and the conservative
+  estimate — see `docs/adr/0003-openrouter-infrastructure.md`
+  Decision 15 for the exact response shape
+- performs no model inference, no persistence, no run mutation
+
+**Locked (Milestone 7 scope boundary):** this is the *only* Milestone 7
+touch point for preflight. It does not call, and is not called from,
+`POST /api/runs` (§7.4 step 5). See
+`docs/adr/0003-openrouter-infrastructure.md` Decision 14.
 
 ### 7.4 Start run
 
@@ -499,16 +536,16 @@ independent review found in an earlier draft, see below):
    would make a legitimate retry after a lost HTTP response mint a second
    case UUID and produce a different fingerprint, incorrectly reporting a
    conflict for an identical request
-5. reruns authoritative preflight *(from Milestone 7 onward; Milestone 6
-   has no preflight to run since no model pricing exists yet — see below.
-   **Open as of Milestone 7 planning:** whether this step is actually
-   wired into this endpoint's write path — persisting a `BLOCKED_BUDGET`
-   run, which needs a second forward migration to the freeze function's
-   currently-hardcoded `'READY'` status literal — or whether Milestone 7
-   instead ships only the standalone `POST /api/preflight` read-only
-   endpoint (§7.3) with this step deferred to Milestone 8. Recorded as
-   unresolved, not decided here — see
-   `docs/adr/0003-openrouter-infrastructure.md` Decision 5.)*
+5. reruns authoritative preflight *(from Milestone 8 onward, once real
+   execution exists to gate; Milestone 6 has no preflight to run since no
+   model pricing exists yet — see below. **Locked:** Milestone 7 ships
+   only the standalone, read-only `POST /api/preflight` endpoint (§7.3);
+   it does not modify this endpoint's write path and does not persist
+   `BLOCKED_BUDGET`. Wiring preflight synchronously into this step —
+   which needs a further forward migration to the freeze function's
+   currently-hardcoded `'READY'` status literal — is Milestone 8's
+   integration, because only Milestone 8 actually has execution to block.
+   See `docs/adr/0003-openrouter-infrastructure.md` Decision 14.)*
 6. resolves/creates the case idempotently — for `kind: "new"`, an ordinary
    insert keyed by `convene_request_id = client_request_id`, falling back
    to a compare-and-reuse (or `409`) read on a unique-constraint conflict;
@@ -715,7 +752,10 @@ early (§8.2). Milestone 7 defines the equivalent TypeScript
 interface/Zod schema (the telemetry contract) so Milestone 8's design and
 tests can depend on a stable shape; the table and its forward migration
 are created when Milestone 8/10 has a real write path that needs them.
-See `docs/adr/0003-openrouter-infrastructure.md` Decision 3.
+The telemetry contract also carries the exact resolved-route identity
+(`providerEndpointTag`, canonical model ID — §5.3) alongside the
+configured model ID, not just the latter. See
+`docs/adr/0003-openrouter-infrastructure.md` Decision 18.
 
 One row per actual provider attempt.
 
