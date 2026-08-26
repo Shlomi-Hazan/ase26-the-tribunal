@@ -82,7 +82,7 @@ Exact field names below are taken from that spec, not assumed:
   `upstream_inference_cost`, `upstream_inference_prompt_cost`,
   `upstream_inference_completions_cost`. This distinction — rate fields
   are strings, the realized `usage.cost` is a number — is the concrete
-  justification for the decimal-arithmetic boundary in Decision 6 below.
+  justification for the decimal-arithmetic boundary in Decision 9 below.
 - **`GET /generation?id=...`**: detailed post-hoc audit record —
   `id` (the completion response's own top-level `id`, e.g.
   `"gen-3bhGkxlo4XFrqiabUM7NDtwDzWwG"`, is exactly the "provider
@@ -103,6 +103,58 @@ Exact field names below are taken from that spec, not assumed:
   drift over time" — direct external confirmation that a cache without a
   bounded TTL and re-validation is unsafe for this domain, reinforcing
   the cache design already planned (Decision 3).
+
+**Additional verification (this pass)**, against OpenRouter's official
+provider-routing guide
+(`https://openrouter.ai/docs/guides/routing/provider-selection`) and the
+real OpenAPI `PublicPricing`/`PricingOverride` schemas:
+
+- **Provider slug matching is not automatically an exact pin.** Quoted
+  directly: "When you use a base provider slug (e.g. `google-vertex`) in
+  any provider routing field (`order`, `only`, or `ignore`), it matches
+  **all** endpoints for that provider, including any variants or
+  regions." Documented examples: `google-vertex` matches every Google
+  Vertex region, while `google-vertex/us-east5` matches only that one
+  region; `deepinfra` matches both its default and `turbo` endpoints,
+  while `deepinfra/turbo` matches only the turbo variant. (Service-tier
+  endpoints such as `openai/fast` additionally require explicit opt-in —
+  a base slug does not match them either way, which is not itself a
+  pinnability concern for V1 but is noted for completeness.) This directly
+  falsifies the first pass's claim that `provider.only: [tag]` is always
+  an exact single-endpoint restriction — see Decision 4A and Decision 6.
+- **Request-level `only` narrows, not merges independently:**
+  "your account-wide allowed providers act as the ceiling, and the
+  request's `only` list narrows within it. If no provider satisfies both,
+  the request fails with a `404`." An M8 request builder must not assume
+  its own `only` list alone determines the accepted provider set.
+- **OpenRouter's own documented exact-pin example uses `order`, not
+  `only`:** to "ensure your request is routed to the specific endpoint
+  you want," the docs' own example is `order: ["deepinfra/turbo"],
+  allowFallbacks: false` — a full variant slug via `order` with fallbacks
+  disabled, not `only` alone. This is the documented mechanism Decision 6
+  now adopts as primary.
+- **`pricing.overrides`** (real field, `PublicPricing.overrides`,
+  confirmed via the OpenAPI spec): "Conditional overrides of the base
+  pricing (e.g. long-context or time-based pricing). An entry applies
+  when all of its condition fields (e.g. `min_prompt_tokens`, or the
+  `utc_start`/`utc_end` time window) match the request; among applicable
+  entries, later entries win per key... The top-level pricing keys always
+  reflect the price that applies under default conditions." Condition
+  fields confirmed on `PricingOverride`: `min_prompt_tokens` (numeric
+  threshold — "applies when total prompt tokens... strictly greater than
+  this"), `utc_days` (weekday enum array), `utc_start`/`utc_end` (HHMM
+  numeric daily window). A route whose actual runtime request could match
+  a condition (e.g. a long Charge Sheet/judge prompt crossing
+  `min_prompt_tokens`) could be billed at a **different** rate than the
+  top-level price preflight would otherwise read — see Decision 7 and
+  Decision 8.
+- **`pricing.discount`** (real field, `PublicPricing.discount`,
+  `number`, confirmed via the OpenAPI spec): "Fractional discount applied
+  to this endpoint's pricing; the price is multiplied by `(1 - discount)`
+  (`0` = no discount, `1` = free)." Structurally, a discount can only
+  reduce the effective price relative to the base rate — it is
+  mathematically impossible for `(1 - discount)` with `discount ∈ [0, 1]`
+  to exceed `1` — see Decision 7A.
 
 ## Decision 1 — One provider abstraction, one fake
 
@@ -140,9 +192,16 @@ type ResolvedModelRoute = {
                                    // -- never altered by M7
   canonicalModelId: string;       // OpenRouter model `canonical_slug`
 
-  providerEndpointTag: string;    // OpenRouter endpoint `tag` -- the ONLY
-                                   // field ever placed into a future
-                                   // `provider.only` request array (Decision 5)
+  providerEndpointTag: string;    // OpenRouter endpoint `tag` -- a
+                                   // provider-ROUTING SLUG, not
+                                   // automatically an exact single-endpoint
+                                   // pin (see the correction below)
+  isUniquelyPinnable: boolean;    // proven true only when this exact tag
+                                   // resolves to exactly one endpoint under
+                                   // OpenRouter's slug-matching rules
+                                   // (Decision 4A) -- a route can only ever
+                                   // become a ResolvedModelRoute (i.e. reach
+                                   // Decision 5's selection) when this is true
   providerDisplayName: string;    // OpenRouter endpoint `provider_name` --
                                    // display/audit only, never used for routing
   endpointDisplayName: string;    // OpenRouter endpoint `name` -- display/audit only
@@ -158,19 +217,23 @@ type ResolvedModelRoute = {
 };
 ```
 
-`providerEndpointTag` (= OpenRouter's `tag`) is explicitly the *only*
-field ever used to pin execution (`provider.only: [tag]`, confirmed
-against the real `ProviderPreferences.only` schema, whose array items
-accept exactly this kind of provider-slug string).
+**Correction (this pass):** the first pass claimed `providerEndpointTag`
+(OpenRouter's `tag`) is "the only field ever used to pin execution" as if
+any `tag` value were automatically an exact single-endpoint restriction.
+That is too strong and is corrected by Decision 4A and Decision 6 below —
+a `tag` may be a *base* provider slug that matches multiple endpoint
+variants/regions for that provider (e.g. `"deepinfra"` matches both its
+default and `turbo` endpoints), not a guaranteed unique pin. Only a `tag`
+proven uniquely pinnable (`isUniquelyPinnable: true`) may ever reach
+`ResolvedModelRoute`; a route whose tag is not uniquely pinnable is
+blocked before this type is ever constructed (Decision 4A).
 `providerDisplayName`/`endpointDisplayName` (= `provider_name`/`name`)
-are for UI/audit display only and are never fed into a routing
-parameter — resolving Section 5's display-vs-pin distinction concretely
-against real field names rather than placeholder names.
+remain display/audit only and are never fed into a routing parameter.
 
 Resolution pipeline: `GET /models` (existence/coarse filter) → `GET
 /models/{author}/{slug}/endpoints` (all real candidate endpoints for that
-exact model) → filter to eligible endpoints (Decision 4) → deterministic
-selection (Decision 5, the redesignated numbering below) →
+exact model) → filter to eligible + uniquely-pinnable endpoints
+(Decisions 4, 4A) → deterministic selection (Decision 5) →
 `ResolvedModelRoute`.
 
 ## Decision 3 — Model catalog and endpoint caching: bounded in-process cache, 5-minute authoritative TTL
@@ -234,14 +297,53 @@ endpoint actually selected:
 6. `contextLength` is sufficient for the conservative input bound
    (`docs/economics.md` §10.1–§10.3) plus the applicable output cap
 7. pricing is complete and representable per Decision 7 (billable
-   dimensions)
-8. the endpoint can be pinned under the intended provider-routing policy
-   (Decision 5) — i.e. its `tag` is a value `provider.only` can actually
-   restrict to
+   dimensions) and carries no unrepresentable conditional pricing per
+   Decision 7A
+8. the endpoint is **uniquely pinnable** — see Decision 4A; an endpoint
+   whose `tag` cannot be proven to identify exactly one endpoint is never
+   eligible
 
 `require_parameters: true` remains request-time defense in depth
 (`ARCHITECTURE.md` §5.2) — it does not substitute for this endpoint-level
 eligibility check, which runs before any request is ever built.
+
+## Decision 4A — Unique pinnability rule (corrects the first pass)
+
+**The first pass's claim that any endpoint `tag` is automatically an
+exact single-endpoint restriction was too strong and is corrected here.**
+Confirmed against OpenRouter's official provider-routing documentation
+(see "Additional verification," above): a provider slug used in any
+routing field matches **all** endpoints for that provider, including
+variants and regions, unless the slug is itself the specific variant —
+e.g. `deepinfra` matches both its default and `turbo` endpoints, while
+`deepinfra/turbo` matches only the turbo variant.
+
+**Rule:** before an endpoint can become a `ResolvedModelRoute`, M7 proves
+that its `tag`, evaluated under OpenRouter's documented slug-matching
+semantics against every endpoint currently returned for that exact model,
+identifies **one and only one** endpoint in the current candidate set.
+
+- `tag` is a full variant/region slug (contains the `/` variant suffix,
+  e.g. `deepinfra/turbo`, `google-vertex/us-east5`) → potentially
+  uniquely pinnable, `isUniquelyPinnable = true` if no other candidate
+  endpoint for this model shares that exact full slug.
+- `tag` is a base slug (no variant suffix, e.g. `deepinfra`) **and** the
+  model's current endpoint set contains more than one endpoint whose
+  `tag` starts with that base slug (i.e. sibling variants/regions exist)
+  → **not** uniquely pinnable, `isUniquelyPinnable = false`.
+- `tag` is a base slug and the model's current endpoint set contains
+  exactly one endpoint for that provider at all (no sibling variants
+  exist right now) → uniquely pinnable *today*, but this is re-verified
+  every time metadata is re-fetched (Decision 3's TTL), since a sibling
+  variant could appear later — the pinnability check is never a one-time
+  determination cached independently of the metadata TTL.
+
+**For V1, a route that is not uniquely pinnable is blocked** — reason
+code `ENDPOINT_NOT_PINNABLE`. M7 never silently widens acceptance to "any
+endpoint under this base slug" merely because a base slug is convenient;
+doing so would mean preflight priced one specific endpoint while a future
+request pinned by that same base slug could actually route to a
+different, differently-priced sibling.
 
 ## Decision 5 — Deterministic endpoint selection
 
@@ -263,33 +365,86 @@ price is ever used.
 
 ## Decision 6 — Preflight route is bound to future execution; no silent endpoint/model drift
 
-**Locked invariant: PREFLIGHT ROUTE = FUTURE EXECUTION ROUTE.**
+**Locked invariant: PREFLIGHT ROUTE = FUTURE EXECUTION ROUTE.** The
+authoritative rule is that the routing slug execution eventually uses
+must have been proven uniquely pinnable by M7 preflight (Decision 4A) —
+`provider.only` alone does not itself prove or grant that.
 
 M8 must not compute preflight against one endpoint and let OpenRouter
-freely route the actual completion to a different one. The future
-completion request (M8, not M7 — M7 makes no completion call) must pin:
+freely route the actual completion to a different one. **Corrected
+mechanism (this pass):** OpenRouter's own documented example for
+"ensure your request is routed to the specific endpoint you want" pins
+via `order` with a full variant slug and `allow_fallbacks: false` —
+`order: ["deepinfra/turbo"], allowFallbacks: false` — not `only` alone.
+The future completion request (M8, not M7 — M7 makes no completion call)
+must therefore use:
 
-- `provider.only: [providerEndpointTag]` — exact restriction to the
-  resolved endpoint's real `tag`
-- `provider.allow_fallbacks: false`
+- `provider.order: [providerEndpointTag]` — the **primary** pinning
+  mechanism, a single-element list containing the exact, already-proven-
+  uniquely-pinnable `tag` (never a base slug — Decision 4A guarantees
+  this route's `tag` is not one)
+- `provider.allow_fallbacks: false` — required for `order` to actually
+  restrict rather than merely prefer
+- `provider.only: [providerEndpointTag]` — the **same** tag, as an
+  *additional*, redundant restriction, not the primary mechanism (the
+  first pass over-relied on `only` alone; `only` interacts with
+  account-wide allowed-provider settings as a narrowing ceiling, not an
+  independent guarantee — see "Additional verification," above)
 - `provider.require_parameters: true`
 - `provider.max_price` set consistent with the accepted pricing bound,
   as defense in depth (never the primary control — the accepted
   `ResolvedModelRoute`'s own pricing is)
 
+Account-wide allowed-provider configuration must never cause the request
+builder to silently execute a different accepted route than the one
+`order`/`only` name — if the account-wide ceiling and the request's
+`order`/`only` don't overlap on the exact pinned endpoint, OpenRouter's
+documented behavior is to fail the request (`404`), which is the correct
+outcome here, not a silent broadening.
+
 If the exact accepted endpoint is unavailable at execution time (M8), the
 attempt fails/blocks per the normalized error policy (Decision 11). It
-never silently moves to a different endpoint or a different model. M7
-itself performs zero completion calls — this decision defines the
-contract M8 must implement, not something M7 executes.
+never silently moves to a different endpoint, a sibling/base-provider
+endpoint, or a different model. M7 itself performs zero completion
+calls — this decision defines the contract M8 must implement, not
+something M7 executes.
 
 ## Decision 7 — Billable dimensions
 
 Confirmed real OpenRouter pricing dimensions (Current OpenRouter API
 verification, above): `prompt`, `completion`, `request`, `image`,
 `web_search`, `internal_reasoning`, `input_cache_read`,
-`input_cache_write`. V1 Tribunal is text-only, sends no image content,
-enables no web-search plugin, and requests no explicit prompt caching.
+`input_cache_write`, plus (this pass) the two pricing *modifiers*
+`overrides` and `discount` — see Decision 7A for their dedicated policy.
+V1 Tribunal is text-only, sends no image content, enables no web-search
+plugin, and requests no explicit prompt caching.
+
+Every dimension and modifier is classified into exactly one of three
+buckets — no current or future field may pass eligibility unclassified:
+
+1. **Ignored because impossible for the Tribunal's request to invoke**:
+   `image`, `web_search` — no such plugin/content is ever sent, so these
+   dimensions structurally cannot be charged; exclusion is justified by
+   the request contract itself, not by assumption.
+2. **Ignored (or bounded down) because it can only ever reduce realized
+   spend below the conservative bound, never increase it**: provider
+   *implicit* caching (`input_cache_read`/`input_cache_write` realized
+   values, gated by `supports_implicit_caching`) and `pricing.discount`
+   (Decision 7A) — both are safe to ignore for the conservative upper
+   bound precisely because they are mathematically one-directional
+   (discount) or opt-in-only-beneficial (implicit cache reads are cheaper
+   than a full prompt token, never more expensive).
+3. **Blocked because the dimension can increase or alter the effective
+   price and is not (yet) representable in the conservative bound**:
+   `internal_reasoning` when non-zero (reasoning-token count is not
+   bounded by the Tribunal's request contract — V1 does not request or
+   cap reasoning tokens), and `pricing.overrides` when non-empty
+   (Decision 7A — the top-level price is only the *default-conditions*
+   price; a non-empty `overrides` array means some request could be
+   billed at a different, conditionally-selected price the V1 preflight
+   does not evaluate). Both block eligibility with `PRICING_UNREPRESENTABLE`.
+
+Concretely for the dimensions already covered before this pass:
 
 - **Always included** in the conservative bound: `prompt`, `completion`
   (the two dimensions every text completion always incurs).
@@ -297,25 +452,67 @@ enables no web-search plugin, and requests no explicit prompt caching.
   + the one permitted retry) when non-zero: `request` — a flat per-call
   fee is incurred again on a retry, so the retry reserve must include it
   too, not just the token cost.
-- **Excluded** because the Tribunal's actual request cannot trigger them:
-  `image`, `web_search` (no such plugin/content is ever sent —
-  exclusion is justified by the request contract itself, not by
-  assumption).
-- **Cache dimensions** (`input_cache_read`/`input_cache_write`): the
-  Tribunal never explicitly requests caching. A provider's *implicit*
-  caching (`supports_implicit_caching`) may reduce *actual* realized
-  cost below the conservative bound — that is safe, since the bound only
-  needs to be an upper limit — but the conservative preflight estimate
-  must never assume a caching discount will apply.
-- **`internal_reasoning`**: if a candidate endpoint's pricing reports a
-  non-zero `internal_reasoning` rate, that endpoint is **blocked** with
-  `PRICING_UNREPRESENTABLE` — reasoning-token count is not bounded by
-  the Tribunal's request contract (V1 does not request or cap reasoning
-  tokens), so a non-zero reasoning price is a dimension that *can*
-  affect the request but *cannot* be conservatively represented today.
+- **`internal_reasoning`**: bucket 3 above — non-zero blocks with
+  `PRICING_UNREPRESENTABLE`.
 - **Any other current or future non-zero billable dimension** the
-  Tribunal's request contract cannot structurally rule out is blocked
-  the same way, never assumed zero.
+  Tribunal's request contract cannot structurally rule out (bucket 1) or
+  prove one-directional (bucket 2) is blocked the same way as bucket 3,
+  never assumed zero.
+
+## Decision 7A — `pricing.overrides` and `pricing.discount` policy (new this pass)
+
+Verified this pass (see "Additional verification," above) directly from
+the current `PublicPricing`/`PricingOverride` OpenAPI schemas — both
+fields are real and currently documented, and neither was accounted for
+in the first two planning passes.
+
+**`pricing.overrides` — V1 policy: non-empty blocks eligibility.**
+
+- `overrides` is an array of conditional pricing entries
+  (`min_prompt_tokens`, `utc_days`, `utc_start`/`utc_end`); when an
+  entry's conditions match the actual request, its price keys replace
+  the corresponding top-level price for that request, and "the top-level
+  pricing keys always reflect the price that applies under default
+  conditions" — i.e. the top-level price is not guaranteed to be the
+  request's actual price whenever `overrides` is non-empty.
+- **Locked V1 policy:** if a candidate endpoint's `pricing.overrides` is
+  non-empty, that endpoint is **not eligible** —
+  `PRICING_UNREPRESENTABLE`. V1 does not implement a conditional-pricing
+  evaluation engine (no time-of-day/day-of-week clock logic, no
+  prompt-token-count-conditional branching in the pricing layer); building
+  one is explicitly out of scope for M7.
+- If `pricing.overrides` is empty or absent, normal eligibility/pricing
+  flow (Decisions 4, 7, 9) continues unchanged — this is the common case
+  today for the vast majority of endpoints.
+- This policy is conservative by construction: it can only ever cause the
+  system to decline a route that might have been priceable, never to
+  under-price one.
+
+**`pricing.discount` — V1 policy: conservative, never relied upon.**
+
+- `discount` is a `number`, "Fractional discount applied to this
+  endpoint's pricing; the price is multiplied by `(1 - discount)`" —
+  since `discount ∈ [0, 1]` by definition, `(1 - discount) ∈ [0, 1]`,
+  so applying it can only ever **lower or hold equal** the effective
+  price relative to the undiscounted base rate; it can never raise it.
+  This is a closed-form mathematical property of the field's own
+  documented definition, not an assumption.
+- **Locked V1 policy:** preflight pricing, budget-tier classification,
+  and the $5.00 ceiling bound are always computed from the **undiscounted
+  base `pricing.*` rate fields**, never from a rate with `discount`
+  applied. A positive `discount` is never relied upon to make a route fit
+  a budget tier or the hard ceiling that the undiscounted rate would not
+  already satisfy on its own.
+- **FREE-tier consequence:** a route is classified `FREE` (Decision 12)
+  only when its **undiscounted** V1-relevant charges are themselves
+  exactly `$0.00`. An endpoint that is merely discounted toward zero
+  (`discount` close to but not equal to `1`, or `discount = 1` applied to
+  a non-zero base rate) is **not** FREE under this policy — the
+  undiscounted base rate is what is classified and bounded.
+- This policy is conservative by construction: since `discount` can only
+  reduce actual realized spend below the computed bound, ignoring it
+  never causes the bound to understate risk; it can only make the bound
+  more conservative than strictly necessary.
 
 ## Decision 8 — Alias / dynamic-router policy
 
@@ -365,15 +562,27 @@ type PricingSnapshot = {
 ```
 
 - Rate strings are parsed directly into the decimal type (Decision 10) —
-  never round-tripped through a JS `number` first.
-- A realized `usage.cost` number is converted into the decimal type
-  exactly once, immediately on receipt, and never re-derived through
-  further floating-point arithmetic afterward. IEEE-754 doubles carry
-  ~15–17 significant decimal digits, which is far more precision than a
-  per-call USD amount in the sub-cent-to-few-dollar range needs; the
-  one-time conversion is safe precisely because it happens once, at the
-  boundary, and every comparison/aggregation after that point uses only
-  decimal arithmetic.
+  never round-tripped through a JS `number` first. **This authoritative
+  preflight path is unaffected by the wording correction below** —
+  preflight pricing, tier classification, and the $5.00 ceiling continue
+  to use only the string rate fields parsed directly into `Decimal`.
+- **Corrected wording (this pass):** a realized `usage.cost` number is
+  converted into the decimal type exactly once, immediately on receipt,
+  and no further authoritative binary-floating-point arithmetic is
+  performed on it afterward — every comparison/aggregation after that
+  point uses only decimal arithmetic on the converted value. This is
+  narrower than the first pass's phrasing: the application preserves
+  *the provider-reported value it received* — a JSON number is exactly
+  representable as a decimal, so the conversion itself loses nothing —
+  but this is **not** a claim that the true underlying mathematical
+  price (rate × token counts, evaluated at whatever precision the
+  provider used internally, possibly including an `overrides`/`discount`
+  adjustment) is reconstructed more exactly than OpenRouter's protocol
+  itself supplied it. `usage.cost` is recorded as authoritative
+  *audit/telemetry* of what OpenRouter reported for that call; it is
+  never treated as more precise than its source, and it is never used to
+  retroactively revise a preflight decision already made from the rate
+  strings.
 - `1,000,000` (the per-million conversion factor) is an exact integer;
   the conversion introduces no additional imprecision.
 
@@ -446,11 +655,20 @@ type PreflightReasonCode =
   | "MODEL_ALIAS_NOT_PINNED"
   | "DYNAMIC_MODEL_UNSUPPORTED"
   | "ENDPOINT_UNAVAILABLE"
+  | "ENDPOINT_NOT_PINNABLE"        // NEW (this pass) -- candidate endpoint's
+                                    // tag cannot be proven to identify
+                                    // exactly one endpoint (Decision 4A);
+                                    // distinct from ENDPOINT_UNAVAILABLE,
+                                    // which means no candidate exists at
+                                    // all, not that one exists but is
+                                    // ambiguously addressed
   | "STRUCTURED_OUTPUT_UNSUPPORTED"
   | "BOUNDED_OUTPUT_UNSUPPORTED"
   | "CONTEXT_TOO_SMALL"
   | "PRICING_UNAVAILABLE"
-  | "PRICING_UNREPRESENTABLE"
+  | "PRICING_UNREPRESENTABLE"      // now also covers non-empty
+                                    // pricing.overrides and non-zero
+                                    // internal_reasoning (Decisions 7, 7A)
   | "BUDGET_EXCEEDED"
   | "PROMPT_VERSION_UNASSIGNED";
 ```
@@ -458,7 +676,9 @@ type PreflightReasonCode =
 (This pass unifies naming: the first pass's Section 25 sketch used
 `BUDGET_BLOCKED` in one place and `BUDGET_EXCEEDED` in another for the
 same concept — one canonical name, `BUDGET_EXCEEDED`, is used
-everywhere.)
+everywhere. This pass also adds `ENDPOINT_NOT_PINNABLE`, the reason code
+required by Decision 4A, and clarifies `PRICING_UNREPRESENTABLE`'s
+expanded scope per Decisions 7/7A.)
 
 Future M8 retry eligibility (documented here for forward reference only —
 M7 does not implement it):
@@ -483,7 +703,10 @@ never a model-family average):
 ```text
 FREE           == $0.00 exactly (every V1-relevant billable dimension
                    authoritatively zero for this exact route -- never
-                   inferred from name/marketing/history)
+                   inferred from name/marketing/history, and computed
+                   from the UNDISCOUNTED base rate per Decision 7A's
+                   discount policy -- a discounted-toward-zero non-zero
+                   base rate is never classified FREE)
 BUDGET         >  $0.00  and <= $0.50
 PREMIUM        >  $0.50  and <= $2.00
 ABOVE_PREMIUM  >  $2.00  and <= $5.00   -- technically satisfies the hard
@@ -716,6 +939,53 @@ handling (Decision 9), and timeout-boundary integration. Not CI, not
 automatically required, not a Tribunal participant call, not part of the
 7-call economics. Not performed in this planning task.
 
+## Test strategy additions (this pass)
+
+These extend M7's future test plan (implemented at M7 build time, not in
+this planning task) to cover the two corrections above. All run against
+the fake provider; none require a real OpenRouter call.
+
+**Unique pinnability (Decision 4A):**
+
+- **A.** A model whose only candidate endpoint's `tag` is a full
+  variant/region slug (e.g. `deepinfra/turbo`) with no sibling variant in
+  the candidate set → eligible, `isUniquelyPinnable: true`.
+- **B.** A model with two candidate endpoints sharing the same base
+  provider slug (e.g. `deepinfra` and `deepinfra/turbo` both present) →
+  the base-slug endpoint is **not** eligible
+  (`ENDPOINT_NOT_PINNABLE`); the full-variant-slug endpoint is evaluated
+  on its own merits.
+- **C.** A model whose only candidate endpoint's `tag` is currently a
+  bare base slug with no sibling variant present *right now* → eligible
+  today (`isUniquelyPinnable: true`), with the pinnability check re-run
+  from the live candidate set on every TTL refresh (Decision 3), never
+  cached independently of it.
+- **D.** No endpoint in the candidate set can be proven uniquely
+  pinnable → the model itself is ineligible, `ENDPOINT_NOT_PINNABLE`
+  surfaced in `blockedReasonCodes`/`participants[].reasonCodes`.
+- **E.** Deterministic selection (Decision 5) never considers a
+  not-uniquely-pinnable endpoint's price, even if it would otherwise be
+  the cheapest candidate.
+
+**Pricing overrides and discount (Decision 7A):**
+
+- **F.** A candidate endpoint with a non-empty `pricing.overrides` array
+  → not eligible, `PRICING_UNREPRESENTABLE`.
+- **G.** A candidate endpoint with an empty or absent `pricing.overrides`
+  → normal eligibility/pricing flow, unaffected.
+- **H.** A candidate endpoint with `pricing.discount > 0` on a non-zero
+  base rate → the computed conservative bound uses the **undiscounted**
+  base rate; the discount never lowers the computed bound used for tier
+  classification or the $5.00 ceiling comparison.
+- **I.** A candidate endpoint with a non-zero base rate and
+  `pricing.discount` close to or equal to `1` → **not** classified
+  `FREE`; tier classification uses the undiscounted rate.
+- **J.** A realized `usage.cost` from a (future, M8-only) completion
+  response is converted to the decimal type exactly once on receipt and
+  stored/aggregated with no further float-precision arithmetic performed
+  on it afterward — verified by asserting no second `Number(...)`
+  round-trip occurs anywhere downstream of the initial conversion.
+
 ## Consequences
 
 - M7 adds one new environment variable read path
@@ -727,10 +997,15 @@ automatically required, not a Tribunal participant call, not part of the
   role-specific versions to.
 - M8 inherits: a stable `OpenRouterProvider` interface including endpoint
   discovery; a `ResolvedModelRoute`/`PricingSnapshot` pair that
-  distinguishes discovery from pinnable execution identity; a
-  deterministic endpoint-selection algorithm; a decimal-safe budget
-  contract; a normalized provider-error taxonomy with a documented
-  (not-yet-implemented) retry-eligibility mapping; a role-specific
+  distinguishes discovery from pinnable execution identity (now including
+  `isUniquelyPinnable`, Decision 4A); a deterministic endpoint-selection
+  algorithm; a decimal-safe budget contract that blocks unrepresentable
+  conditional pricing (`overrides`) and never relies on `discount`
+  (Decision 7A); a normalized provider-error taxonomy — now including
+  `ENDPOINT_NOT_PINNABLE` — with a documented (not-yet-implemented)
+  retry-eligibility mapping; a route-pinning contract for execution that
+  uses `provider.order` as the primary pin, matching OpenRouter's own
+  documented exact-pin example (Decision 6); a role-specific
   prompt-version contract; and a `PreflightResult` it can call before
   wiring `BLOCKED_BUDGET` into real execution — without inheriting a
   `model_call_attempts` table it doesn't yet need, or a `POST /api/runs`
@@ -738,3 +1013,11 @@ automatically required, not a Tribunal participant call, not part of the
 - Every M7 test runs against the fake provider; CI never spends money or
   depends on OpenRouter's availability. Exactly one manual, cost-free,
   metadata-only live check (Decision 19) is required once, before merge.
+- **This pass's corrections are conservative-only**: both the
+  pinnability rule (Decision 4A) and the overrides/discount policy
+  (Decision 7A) can only cause the system to *decline* a route it might
+  previously have accepted too permissively (first pass) or to compute a
+  cost bound that is *equal to or higher* than the discount-naive number
+  would have been — neither correction weakens the $5.00 ceiling, the
+  FREE/BUDGET/PREMIUM/ABOVE_PREMIUM/HARD_BLOCK thresholds, or any other
+  previously locked decision.

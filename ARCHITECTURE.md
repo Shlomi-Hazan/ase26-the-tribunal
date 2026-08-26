@@ -332,9 +332,19 @@ different pricing, capabilities, context limits, and availability
 (Milestone 7) always resolves and prices the exact endpoint a later
 execution attempt would be pinned to — never a model-level average, and
 never a different, cheaper endpoint than the one actually selected. See
-`docs/adr/0003-openrouter-infrastructure.md` Decisions 2, 4, and 5 for the
-full `ResolvedModelRoute` contract, eligibility checklist, and
-deterministic selection algorithm.
+`docs/adr/0003-openrouter-infrastructure.md` Decisions 2, 4, 4A, and 5
+for the full `ResolvedModelRoute` contract, eligibility checklist,
+unique-pinnability rule, and deterministic selection algorithm.
+
+**Corrected this pass:** an endpoint's provider-routing `tag` alone is
+not automatically proof it identifies exactly one endpoint —
+OpenRouter's provider slugs have base-slug-matches-multiple-variants
+semantics (e.g. base slug `deepinfra` can match several
+region/quantization variants including `deepinfra/turbo`). A candidate
+endpoint is only eligible when its `tag` is provably **uniquely
+pinnable** in the current candidate set (`ResolvedModelRoute.isUniquelyPinnable`,
+Decision 4A); otherwise it is blocked with `ENDPOINT_NOT_PINNABLE`,
+regardless of price.
 
 Backend filtering keeps only models/endpoints meeting V1 needs, including:
 
@@ -342,9 +352,12 @@ Backend filtering keeps only models/endpoints meeting V1 needs, including:
 - structured-output support
 - the current (non-deprecated) bounded-output parameter support
 - adequate context length for judge prompts
-- pricing that can be represented/bounded by V1 economics rules
-- a pinnable provider-routing identity (never a dynamic/alias construct
-  whose executed model cannot be fixed before execution)
+- pricing that can be represented/bounded by V1 economics rules, with no
+  unrepresentable conditional `pricing.overrides` (Decision 7A)
+- a **uniquely pinnable** provider-routing identity (never a dynamic/alias
+  construct whose executed model cannot be fixed before execution, and
+  never a base provider slug that currently matches more than one
+  candidate endpoint)
 
 Return a sanitized model/route view to the browser, for example:
 

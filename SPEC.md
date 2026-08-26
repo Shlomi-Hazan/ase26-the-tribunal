@@ -1014,14 +1014,18 @@ These are target criteria, not claims that implementation already exists.
 ### MODEL (Milestone 7)
 
 - **MODEL-001** — A configured `model_id` (frozen unchanged by Milestone 6)
-  is resolved to an exact, pinnable provider endpoint — never a
-  model-level average — that must exist, support the required
-  structured-output request, support the current (non-deprecated)
-  bounded-output parameter, have pricing metadata representable by the
-  approved conservative estimator, and satisfy required context-length
-  support. See `docs/adr/0003-openrouter-infrastructure.md` Decisions 2
-  and 4 for the exact `ResolvedModelRoute` contract and eligibility
-  checklist.
+  is resolved to an exact, **uniquely pinnable** provider endpoint —
+  never a model-level average, and never an endpoint whose routing `tag`
+  cannot be proven to identify exactly one endpoint under OpenRouter's
+  documented provider-slug matching semantics (a base provider slug is
+  not, by itself, proof of a unique endpoint) — that must exist, support
+  the required structured-output request, support the current
+  (non-deprecated) bounded-output parameter, have pricing metadata
+  representable by the approved conservative estimator (including no
+  unrepresentable conditional `pricing.overrides`), and satisfy required
+  context-length support. See `docs/adr/0003-openrouter-infrastructure.md`
+  Decisions 2, 4, and 4A for the exact `ResolvedModelRoute` contract,
+  eligibility checklist, and unique-pinnability rule.
 - **MODEL-002** — A model/endpoint that fails any `MODEL-001` check is
   blocked explicitly with a reason code; there is no silent substitution
   to a different model or endpoint and no silent fallback to another paid
@@ -1031,8 +1035,12 @@ These are target criteria, not claims that implementation already exists.
   to seven distinct routes/prices with no cross-participant substitution.
 - **MODEL-004** — A route whose pricing cannot be reliably established is
   blocked; a route's zero price is accepted only when OpenRouter metadata
-  authoritatively reports it as free for that exact endpoint, never
-  assumed or fabricated.
+  authoritatively reports the **undiscounted** base rate as free for that
+  exact endpoint, never assumed, fabricated, or inferred from a
+  `pricing.discount` value alone. A route with a non-empty conditional
+  `pricing.overrides` array is blocked (`PRICING_UNREPRESENTABLE`)
+  regardless of its top-level default-conditions price. See
+  `docs/adr/0003-openrouter-infrastructure.md` Decision 7A.
 - **MODEL-005** — Preflight computes a conservative worst-case cost for
   the resolved configuration (bounded input estimate, output caps, the
   full permitted retry exposure, and the approved safety margin) using
@@ -1057,12 +1065,31 @@ These are target criteria, not claims that implementation already exists.
   `MODEL_ALIAS_NOT_PINNED`), never silently resolved to whatever it
   currently happens to mean.
 - **MODEL-009** — The provider endpoint priced by preflight is the exact
-  endpoint a later execution attempt is restricted to
-  (`provider.only`/`allow_fallbacks: false`); if that exact endpoint is
-  unavailable at execution time, the attempt fails/blocks — it never
-  silently moves to a different endpoint or model. (Execution itself is
-  Milestone 8 scope; this criterion binds the *contract* Milestone 7
-  defines.)
+  endpoint a later execution attempt is restricted to, using
+  `provider.order: [tag]` (the primary pin, matching OpenRouter's own
+  documented exact-endpoint-pin mechanism) with `provider.only: [tag]` as
+  an additional restriction and `allow_fallbacks: false`; a bare
+  `provider.only` restriction is never treated as sufficient proof of an
+  exact pin on its own. The pinned `tag` must already have been proven
+  uniquely pinnable by Milestone 7 preflight (`MODEL-001`). If that exact
+  endpoint is unavailable at execution time, the attempt fails/blocks —
+  it never silently moves to a different endpoint or model. (Execution
+  itself is Milestone 8 scope; this criterion binds the *contract*
+  Milestone 7 defines.) See
+  `docs/adr/0003-openrouter-infrastructure.md` Decision 6.
+- **MODEL-012** — An endpoint whose routing `tag` cannot be proven, from
+  the current candidate endpoint set, to identify exactly one endpoint is
+  never eligible, regardless of price; it is blocked with
+  `ENDPOINT_NOT_PINNABLE`. Deterministic selection (`MODEL-010`) never
+  considers such an endpoint's price, even if it would otherwise be
+  cheapest.
+- **MODEL-013** — A realized `usage.cost` (a JSON number) is converted to
+  the authoritative decimal representation exactly once, on receipt, and
+  is never re-derived through further floating-point arithmetic; this
+  preserves the value OpenRouter reported without claiming to reconstruct
+  a more precise "true" mathematical price than the protocol supplied.
+  Authoritative preflight pricing is unaffected — it always uses the
+  provider's string rate fields parsed directly into decimal.
 - **MODEL-010** — Each eligible resolved route is assigned a discovery
   price tier (`FREE`/`BUDGET`/`PREMIUM`/`ABOVE_PREMIUM`) computed from its
   own conservative complete-Tribunal cost estimate; a tier label is

@@ -336,9 +336,14 @@ M7 executes zero advocates, zero judges, zero logical Tribunal calls.
   (model catalog + per-model endpoint discovery + chat completion)
 - exact provider-endpoint resolution (`ResolvedModelRoute`) — pricing is
   bound to the specific endpoint a later execution attempt would be
-  pinned to, never a model-level average
+  pinned to, never a model-level average; the endpoint's routing tag
+  must be proven **uniquely pinnable** (never a base provider slug
+  matching multiple variants) before it is eligible
 - deterministic endpoint eligibility + cheapest-*eligible*-endpoint
-  selection; dynamic/alias models (Auto Router, "latest" aliases) blocked
+  selection; dynamic/alias models (Auto Router, "latest" aliases) blocked;
+  a candidate endpoint with a non-empty conditional `pricing.overrides`
+  is blocked as unrepresentable, and `pricing.discount` is never relied
+  upon for tier/eligibility
 - bounded in-process cache with a locked 5-minute authoritative TTL (no
   new infrastructure); stale/unavailable metadata never authorizes
 - strict JSON Schema structured output; `require_parameters`;

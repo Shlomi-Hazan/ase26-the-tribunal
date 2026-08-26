@@ -102,13 +102,25 @@ identity, not the model ID alone.
 OpenRouter's catalog/endpoint pricing rate fields (prompt/completion/
 request/etc.) are returned as **decimal strings**, specifically to avoid
 floating-point precision loss — parse them directly into a decimal type,
-never through a JS `Number()` round-trip. A completed request's *actual*
-`usage.cost`, by contrast, is returned as a JSON **number**, not a
-string — convert it to the same decimal type exactly once, at receipt,
-and never re-derive it through further floating-point arithmetic
-afterward. All authoritative comparisons (including the `$5.00` ceiling
-and the tier boundaries in §14 below) use that decimal type — never
-`Number(...)` or ordinary binary floating point. See
+never through a JS `Number()` round-trip. Authoritative preflight
+pricing, tier classification, and the `$5.00` ceiling always use these
+string rate fields, never a discounted or override-adjusted figure (see
+§5.2 below).
+
+A completed request's *actual* `usage.cost`, by contrast, is returned as
+a JSON **number**, not a string. **Corrected wording (Milestone 7
+planning, second correction pass):** the application converts this value
+to the same decimal type exactly once, at receipt, and performs no
+further authoritative binary-floating-point arithmetic on it afterward —
+every subsequent comparison/aggregation uses only the converted decimal
+value. This preserves *the provider-reported value as received*; it is
+**not** a claim that the true underlying mathematical price is
+reconstructed more exactly than OpenRouter's own protocol supplied it.
+`usage.cost` is authoritative *audit/telemetry* of what was actually
+charged; it never retroactively revises a preflight decision already made
+from the string rate fields. All authoritative comparisons (including the
+`$5.00` ceiling and the tier boundaries in §14 below) use the decimal
+type — never `Number(...)` or ordinary binary floating point. See
 `docs/adr/0003-openrouter-infrastructure.md` Decisions 9–10 for the exact
 `PricingSnapshot` shape and the locked implementation choice (a small,
 reviewed decimal-arithmetic dependency).
@@ -116,18 +128,41 @@ reviewed decimal-arithmetic dependency).
 ### 5.2 Billable dimensions actually representable by V1
 
 V1 Tribunal requests are text-only, send no image content, and enable no
-web-search or explicit prompt-caching feature. The conservative bound
-therefore always includes prompt/completion token cost; includes a
-non-zero flat request fee once per attempt (reserved twice per logical
-call, since the retry attempt incurs it again); excludes image/web-search
-pricing dimensions because the request contract cannot trigger them; and
-**blocks** (`PRICING_UNREPRESENTABLE`) any route whose pricing reports a
-non-zero dimension the request contract *can* trigger but the estimator
-cannot bound — for example a non-zero `internal_reasoning` rate, since
-reasoning-token count is not bounded by V1's request contract. An
-implicit-caching discount some providers may apply is never assumed in
-the conservative estimate (safe, since it can only make the actual cost
-lower than the bound, never higher).
+web-search or explicit prompt-caching feature. Every pricing dimension
+and modifier is classified into exactly one of three buckets — nothing
+current or future may pass eligibility unclassified:
+
+1. **Impossible for the request to invoke**: `image`, `web_search` —
+   excluded because no such plugin/content is ever sent.
+2. **Can only ever reduce realized spend, never increase it, so it is
+   safely ignored for the conservative bound**: provider *implicit*
+   caching discounts, and a non-zero `pricing.discount` (which by its own
+   documented definition multiplies price by `(1 − discount)` with
+   `discount ∈ [0, 1]`, so it can only lower or hold equal the effective
+   price — never raise it).
+3. **Can increase or alter the effective price and is not representable
+   by V1's estimator, so it blocks eligibility**
+   (`PRICING_UNREPRESENTABLE`): a non-zero `internal_reasoning` rate
+   (reasoning-token count is not bounded by V1's request contract), and a
+   non-empty conditional `pricing.overrides` array — OpenRouter's
+   top-level pricing fields "reflect the price that applies under default
+   conditions" only, so a non-empty `overrides` means the true request
+   price could differ from the default price the estimator would
+   otherwise use; V1 does not implement a conditional-pricing evaluation
+   engine, so any such route is blocked rather than mispriced.
+
+Concretely: the conservative bound always includes prompt/completion
+token cost; includes a non-zero flat request fee once per attempt
+(reserved twice per logical call, since the retry attempt incurs it
+again); excludes image/web-search pricing dimensions (bucket 1); ignores
+implicit-caching discounts and `pricing.discount` (bucket 2 — safe,
+since both can only make the actual cost lower than the bound, never
+higher); and blocks any route with a non-zero `internal_reasoning` rate
+or a non-empty `pricing.overrides` (bucket 3). A route's `FREE`
+classification (§14.1) is always based on the **undiscounted** base
+rate — a route that is merely discounted toward zero is never classified
+`FREE`. See `docs/adr/0003-openrouter-infrastructure.md` Decisions 7 and
+7A.
 
 ---
 
@@ -328,12 +363,20 @@ For example, before the judge phase starts, ensure all three required judge logi
 
 Where supported and useful, OpenRouter provider preferences should reinforce the application's economic policy:
 
+- `order: [providerEndpointTag]` — the primary mechanism for pinning
+  execution to the exact endpoint preflight priced, matching
+  OpenRouter's own documented exact-endpoint-pin example; `only` may be
+  set to the same value as an additional restriction, but a bare
+  `provider.only` restriction is not by itself proof of an exact pin (an
+  endpoint's routing tag can be a base provider slug matching several
+  variants — see `docs/adr/0003-openrouter-infrastructure.md`
+  Decision 4A)
 - `require_parameters: true`
 - `allow_fallbacks: false`
 - price-oriented provider sorting
 - `max_price` bound consistent with the accepted pricing snapshot
 
-These are defense in depth. They do not replace application preflight/runtime accounting.
+These are defense in depth. They do not replace application preflight/runtime accounting. The pinned tag itself must already have been proven **uniquely pinnable** by preflight (Decision 4A) before it is ever used for execution routing.
 
 ---
 
@@ -360,7 +403,9 @@ cost estimate:
 
 ```text
 FREE           == $0.00 exactly, authoritative provider metadata only --
-                   never inferred from name/marketing/history
+                   never inferred from name/marketing/history, and
+                   computed from the UNDISCOUNTED base rate (a route
+                   discounted toward zero is never FREE, see §5.2)
 BUDGET         >  $0.00  and <= $0.50
 PREMIUM        >  $0.50  and <= $2.00
 ABOVE_PREMIUM  >  $2.00  and <= $5.00
@@ -393,7 +438,10 @@ V1 execution should reject/exclude a model if any of these are true:
 - required structured output cannot be enforced
 - required max output parameter cannot be enforced
 - context capacity is insufficient
-- pricing cannot be represented conservatively
+- pricing cannot be represented conservatively, including a non-empty
+  conditional `pricing.overrides` (§5.2)
+- the candidate endpoint is not uniquely pinnable (`ENDPOINT_NOT_PINNABLE`,
+  `docs/adr/0003-openrouter-infrastructure.md` Decision 4A)
 - successful usage/cost telemetry cannot be relied on for the required audit contract
 
 This avoids a UI that offers configurations the backend must later treat as unauditable.
