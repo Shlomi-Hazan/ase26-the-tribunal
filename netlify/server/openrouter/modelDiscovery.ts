@@ -37,7 +37,12 @@
 //     never "whenever this invocation happened to run" -- see
 //     `resolveSharedTribunalRoute`.
 
-import { cachedFetch, ModelMetadataCache, type Clock } from "./cache";
+import {
+  cachedFetch,
+  ModelMetadataCache,
+  requireCacheObservedAt,
+  type Clock
+} from "./cache";
 import { checkAliasOrDynamicModel, evaluateEndpoint } from "./routeResolution";
 import type { PreflightReasonCode } from "./errors";
 import type { PriceTier } from "./pricing";
@@ -238,7 +243,6 @@ export async function listEligibleModels(deps: ModelDiscoveryDeps): Promise<Elig
   const endpointCache =
     deps.endpointCache ?? new ModelMetadataCache<RawOpenRouterEndpoint[]>(undefined, clock);
 
-  const invocationTimeIso = new Date(clock()).toISOString();
   const results: EligibleModel[] = [];
 
   const models = await cachedFetch(modelCache, "models", () => deps.provider.listModels());
@@ -249,25 +253,25 @@ export async function listEligibleModels(deps: ModelDiscoveryDeps): Promise<Elig
     const slug = separatorIndex === -1 ? "" : model.id.slice(separatorIndex + 1);
 
     let endpoints: RawOpenRouterEndpoint[];
+    let endpointObservedAt: string;
 
     try {
       endpoints = await cachedFetch(endpointCache, model.id, () =>
         deps.provider.listEndpoints(author, slug)
       );
+      // Corrected this pass (independent review, pre-live micro-
+      // correction): PricingSnapshot.observedAt is contractually the
+      // metadata FETCH timestamp (ADR Decision 9). requireCacheObservedAt
+      // throws rather than returning null -- there is deliberately no
+      // `?? currentInvocationTime` fallback here anymore. A model whose
+      // endpoint observation timestamp is unexpectedly unavailable
+      // immediately after a successful fetch is never returned with a
+      // fabricated pricingObservedAt -- it is skipped, exactly like any
+      // other metadata fetch failure.
+      endpointObservedAt = requireCacheObservedAt(endpointCache, model.id);
     } catch {
       continue;
     }
-
-    // Correction (independent review, pre-live gate): PricingSnapshot.
-    // observedAt is contractually the metadata FETCH timestamp
-    // (ADR Decision 9), not this invocation's own clock reading. When
-    // cachedFetch above reused fresh cached endpoint metadata, the real
-    // fetch happened earlier -- ModelMetadataCache#observedAt returns
-    // that actual timestamp; it only changes when a genuine refetch
-    // occurs. invocationTimeIso is only a defensive fallback for the
-    // should-never-happen case of a missing cache entry immediately
-    // after a successful fetch.
-    const endpointObservedAt = endpointCache.observedAt(model.id) ?? invocationTimeIso;
 
     const resolution = resolveSharedTribunalRoute({
       configuredModelId: model.id,

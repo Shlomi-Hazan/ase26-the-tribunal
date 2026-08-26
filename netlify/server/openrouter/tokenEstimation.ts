@@ -73,6 +73,29 @@ export function outputCapTokensForRole(role: "ADVOCATE" | "JUDGE"): number {
   return role === "ADVOCATE" ? ADVOCATE_OUTPUT_CAP_TOKENS : JUDGE_OUTPUT_CAP_TOKENS;
 }
 
+// Corrected this pass (independent review, pre-live micro-correction):
+// the ONE canonical Charge Sheet serialization used by BOTH the real
+// preflight estimator (preflight.ts) and the synthetic worst-case
+// estimate below -- previously each wrote its own separate
+// `[defendant, act, exactQuestion].join("\n")` literal, and the
+// worst-case one drifted (it concatenated the three limits into a
+// single run of characters with no separators at all). Two different,
+// independently-written copies of the same serialization contract can
+// silently diverge again the moment either is edited alone; this is the
+// single source of truth for the field order and the two
+// application-added "\n" separators between defendant/act/exactQuestion.
+export type ChargeSheetTextParts = {
+  defendant: string;
+  act: string;
+  exactQuestion: string;
+};
+
+export function serializeChargeSheetForModelContext(
+  parts: ChargeSheetTextParts
+): string {
+  return [parts.defendant, parts.act, parts.exactQuestion].join("\n");
+}
+
 // ---------------------------------------------------------------------
 // Canonical worst-case input estimates (independent review, pre-live
 // gate; moved here from modelDiscovery.ts so routeTierEconomics.ts can
@@ -126,24 +149,56 @@ export function outputCapTokensForRole(role: "ADVOCATE" | "JUDGE"): number {
 
 const WORST_CASE_CHAR = "漢"; // U+6F22 -- 1 UTF-16 code unit, 3 UTF-8 bytes
 
+// Corrected this pass (independent review, pre-live micro-correction):
+// the synthetic Charge Sheet is now three separately-filled fields
+// (defendant/act/exactQuestion, each independently at its own limit),
+// serialized through the exact same serializeChargeSheetForModelContext
+// the real estimator uses -- so the two application-added "\n"
+// separators between them are included in the byte count, matching what
+// a real maximum-length Charge Sheet actually produces. The prior
+// implementation concatenated the three limits into one run of
+// characters with no separators at all, under-counting by the separator
+// bytes.
 function worstCaseChargeSheetText(): string {
-  const totalChars =
-    chargeSheetLimits.defendant + chargeSheetLimits.act + chargeSheetLimits.exactQuestion;
-
-  return WORST_CASE_CHAR.repeat(totalChars);
+  return serializeChargeSheetForModelContext({
+    defendant: WORST_CASE_CHAR.repeat(chargeSheetLimits.defendant),
+    act: WORST_CASE_CHAR.repeat(chargeSheetLimits.act),
+    exactQuestion: WORST_CASE_CHAR.repeat(chargeSheetLimits.exactQuestion)
+  });
 }
 
 function worstCasePersonalityText(): string {
   return WORST_CASE_CHAR.repeat(personalityLimit);
 }
 
+// Corrected this pass: the real preflight estimator passes
+// `sideInstructions: side ?? ""`, and a real ADVOCATE participant's
+// `side` is always "PRO" or "CON" (never the empty string) --
+// SIDE_BY_PARTICIPANT_ID only ever maps advocate seats to one of those
+// two values. The prior canonical bound used `sideInstructions: ""`,
+// which is never what a real advocate estimate actually contains, and
+// silently under-counted by those bytes. Computing both real variants
+// and taking the max (rather than assuming they are byte-identical
+// today) means a future wording change to only one side's prompt can
+// never make this bound silently too small again.
 export function worstCaseAdvocateInputTokens(): number {
-  return estimateAdvocateInputTokens({
+  const chargeSheetText = worstCaseChargeSheetText();
+  const personality = worstCasePersonalityText();
+
+  const proEstimate = estimateAdvocateInputTokens({
     basePrompt: buildAdvocateSystemPrompt("PRO"),
-    sideInstructions: "",
-    personality: worstCasePersonalityText(),
-    chargeSheetText: worstCaseChargeSheetText()
+    sideInstructions: "PRO",
+    personality,
+    chargeSheetText
   });
+  const conEstimate = estimateAdvocateInputTokens({
+    basePrompt: buildAdvocateSystemPrompt("CON"),
+    sideInstructions: "CON",
+    personality,
+    chargeSheetText
+  });
+
+  return Math.max(proEstimate, conEstimate);
 }
 
 export function worstCaseJudgeInputTokens(): number {

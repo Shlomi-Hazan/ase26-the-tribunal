@@ -615,3 +615,49 @@ describe("runPreflight -- pricing.observedAt reflects the actual endpoint fetch 
     expect(result.pricingObservedAt).toBe(new Date(t0).toISOString());
   });
 });
+
+// Missing-cache-timestamp fail-closed regression tests (independent
+// review, pre-live micro-correction, Section 12). A narrow test-only
+// cache subclass simulates the case where a metadata value is
+// successfully returned by cachedFetch but its observation timestamp is
+// (unexpectedly) unavailable -- proving the application fails closed
+// rather than fabricating the current invocation time as
+// PricingSnapshot.observedAt.
+class ObservedAtBlindCache<T> extends ModelMetadataCache<T> {
+  observedAt(): string | null {
+    return null;
+  }
+}
+
+describe("runPreflight -- fails closed when the cache's observation timestamp is unavailable", () => {
+  it("does NOT emit the current invocation time as pricing.observedAt when the cache timestamp is missing", async () => {
+    const testRun = run();
+    const loader = new FakeRunLoader({ [testRun.id]: testRun });
+    const provider = providerFor(cheapModel());
+    const invocationTime = 5_000_000;
+    const clock = () => invocationTime;
+    const modelCache = new ModelMetadataCache<RawOpenRouterModel[]>(undefined, clock);
+    const endpointCache = new ObservedAtBlindCache<RawOpenRouterEndpoint[]>(undefined, clock);
+
+    const result = await runPreflight(testRun.id, {
+      runLoader: loader,
+      provider,
+      modelCache,
+      endpointCache,
+      clock
+    });
+
+    expect(result.eligible).toBe(false);
+    expect(result.blockedReasonCodes).toContain("PRICING_UNAVAILABLE");
+    const participant = result.participants[0];
+    expect(participant.pricing).toBeNull();
+    // The specific, decisive assertion: no participant anywhere in the
+    // result carries the invocation-time value as an observedAt --
+    // fabricating it there would be exactly the regressed defect.
+    const fabricatedTimestamp = new Date(invocationTime).toISOString();
+    for (const p of result.participants) {
+      expect(p.pricing?.observedAt).not.toBe(fabricatedTimestamp);
+    }
+    expect(result.pricingObservedAt).not.toBe(fabricatedTimestamp);
+  });
+});

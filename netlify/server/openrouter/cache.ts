@@ -87,6 +87,41 @@ export class ModelMetadataCache<T> {
   }
 }
 
+// Corrected this pass (independent review, pre-live micro-correction):
+// callers must never fabricate the current invocation time as a
+// substitute for an unavailable cache observation timestamp -- doing so
+// would silently misrepresent the pricing audit record (the whole point
+// of ADR Decision 9's observedAt contract). If a key's observation
+// timestamp is missing immediately after a successful cachedFetch of
+// that same key, that is an internal invariant violation (should never
+// happen in practice), not a normal-flow branch -- it fails closed via
+// this dedicated error rather than substituting Date.now().
+export class CacheObservedAtUnavailableError extends Error {
+  constructor(key: string) {
+    super(`No cache observation timestamp available for key "${key}".`);
+    this.name = "CacheObservedAtUnavailableError";
+  }
+}
+
+// Reads the real fetch/observation timestamp for `key`, throwing
+// CacheObservedAtUnavailableError instead of returning null/undefined or
+// silently falling back to the current time. Intended to be called
+// immediately after a successful cachedFetch of the same key so callers
+// get PricingSnapshot.observedAt's authoritative value -- never a
+// fabricated one.
+export function requireCacheObservedAt<T>(
+  cache: ModelMetadataCache<T>,
+  key: string
+): string {
+  const observedAt = cache.observedAt(key);
+
+  if (observedAt === null) {
+    throw new CacheObservedAtUnavailableError(key);
+  }
+
+  return observedAt;
+}
+
 // Required refresh-with-fallback semantics (Section 10):
 //   fresh                       -> use without refresh
 //   stale + successful refetch  -> replace/use fresh

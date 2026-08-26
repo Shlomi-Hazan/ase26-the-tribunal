@@ -221,3 +221,29 @@ describe("listEligibleModels -- pricingObservedAt reflects the actual endpoint f
     expect(third[0].pricingObservedAt).not.toBe(first[0].pricingObservedAt);
   });
 });
+
+// Missing-cache-timestamp fail-closed regression test (independent
+// review, pre-live micro-correction, Section 12B) -- a narrow test-only
+// cache subclass simulates a metadata value being returned successfully
+// while its observation timestamp is unexpectedly unavailable.
+class ObservedAtBlindCache<T> extends ModelMetadataCache<T> {
+  observedAt(): string | null {
+    return null;
+  }
+}
+
+describe("listEligibleModels -- fails closed (skips the model) when the cache's observation timestamp is unavailable", () => {
+  it("B: never returns a model with a fabricated pricingObservedAt", async () => {
+    const provider = new FakeOpenRouterProvider();
+    provider.listModelsResult = [model()];
+    provider.listEndpointsResult["openai/gpt-5"] = [endpoint({ max_completion_tokens: 1200 })];
+    const invocationTime = 5_000_000;
+    const clock = () => invocationTime;
+    const modelCache = new ModelMetadataCache<RawOpenRouterModel[]>(undefined, clock);
+    const endpointCache = new ObservedAtBlindCache<RawOpenRouterEndpoint[]>(undefined, clock);
+
+    const results = await listEligibleModels({ provider, modelCache, endpointCache, clock });
+
+    expect(results).toHaveLength(0);
+  });
+});

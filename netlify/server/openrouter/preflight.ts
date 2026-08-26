@@ -11,7 +11,12 @@ import {
 import { buildAdvocateSystemPrompt, type AdvocateSide } from "../../../src/prompts/advocate-system";
 import { JUDGE_SYSTEM_PROMPT } from "../../../src/prompts/judge-system";
 import type { PreflightReasonCode } from "./errors";
-import { ModelMetadataCache, cachedFetch, type Clock } from "./cache";
+import {
+  cachedFetch,
+  ModelMetadataCache,
+  requireCacheObservedAt,
+  type Clock
+} from "./cache";
 import { classifyPriceTier, toDecimalString, type PriceTier } from "./pricing";
 import {
   computeCandidateAttemptCostUsd,
@@ -23,7 +28,8 @@ import { computeConservativeFullTribunalCostForRoute } from "./routeTierEconomic
 import {
   estimateAdvocateInputTokens,
   estimateJudgeInputTokens,
-  outputCapTokensForRole
+  outputCapTokensForRole,
+  serializeChargeSheetForModelContext
 } from "./tokenEstimation";
 import type { OpenRouterProvider } from "./provider";
 import type { RawOpenRouterEndpoint, RawOpenRouterModel } from "./schemas";
@@ -203,11 +209,6 @@ export async function runPreflight(
     throw new PreflightPersistenceError("Run's case could not be loaded.");
   }
 
-  // This invocation-time value is deliberately NOT used as
-  // PricingSnapshot.observedAt below -- it is only a defensive fallback
-  // for the (should-never-happen) case where the endpoint cache somehow
-  // has no recorded fetch time immediately after a successful fetch.
-  const observedAtIso = new Date(clock()).toISOString();
   const blockedReasonCodes = new Set<PreflightReasonCode>();
   const participants: PreflightParticipantResult[] = [];
   let conservativeMaxCostUsd = new Decimal(0);
@@ -240,11 +241,14 @@ export async function runPreflight(
       continue;
     }
 
-    const chargeSheetText = [
-      tribunalCase.defendant,
-      tribunalCase.act,
-      tribunalCase.exactQuestion
-    ].join("\n");
+    // Uses the same canonical serializer worstCaseAdvocateInputTokens/
+    // worstCaseJudgeInputTokens use (tokenEstimation.ts) -- one contract,
+    // not two independently-written copies that can silently drift.
+    const chargeSheetText = serializeChargeSheetForModelContext({
+      defendant: tribunalCase.defendant,
+      act: tribunalCase.act,
+      exactQuestion: tribunalCase.exactQuestion
+    });
 
     const estimatedInputTokens =
       role === "ADVOCATE"
@@ -266,12 +270,25 @@ export async function runPreflight(
 
     let models: RawOpenRouterModel[];
     let endpoints: RawOpenRouterEndpoint[];
+    let endpointObservedAt: string;
 
     try {
       models = await cachedFetch(modelCache, "models", () => deps.provider.listModels());
       endpoints = await cachedFetch(endpointCache, participant.modelId, () =>
         deps.provider.listEndpoints(author, slug)
       );
+      // Corrected this pass (independent review, pre-live micro-
+      // correction): PricingSnapshot.observedAt is contractually the
+      // metadata FETCH timestamp (ADR Decision 9). requireCacheObservedAt
+      // throws rather than returning null -- there is deliberately no
+      // `?? currentInvocationTime` fallback here anymore. If the endpoint
+      // cache's observation timestamp is unexpectedly unavailable
+      // immediately after a successful fetch of that same key, the
+      // application does not actually know when the pricing was
+      // observed, and must not fabricate a value -- it fails closed via
+      // the same catch block below, exactly like any other metadata
+      // fetch failure.
+      endpointObservedAt = requireCacheObservedAt(endpointCache, participant.modelId);
     } catch {
       blockedReasonCodes.add("PRICING_UNAVAILABLE");
       participants.push({
@@ -288,19 +305,6 @@ export async function runPreflight(
       });
       continue;
     }
-
-    // Correction (independent review, pre-live gate): PricingSnapshot.
-    // observedAt is contractually the metadata FETCH timestamp
-    // (ADR Decision 9), not "whenever this invocation happened to run."
-    // The endpoint cache already records the real fetch time
-    // (ModelMetadataCache#observedAt) -- when cachedFetch above reused a
-    // fresh cached value, that timestamp is earlier than `clock()` right
-    // now, and using the invocation-time value instead would misrepresent
-    // when the pricing was actually observed. The fallback to
-    // observedAtIso only guards a defensive, should-never-happen case
-    // (the key was just successfully populated by cachedFetch above).
-    const endpointObservedAt =
-      endpointCache.observedAt(participant.modelId) ?? observedAtIso;
 
     const resolution = resolveModelRoute({
       configuredModelId: participant.modelId,
