@@ -46,7 +46,23 @@ commit index only.
 | 10 | `e96b1e1` | `fix: harden M7 provider pricing contracts` |
 | 11 | `8907012` | `fix: align M7 tier and prompt-version semantics` |
 | 12 | `2314c2b` | `fix: reuse OpenRouter metadata cache across warm requests` |
-| 13 | *(this evidence-update commit)* | `docs: record M7 pre-live correction verification` |
+| 13 | `8dc151a` | `docs: record M7 pre-live correction verification` |
+
+Exact-head CI on commit 13 (`8dc151a`): run `32999762423`, conclusion
+`success`, 26 files / 310 tests.
+
+## Second independent-review correction pass (pre-live gate)
+
+A further independent audit of the six-fix pass above found three more
+correctness defects and one documentation overclaim. See "Second
+independent review corrections" below for the full explanation; this
+table is the commit index only.
+
+| # | SHA | Message |
+|---|---|---|
+| 14 | `b1d0e45` | `fix: require complete Tribunal capability in model discovery` |
+| 15 | `ffa871f` | `fix: make M7 token bounds and pricing timestamps conservative` |
+| 16 | *(this evidence-update commit)* | `docs: finalize M7 pre-live correction evidence` |
 
 ## Scope implemented
 
@@ -169,6 +185,11 @@ bound reserves `RESERVED_ADVOCATE_SPEECHES_FOR_JUDGE (4) x
 ADVOCATE_OUTPUT_CAP_TOKENS (1000) = 4000` tokens for the four advocate
 speeches before any advocate has run. Output caps are hard ceilings:
 `ADVOCATE_OUTPUT_CAP_TOKENS = 1000`, `JUDGE_OUTPUT_CAP_TOKENS = 1200`.
+**The canonical worst-case synthetic-text character was corrected in the
+second independent-review pass** (see "Second independent review
+corrections," item 2, below) — the true conservative maximum under this
+application's actual validation semantics is a 3-byte-UTF-8 BMP
+character, not the originally-used 2-byte Hebrew character.
 
 ## Preflight service and API
 
@@ -200,12 +221,22 @@ detail ever reaches the client.
 `netlify/server/openrouter/modelDiscovery.ts` + `GET /api/models`
 (`netlify/functions/models.ts`) — a sanitized `EligibleModel[]` list,
 never the raw OpenRouter catalog. Uses a worst-case-length synthetic
-input (Hebrew-biased, matching `docs/economics.md` §10.1's conservative
-rationale) rather than a real run's text, since no real participant text
-exists yet at discovery time. `HARD_BLOCK` routes are excluded entirely;
-`ABOVE_PREMIUM` routes are returned, correctly labelled, so a future UI
-can make the separate product decision about how prominently to surface
-them (ADR policy).
+input (corrected in the second independent-review pass to a true
+conservative UTF-8 maximum — see below) rather than a real run's text,
+since no real participant text exists yet at discovery time. `HARD_BLOCK`
+routes are excluded entirely; `ABOVE_PREMIUM` routes are returned,
+correctly labelled, so a future UI can make the separate product
+decision about how prominently to surface them (ADR policy).
+
+**Corrected in the second independent-review pass:** every candidate
+endpoint is now resolved via `resolveSharedTribunalRoute`, which
+requires the SAME exact endpoint to pass both the advocate and the judge
+eligibility contract before it is ever returned — the first pass
+resolved and evaluated candidates as ADVOCATE only, so a route could be
+returned as "eligible for a complete Tribunal" while actually failing
+judge output/context capacity. See "Second independent review
+corrections," item 1, below. `EligibleModel` also gained
+`pricingObservedAt` (item 3, below).
 
 ## Error / timeout normalization
 
@@ -457,34 +488,145 @@ for a future human-facing UI only (e.g. rounding `$0.00000007` to
 `"0.00"`) — explicitly documented as never used for a provider rate, an
 authoritative budget comparison, or an audit economics field.
 
+## Second independent review corrections (pre-live gate)
+
+A further independent audit of the six-fix pass above (commits 10–12)
+found three more correctness defects and one documentation overclaim.
+This section is additive audit history, exactly like the section above —
+it does not retract or rewrite anything recorded earlier in this
+document.
+
+### 1. Shared-Tribunal discovery now requires complete (dual-role) capability
+
+**Before:** `GET /api/models` resolved and evaluated every candidate
+endpoint as an `ADVOCATE` only (`worstCaseAdvocateInputTokens()`,
+`ADVOCATE_OUTPUT_CAP_TOKENS`), then presented the resolved route as
+eligible for a "complete Tribunal" whose full-Tribunal tier already
+accounts for 3 judges. A route can satisfy advocate output/context
+capacity (`>=1000` tokens) while failing judge output/context capacity
+(`>=1200` tokens, plus the judge's own 4×1000-token advocate-speech
+reservation) — ARCHITECTURE.md §5.3's judge-prompt-capacity requirement
+was not actually enforced on this generic discovery surface.
+
+**After:** `resolveSharedTribunalRoute`
+(`netlify/server/openrouter/modelDiscovery.ts`) requires the SAME exact
+endpoint to pass BOTH the advocate eligibility contract and the judge
+eligibility contract (reusing `routeResolution.ts`'s
+`evaluateEndpoint`/`checkAliasOrDynamicModel`, not duplicating
+eligibility logic) before it is ever returned. An endpoint capable of
+only one role is excluded entirely — the resolver never independently
+resolves a cheap advocate endpoint and a different, pricier judge-capable
+endpoint and describes the pair as one route. Surviving (both-eligible)
+candidates are ranked by the same `computeConservativeFullTribunalCostForRoute`
+figure already used for the tier, with the same stable
+`providerEndpointTag` lexical tie-break used everywhere else — ranking
+and tiering can never disagree. `POST /api/preflight`
+(`preflight.ts`) is unchanged and remains correctly role-specific per
+frozen participant; this dual-role requirement is scoped to the generic
+Shared-model discovery surface only.
+
+### 2. The canonical worst-case bound now reflects the application's actual UTF-8 exposure
+
+**Before:** the synthetic worst-case text (`tokenEstimation.ts`) used a
+2-byte-UTF-8 character (Hebrew, `א`) and was documented as a conservative
+maximum. It was not: the application's actual length validation
+(`z.string().trim().max(N)` in `src/schemas/tribunalSetup.ts` — confirmed
+by direct source inspection, no `.normalize()` call anywhere in that
+file) bounds JS `String.prototype.length`, i.e. UTF-16 CODE UNITS, not
+Unicode codepoints and not UTF-8 bytes. A lone BMP codepoint in
+`U+0800..U+FFFF` (excluding the surrogate range `U+D800..U+DFFF`) — e.g.
+CJK Unified Ideographs — costs 3 UTF-8 bytes for exactly 1 code unit of
+the length budget. A surrogate pair (a supplementary-plane character, 2
+code units) costs 4 UTF-8 bytes total — only 2 bytes/unit, LESS than a
+lone 3-byte BMP character. 3 bytes/code-unit is therefore the true
+maximum achievable under this application's exact validation semantics,
+and no 4-byte content can ever exceed it — verified empirically:
+`"漢"` (U+6F22) = 1 code unit = 3 UTF-8 bytes; `"😀"` (U+1F600,
+supplementary) = 2 code units = 4 UTF-8 bytes = 2 bytes/unit; the retired
+`"א"` = 1 code unit = 2 UTF-8 bytes = 2 bytes/unit.
+
+**After:** `WORST_CASE_CHAR` is now a 3-byte BMP character (`"漢"`), with
+the full proof recorded in code comments.
+`worstCaseAdvocateInputTokens`/`worstCaseJudgeInputTokens` — and
+therefore `routeTierEconomics.ts` and `modelDiscovery.ts`'s eligibility/
+tier checks, which consume them — inherit the correction automatically;
+no separate byte-limit formula was duplicated in `modelDiscovery.ts`.
+
+### 3. `PricingSnapshot.observedAt` now reflects the actual endpoint metadata fetch timestamp
+
+**Before:** `PricingSnapshot.observedAt` is contractually the metadata
+FETCH timestamp (ADR Decision 9), but `preflight.ts` and
+`modelDiscovery.ts` both computed `new Date(clock()).toISOString()` at
+the current invocation and passed that into route resolution even when
+`cachedFetch` reused fresh CACHED metadata — incorrect audit evidence
+(e.g. metadata fetched at 20:00, reused at 20:04, incorrectly reported as
+observed at 20:04).
+
+**After:** `ModelMetadataCache#observedAt(key)` (`cache.ts`, unchanged —
+it already recorded the real fetch time) is read immediately after each
+`cachedFetch` call in both `preflight.ts` and `modelDiscovery.ts`, and
+that actual timestamp is passed into route resolution — the invocation-
+time value is kept only as a defensive, should-never-happen fallback.
+When `cachedFetch` reuses a fresh cache hit, the timestamp is unchanged
+(the original fetch time); when a genuine stale refetch occurs, the
+timestamp updates to the new fetch time. Model-catalog and endpoint-cache
+timestamps remain distinct internally (only the endpoint cache's
+timestamp feeds `PricingSnapshot.observedAt`, since pricing is endpoint-
+specific). `modelDiscovery.ts`'s public `EligibleModel` type gained a new
+`pricingObservedAt` field so this is directly observable/testable over
+`GET /api/models`, matching `POST /api/preflight`'s existing per-
+participant `pricing.observedAt`.
+
+### 4. Corrected the cross-Function cache-sharing overclaim
+
+**Before:** `sharedMetadataCache.ts`'s comments (and the two Netlify
+Functions importing it) stated that `GET /api/models` and
+`POST /api/preflight` share the SAME module-scope cache instances at
+runtime, so a warm container "never independently refetches metadata the
+other endpoint already has." Separate Netlify Functions are not
+guaranteed to inhabit the same process — this was a documentation
+overclaim, not a relied-upon behavior the code actually required, but it
+misstated the platform guarantee.
+
+**After:** corrected to state the actual, reliable contract: each
+function's own warm runtime reuses ITS OWN module-scope cache instances
+across repeated invocations of THAT SAME function (the real, approved
+"bounded in-process, per-warm-Function-instance" cache lifetime, ADR
+Decision 3). Both functions still import the same source file so each is
+correctly wired on its own — but correctness never depends on one
+function's fetch priming the other's cache; if the platform happens to
+colocate them, that is a harmless bonus, never a requirement.
+
 ## Tests added
 
 162 tests across 12 test files were added by the initial implementation
-(commits 5–7); the independent-review correction pass (commits 10–12)
-adds 36 more across 2 new files and 7 modified files, for **198 M7 tests
-total** (plus the 112 pre-existing tests from Milestones 1–6 — **310
-total** in the repository, all passing, matching CI exactly):
+(commits 5–7). The first correction pass (commits 10–12) added 36 more.
+This second correction pass (commits 14–15) adds **23 more** across 1
+new file and 3 modified files, for **221 M7 tests total** (plus the 112
+pre-existing tests from Milestones 1–6 — **333 total** in the
+repository, all passing, matching CI exactly):
 
 | File | Tests | New this pass | Category |
 |---|---|---|---|
-| `netlify/server/openrouter/pricing.test.ts` | 48 | +12 | Pricing normalization, overrides, discount validation, cache-write economics, tiers, unknown-key fail-closed, lossless serialization |
+| `netlify/server/openrouter/pricing.test.ts` | 48 | — | Pricing normalization, overrides, discount validation, cache-write economics, tiers, unknown-key fail-closed, lossless serialization |
+| `netlify/server/openrouter/preflight.test.ts` | 26 | +5 | Preflight service: run/case loading, prompt-version gate, eligibility, response contract, zero side effects, deterministic repeat, cache production-wiring, observedAt fetch-timestamp semantics |
 | `netlify/server/openrouter/routeResolution.test.ts` | 32 | — | Alias/dynamic blocking, unique pinnability, endpoint eligibility, deterministic selection |
-| `netlify/server/openrouter/preflight.test.ts` | 21 | +4 | Preflight service: run/case loading, prompt-version gate, eligibility, response contract, zero side effects, deterministic repeat, cache production-wiring |
-| `netlify/server/runs.test.ts` | 33 | +5 | (pre-existing M6 file) run validation, fingerprint determinism incl. role-specific prompt-version regression tests |
-| `netlify/functions/__tests__/runs.test.ts` | 16 | +1 | (pre-existing M6 file) `POST /api/runs` HTTP contract incl. fingerprint-uses-current-versions regression test |
+| `netlify/server/runs.test.ts` | 33 | — | (pre-existing M6 file) run validation, fingerprint determinism incl. role-specific prompt-version regression tests |
+| `netlify/functions/__tests__/runs.test.ts` | 16 | — | (pre-existing M6 file) `POST /api/runs` HTTP contract incl. fingerprint-uses-current-versions regression test |
+| `netlify/server/openrouter/tokenEstimation.test.ts` | 15 | +7 | UTF-8 byte-length estimation, advocate/judge bounds, output caps, canonical worst-case-bound conservativeness proofs (ASCII/2-byte/3-byte/4-byte) |
 | `src/prompts/schemas.test.ts` | 16 | — | Advocate/judge structured-output schemas, prompt content/side-enforcement, no-secrets check |
 | `netlify/server/openrouter/provider.test.ts` | 15 | — | Server config, real provider parsing/error normalization/timeout |
 | `netlify/server/openrouter/cache.test.ts` | 11 | — | TTL boundary, refresh-with-fallback semantics, deterministic eviction |
+| `netlify/server/openrouter/modelDiscovery.test.ts` | 9 | +9 (new file) | Dual-role (advocate + judge) endpoint eligibility, selection, and observedAt fetch-timestamp semantics for Shared-Tribunal discovery |
+| `netlify/functions/__tests__/models.test.ts` | 8 | +2 | `GET /api/models` HTTP contract incl. renamed field, cache-reuse, dual-role-eligibility, and pricingObservedAt regression tests |
 | `netlify/functions/__tests__/preflight.test.ts` | 9 | — | `POST /api/preflight` HTTP contract |
-| `netlify/server/openrouter/tokenEstimation.test.ts` | 8 | — | UTF-8 byte-length estimation, advocate/judge bounds, output caps |
-| `netlify/server/openrouter/executionRequest.test.ts` | 8 | +2 | Future execution route/request-builder contract incl. max_price string-serialization regression tests |
-| `src/prompts/promptVersionDrift.test.ts` | 6 | +1 | Anti-drift check incl. fingerprint-source-uses-current-constants check |
-| `netlify/server/openrouter/routeTierEconomics.test.ts` | 6 | +6 (new file) | Centralized complete-Tribunal route-tier formula |
-| `netlify/functions/__tests__/models.test.ts` | 6 | +2 | `GET /api/models` HTTP contract incl. renamed field + cache-reuse regression tests |
+| `netlify/server/openrouter/executionRequest.test.ts` | 8 | — | Future execution route/request-builder contract incl. max_price string-serialization regression tests |
+| `src/prompts/promptVersionDrift.test.ts` | 6 | — | Anti-drift check incl. fingerprint-source-uses-current-constants check |
+| `netlify/server/openrouter/routeTierEconomics.test.ts` | 6 | — | Centralized complete-Tribunal route-tier formula |
 | `netlify/server/openrouter/telemetry.test.ts` | 3 | — | Telemetry schema |
-| `netlify/server/openrouter/sharedMetadataCache.test.ts` | 3 | +3 (new file) | Shared cache singleton wiring, boundedness |
+| `netlify/server/openrouter/sharedMetadataCache.test.ts` | 3 | — | Shared cache singleton wiring, boundedness |
 
-All 198 M7 tests run against the fake provider / mocked `fetch` — zero
+All 221 M7 tests run against the fake provider / mocked `fetch` — zero
 real OpenRouter network requests anywhere in the automated suite
 (explicitly asserted in `preflight.test.ts` and both HTTP-layer test
 files via a `fetch`-call-tracking guard).
@@ -494,7 +636,7 @@ files via a `fetch`-call-tracking guard).
 ```sh
 npm run lint          # 0 errors, 0 warnings
 npm run typecheck      # 0 errors
-npm run test           # 310 tests passed, 26 files, 0 failed
+npm run test           # 333 tests passed, 27 files, 0 failed
 npm run build           # succeeds
 npm run verify:client-bundle   # passed
 npm run verify           # full pipeline, all green
@@ -523,16 +665,18 @@ the built client bundle at all (it is a server-only dependency; no
 ## Verification evidence
 
 - `git diff --check origin/main...HEAD` — no whitespace errors (reverified
-  after the correction pass).
+  after both correction passes).
 - No source file under `supabase/migrations/2026082500*` or
   `20260825214212*` (the M5/M6 migrations) is touched by this branch —
   `git diff --stat origin/main...HEAD -- <those three files>` is empty.
   The M7 migration file itself (`20260826173253_...sql`) was also
-  reverified unchanged since the correction pass's starting HEAD
-  (`637804a`) — no SQL edit was needed for the prompt-version fingerprint
-  fix (Node-layer only).
+  reverified unchanged since the first correction pass's starting HEAD
+  (`637804a`) AND since the second correction pass's starting HEAD
+  (`8dc151a`) — no SQL edit was needed for either pass (the prompt-
+  version fingerprint fix and this pass's three fixes are all Node-layer
+  only).
 - Read-only `npx supabase@2.115.0 migration list --linked`, reverified
-  both before and after the correction pass:
+  before and after BOTH correction passes:
   `{"local":"20260826173253","remote":"","...}"` — M7 migration remains
   local-only; M5/M6 remain local==remote. No `supabase db push` was ever
   run.
@@ -542,10 +686,23 @@ the built client bundle at all (it is a server-only dependency; no
 - The M6 freeze RPC (the applied SQL function) is untouched by M7's
   application code — the new migration only, not yet applied.
   `POST /api/runs`'s **request-fingerprint computation** (Node-layer,
-  `netlify/server/runs.ts`) WAS corrected in the independent-review pass
-  (see "Independent review corrections," item 4) — its status/budget/
-  execution behavior, validation rules, and write path are otherwise
-  unchanged; it still never calls preflight or OpenRouter.
+  `netlify/server/runs.ts`) WAS corrected in the first independent-review
+  pass (see "Independent review corrections," item 4) — its status/
+  budget/execution behavior, validation rules, and write path are
+  otherwise unchanged; it still never calls preflight or OpenRouter.
+  Issue #11 was updated to record this correction truthfully (see below)
+  rather than leaving its earlier "no `POST /api/runs` change" planning
+  wording to read as contradicted.
+
+## Issue #11 update
+
+Issue #11's planning-phase text (written before implementation began) is
+**not** rewritten — an "IMPLEMENTATION-PHASE CORRECTION RECORD" section
+was appended recording, without erasing the original wording: (1) the
+`POST /api/runs` fingerprint-computation correction and why it does not
+violate ADR Decision 14's execution-wiring scope boundary; (2) the
+dual-role Shared-Tribunal discovery requirement; (3) the corrected UTF-8
+worst-case bound. Issue #11 remains **OPEN**, not closed.
 
 ## Not yet live-verified
 
