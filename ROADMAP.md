@@ -42,8 +42,8 @@ Do not begin later milestones by destabilizing incomplete earlier work.
 | 3 | Application Skeleton | ✅ Complete |
 | 4 | UI Shell with Mock Data | ✅ Complete |
 | 5 | Case Persistence & Import | ✅ Complete |
-| 6 | Participant Configuration | 🟡 Current |
-| 7 | OpenRouter Infrastructure | ⬜ Planned |
+| 6 | Participant Configuration | ✅ Complete |
+| 7 | OpenRouter Infrastructure | 🟡 Current |
 | 7A | Smart Tribunal Package Extraction | ⬜ Planned |
 | 8 | Shared-Model Tribunal | ⬜ Planned |
 | 9 | Separate-Model Tribunal | ⬜ Planned |
@@ -320,23 +320,37 @@ The system has a complete, validated, immutable run configuration ready for an e
 
 # M7 — OpenRouter Infrastructure
 
+Planning contract: Issue
+[#11](https://github.com/Shlomi-Hazan/ase26-the-tribunal/issues/11),
+`docs/adr/0003-openrouter-infrastructure.md`, `SPEC.md` `MODEL` acceptance
+criteria.
+
 ## Goal
 
 Build and verify the model gateway safely before orchestrating seven calls.
+M7 executes zero advocates, zero judges, zero logical Tribunal calls.
 
 ## Scope
 
-- server-side OpenRouter service
-- eligible model catalog/filter
+- server-side OpenRouter service behind one fakeable provider interface
+- eligible model catalog/filter, bounded in-process cache (no new
+  infrastructure)
 - strict JSON Schema structured output
 - `require_parameters`
 - fallback policy
-- price metadata retrieval
+- price metadata retrieval; conservative preflight per `docs/economics.md`
 - per-attempt timeout
 - normalized errors
-- usage/cost extraction
-- fake/mock service boundary
-- one controlled real smoke call only when explicitly authorized
+- usage/cost extraction (telemetry schema only — `model_call_attempts` is
+  not created until a later milestone has a real write path)
+- prompt-version bridge: new runs frozen after M7 exists receive a real
+  version-controlled `prompt_version`; M6 placeholder runs are never
+  mutated and never become execution-eligible
+- fake/mock service boundary — normal tests never reach the real network
+- **no real OpenRouter smoke call is required before this milestone
+  merges** (see the Issue's testing-strategy recommendation); if a human
+  wants one, it is a separate, explicit, cost-bounded, manually-authorized
+  action outside the automated gate
 
 ## Verification
 
@@ -346,7 +360,7 @@ Build and verify the model gateway safely before orchestrating seven calls.
 - provider error
 - missing usage/cost behaviour
 - pricing/model metadata parsing
-- controlled live call records usage/cost if authorized
+- no real OpenRouter network call anywhere in the automated test suite
 
 ## Exit condition
 

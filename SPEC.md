@@ -417,6 +417,11 @@ The system may expose only models that meet the capabilities needed for the curr
 
 No silent paid-model fallback is permitted when the selected model/provider fails.
 
+Milestone 7 is the milestone that becomes authoritative for resolving a
+configured `model_id` against live provider metadata (see `MODEL`
+acceptance criteria above and `docs/adr/0003-openrouter-infrastructure.md`).
+It performs no Tribunal execution itself.
+
 ---
 
 ## 9. Deliberation Orchestration
@@ -1005,6 +1010,35 @@ These are target criteria, not claims that implementation already exists.
   accepted/frozen configuration, not execution-eligible.
 - **CONFIG-013** — A successful Milestone 6 Convene never navigates to, or
   displays content from, a mock/fabricated deliberation or result state.
+
+### MODEL (Milestone 7)
+
+- **MODEL-001** — A configured `model_id` (frozen unchanged by Milestone 6)
+  is resolved against current OpenRouter catalog metadata: the model must
+  exist, be usable through the intended endpoint/routing configuration,
+  have pricing metadata that is representable by the approved conservative
+  estimator, and satisfy required structured-output, `max_tokens`
+  parameter, and context-length support.
+- **MODEL-002** — A model that fails any `MODEL-001` check is blocked
+  explicitly with a reason code; there is no silent substitution to a
+  different model and no silent fallback to another paid model.
+- **MODEL-003** — Shared-Model Mode resolves one model/price applied to
+  all seven participants; Separate-Model Mode independently resolves up to
+  seven distinct models/prices with no cross-participant substitution.
+- **MODEL-004** — A model whose pricing cannot be reliably established is
+  blocked; a model's zero price is accepted only when OpenRouter metadata
+  authoritatively reports it as free, never assumed or fabricated.
+- **MODEL-005** — Preflight computes a conservative worst-case cost for
+  the resolved configuration (bounded input estimate, output caps, the
+  full permitted retry exposure, and the approved safety margin) and
+  reports eligible/blocked with reason codes, performing zero Tribunal
+  model calls.
+- **MODEL-006** — A run whose `prompt_version` is the pre-Milestone-7
+  placeholder (`unassigned-pre-m7`) is never reported execution-eligible
+  by any Milestone 7 check, regardless of model/pricing eligibility.
+- **MODEL-007** — No automated test suite run makes a real network request
+  to OpenRouter; every model/pricing/preflight code path is exercised
+  through an injectable fake provider.
 
 ### OUTPUT
 

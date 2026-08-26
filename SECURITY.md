@@ -97,6 +97,11 @@ OpenRouter calls must use:
 
 The model receives no privileged tools, arbitrary backend actions, database credentials, or deployment capabilities in V1.
 
+Milestone 7 introduces the one server-side `OpenRouterProvider`
+abstraction and its fakeable boundary; normal automated tests inject a
+deterministic fake and never reach the real OpenRouter network — see
+`docs/adr/0003-openrouter-infrastructure.md`.
+
 ---
 
 ## 6. Prompt Injection and Instruction Hierarchy
@@ -452,6 +457,19 @@ Before relevant milestones merge, verify as applicable:
 - [ ] safe failure categories do not leak secrets
 - [ ] logs avoid unnecessary full case/prompt content
 - [ ] public-history privacy warning is visible
+- [ ] (Milestone 7) `OPENROUTER_API_KEY` absent from client bundle
+      (`scripts/verify-client-bundle.mjs`, already includes this
+      identifier — confirmed, not a new check)
+- [ ] (Milestone 7) no automated test makes a real OpenRouter network
+      request; every model/pricing/preflight path is exercised through an
+      injectable fake provider
+- [ ] (Milestone 7) an ineligible/unresolvable model blocks explicitly
+      with a reason code — no silent substitution, no silent paid fallback
+- [ ] (Milestone 7) a stale (past-TTL) or unavailable model catalog cache
+      never authorizes preflight eligibility — treated as unavailable, not
+      silently served
+- [ ] (Milestone 7) a run frozen with the pre-Milestone-7 `prompt_version`
+      placeholder (`unassigned-pre-m7`) is never reported execution-eligible
 
 ---
 

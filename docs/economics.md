@@ -169,6 +169,13 @@ Preflight decides whether a configuration is allowed to expose the project to sp
 
 It is intentionally conservative; it is not intended to predict exact final cost.
 
+Milestone 7 builds the real preflight service implementing this section's
+formulas, as a standalone read-only computation over a frozen run — see
+`docs/adr/0003-openrouter-infrastructure.md`. It performs zero Tribunal
+model calls itself. Whether it is also wired synchronously into `POST
+/api/runs`'s write path (persisting `BLOCKED_BUDGET`) is left open in
+that ADR (Decision 5), not decided by this document.
+
 ### 10.1 Input estimate
 
 For already-known prompt text, use a conservative tokenizer-independent estimate rather than an optimistic English-only character rule.
