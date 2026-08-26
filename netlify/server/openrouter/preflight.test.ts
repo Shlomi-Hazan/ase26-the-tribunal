@@ -471,3 +471,147 @@ describe("runPreflight -- deterministic repeat with a fresh cache", () => {
     expect(provider.listModelsCallCount).toBeGreaterThan(callCountAfterFirst);
   });
 });
+
+// PricingSnapshot.observedAt fetch-timestamp regression tests
+// (independent review, pre-live gate, second pass; ADR Decision 9,
+// Section 15 of the correction task). observedAt must always be the
+// actual endpoint metadata cache fetch time, never the current
+// invocation time.
+describe("runPreflight -- pricing.observedAt reflects the actual endpoint fetch timestamp", () => {
+  it("A: the first fetch's observedAt equals the clock reading at that fetch", async () => {
+    const testRun = run();
+    const loader = new FakeRunLoader({ [testRun.id]: testRun });
+    const provider = providerFor(cheapModel());
+    const t0 = 1_000_000;
+    const clock = () => t0;
+    const modelCache = new ModelMetadataCache<RawOpenRouterModel[]>(undefined, clock);
+    const endpointCache = new ModelMetadataCache<RawOpenRouterEndpoint[]>(undefined, clock);
+
+    const result = await runPreflight(testRun.id, {
+      runLoader: loader,
+      provider,
+      modelCache,
+      endpointCache,
+      clock
+    });
+
+    const observedAt = result.participants[0].pricing?.observedAt;
+    expect(observedAt).toBe(new Date(t0).toISOString());
+  });
+
+  it("B: a second invocation 4 minutes later reusing the fresh cache reports the SAME (original) observedAt, not the new invocation time", async () => {
+    const testRun = run();
+    const loader = new FakeRunLoader({ [testRun.id]: testRun });
+    const provider = providerFor(cheapModel());
+    let now = 1_000_000;
+    const clock = () => now;
+    const modelCache = new ModelMetadataCache<RawOpenRouterModel[]>(undefined, clock);
+    const endpointCache = new ModelMetadataCache<RawOpenRouterEndpoint[]>(undefined, clock);
+
+    const first = await runPreflight(testRun.id, {
+      runLoader: loader,
+      provider,
+      modelCache,
+      endpointCache,
+      clock
+    });
+    const firstObservedAt = first.participants[0].pricing?.observedAt;
+
+    now += 4 * 60 * 1000; // 4 minutes later, still within the 5-minute TTL
+    const second = await runPreflight(testRun.id, {
+      runLoader: loader,
+      provider,
+      modelCache,
+      endpointCache,
+      clock
+    });
+    const secondObservedAt = second.participants[0].pricing?.observedAt;
+
+    expect(secondObservedAt).toBe(firstObservedAt);
+    expect(secondObservedAt).not.toBe(new Date(now).toISOString());
+  });
+
+  it("C: exactly 5 minutes later (stale) with a successful refetch, observedAt becomes the new fetch time", async () => {
+    const testRun = run();
+    const loader = new FakeRunLoader({ [testRun.id]: testRun });
+    const provider = providerFor(cheapModel());
+    let now = 1_000_000;
+    const clock = () => now;
+    const modelCache = new ModelMetadataCache<RawOpenRouterModel[]>(undefined, clock);
+    const endpointCache = new ModelMetadataCache<RawOpenRouterEndpoint[]>(undefined, clock);
+
+    const first = await runPreflight(testRun.id, {
+      runLoader: loader,
+      provider,
+      modelCache,
+      endpointCache,
+      clock
+    });
+    const firstObservedAt = first.participants[0].pricing?.observedAt;
+
+    now += MODEL_METADATA_TTL_MS; // exactly at the TTL boundary -- stale
+    const second = await runPreflight(testRun.id, {
+      runLoader: loader,
+      provider,
+      modelCache,
+      endpointCache,
+      clock
+    });
+    const secondObservedAt = second.participants[0].pricing?.observedAt;
+
+    expect(secondObservedAt).toBe(new Date(now).toISOString());
+    expect(secondObservedAt).not.toBe(firstObservedAt);
+  });
+
+  it("D: stale + failed refetch blocks -- no fabricated observedAt is ever produced for that participant", async () => {
+    const testRun = run();
+    const loader = new FakeRunLoader({ [testRun.id]: testRun });
+    const provider = providerFor(cheapModel());
+    let now = 1_000_000;
+    const clock = () => now;
+    const modelCache = new ModelMetadataCache<RawOpenRouterModel[]>(undefined, clock);
+    const endpointCache = new ModelMetadataCache<RawOpenRouterEndpoint[]>(undefined, clock);
+
+    await runPreflight(testRun.id, {
+      runLoader: loader,
+      provider,
+      modelCache,
+      endpointCache,
+      clock
+    });
+
+    now += MODEL_METADATA_TTL_MS;
+    provider.listModelsError = new ProviderError("PROVIDER_5XX", "provider down");
+
+    const result = await runPreflight(testRun.id, {
+      runLoader: loader,
+      provider,
+      modelCache,
+      endpointCache,
+      clock
+    });
+
+    expect(result.eligible).toBe(false);
+    expect(result.participants[0].pricing).toBeNull();
+  });
+
+  it("F: POST /api/preflight's response reports this exact endpoint-fetch-timestamp semantics via pricingObservedAt", async () => {
+    const testRun = run();
+    const loader = new FakeRunLoader({ [testRun.id]: testRun });
+    const provider = providerFor(cheapModel());
+    const t0 = 1_000_000;
+    const clock = () => t0;
+    const modelCache = new ModelMetadataCache<RawOpenRouterModel[]>(undefined, clock);
+    const endpointCache = new ModelMetadataCache<RawOpenRouterEndpoint[]>(undefined, clock);
+
+    const result = await runPreflight(testRun.id, {
+      runLoader: loader,
+      provider,
+      modelCache,
+      endpointCache,
+      clock
+    });
+
+    expect(result.pricingObservedAt).toBe(new Date(t0).toISOString());
+  });
+});

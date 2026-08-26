@@ -55,10 +55,15 @@ export const handler: Handler = async (event) => {
         createSupabaseIdempotentCaseRepository()
       ),
       provider: new RealOpenRouterProvider(readOpenRouterServerConfig()),
-      // Shared with GET /api/models (netlify/functions/models.ts) --
-      // module-scope singletons that persist across warm invocations of
-      // this function container, giving the approved 5-minute TTL cache
-      // its intended effect in production.
+      // Module-scope singletons (sharedMetadataCache.ts) that persist
+      // across warm invocations of THIS function's own runtime,
+      // giving the approved 5-minute TTL cache its intended effect in
+      // production. Also imported by GET /api/models
+      // (netlify/functions/models.ts) so each function is correctly
+      // wired -- but cross-function process/cache sharing is never
+      // relied upon: this function's correctness does not depend on
+      // GET /api/models having run first (corrected this pass, see
+      // sharedMetadataCache.ts).
       modelCache: sharedModelCache,
       endpointCache: sharedEndpointCache
     });

@@ -203,6 +203,10 @@ export async function runPreflight(
     throw new PreflightPersistenceError("Run's case could not be loaded.");
   }
 
+  // This invocation-time value is deliberately NOT used as
+  // PricingSnapshot.observedAt below -- it is only a defensive fallback
+  // for the (should-never-happen) case where the endpoint cache somehow
+  // has no recorded fetch time immediately after a successful fetch.
   const observedAtIso = new Date(clock()).toISOString();
   const blockedReasonCodes = new Set<PreflightReasonCode>();
   const participants: PreflightParticipantResult[] = [];
@@ -285,6 +289,19 @@ export async function runPreflight(
       continue;
     }
 
+    // Correction (independent review, pre-live gate): PricingSnapshot.
+    // observedAt is contractually the metadata FETCH timestamp
+    // (ADR Decision 9), not "whenever this invocation happened to run."
+    // The endpoint cache already records the real fetch time
+    // (ModelMetadataCache#observedAt) -- when cachedFetch above reused a
+    // fresh cached value, that timestamp is earlier than `clock()` right
+    // now, and using the invocation-time value instead would misrepresent
+    // when the pricing was actually observed. The fallback to
+    // observedAtIso only guards a defensive, should-never-happen case
+    // (the key was just successfully populated by cachedFetch above).
+    const endpointObservedAt =
+      endpointCache.observedAt(participant.modelId) ?? observedAtIso;
+
     const resolution = resolveModelRoute({
       configuredModelId: participant.modelId,
       models,
@@ -292,7 +309,7 @@ export async function runPreflight(
       role,
       estimatedInputTokens,
       outputCapTokens,
-      observedAt: observedAtIso
+      observedAt: endpointObservedAt
     });
 
     if (!resolution.eligible) {

@@ -89,12 +89,42 @@ export function outputCapTokensForRole(role: "ADVOCATE" | "JUDGE"): number {
 // conservativeParticipantCostUsd / conservativeMaxCostUsd) are computed
 // separately in preflight.ts from the real Charge Sheet/personality text.
 //
-// 2-byte UTF-8 character, matching docs/economics.md Sec 10.1's
-// Hebrew-input conservative rationale -- biases the worst-case synthetic
-// estimate higher than an ASCII-only worst case would.
+// Corrected this pass (independent review, pre-live gate): the prior
+// character here ("א", Hebrew, U+05D0) is only 2 UTF-8 bytes and is NOT
+// the true worst case for this application's actual validation
+// semantics -- it under-estimated context/cost exposure.
+//
+// The authoritative length constraints (chargeSheetLimits,
+// personalityLimit, applied via `z.string().trim().max(N)` in
+// src/schemas/tribunalSetup.ts, confirmed by direct source inspection --
+// no `.normalize()` call anywhere in that file) bound JS
+// `String.prototype.length`, i.e. UTF-16 CODE UNITS, not Unicode
+// codepoints and not UTF-8 bytes. The worst case is therefore whichever
+// valid string maximizes UTF-8 bytes PER CODE UNIT, filled to the full
+// code-unit budget N:
+//
+//   - a lone BMP codepoint in U+0800..U+FFFF, excluding the surrogate
+//     range U+D800..U+DFFF (e.g. CJK Unified Ideographs) -- 1 code unit,
+//     3 UTF-8 bytes -- 3 bytes/unit.
+//   - a surrogate PAIR (a supplementary-plane codepoint, U+10000+, e.g.
+//     an emoji) -- 2 code units, 4 UTF-8 bytes total -- only 2
+//     bytes/unit, LESS than the 3-byte BMP case above.
+//   - an unpaired/lone surrogate (malformed input) -- 1 code unit;
+//     TextEncoder replaces it with U+FFFD, which is also 3 bytes -- at
+//     most 3 bytes/unit, never more.
+//
+// So 3 bytes/code-unit is the true maximum achievable under this
+// application's exact validation semantics, and no 4-byte
+// (surrogate-pair) content can ever exceed it -- verified empirically in
+// tokenEstimation.test.ts (e.g. "漢" = 1 code unit = 3 UTF-8 bytes;
+// "😀" = 2 code units = 4 UTF-8 bytes = 2/unit; the old "א" = 1 code unit
+// = 2 UTF-8 bytes = 2/unit). Filling the entire allowed code-unit budget
+// with a 3-byte BMP character (never leading/trailing whitespace, so
+// `.trim()` does not reduce it) therefore yields the largest UTF-8 byte
+// count any valid accepted input of that length could produce.
 // ---------------------------------------------------------------------
 
-const WORST_CASE_CHAR = "א";
+const WORST_CASE_CHAR = "漢"; // U+6F22 -- 1 UTF-16 code unit, 3 UTF-8 bytes
 
 function worstCaseChargeSheetText(): string {
   const totalChars =
