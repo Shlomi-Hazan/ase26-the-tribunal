@@ -21,7 +21,7 @@ export function JudgesPage() {
       <PageHeader
         eyebrow="Participants"
         title="Judges"
-        description="Three independent judges will later evaluate all four advocate speeches. This milestone shows only mock configuration."
+        description="Three independent judges are configured and frozen here. Model execution, speeches, and verdicts are not yet performed — they arrive in a later milestone."
       />
       <Paper sx={{ p: { xs: 2, md: 3 } }}>
         <ExecutionModeControl />

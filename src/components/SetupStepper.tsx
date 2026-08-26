@@ -36,16 +36,22 @@ export function SetupStepper() {
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
         {steps.map((step, index) => {
           const active = index === activeIndex;
-          // A step shows Complete only when it has genuinely been reached
-          // (SETUP_STEP_INDEX/furthestReachedStepIndex -- never route
-          // position alone), its data is still currently valid, and it
-          // isn't the step the user is presently on. Validity and
-          // completion are deliberately not conflated: default advocate/
+          // A step shows Complete only once it has genuinely been LEFT --
+          // strictly less than furthestReachedStepIndex, not <=. That
+          // field records the furthest step REACHED, not the furthest step
+          // COMPLETED: Continue to Advocates sets it to ADVOCATES the
+          // instant Advocates becomes the active step, before its own data
+          // has ever been confirmed. Using <= would let a step it read as
+          // Complete the moment it's merely reached (e.g. pressing Back
+          // immediately, without ever clicking that step's own Continue),
+          // even though the user never left it forward. Combined with the
+          // "not active" and "still currently valid" checks: validity and
+          // completion are deliberately not conflated -- default advocate/
           // judge data is valid from the start, but that alone must never
-          // read as "reached."
+          // read as "reached," let alone "completed."
           const complete =
             !active &&
-            index <= state.furthestReachedStepIndex &&
+            index < state.furthestReachedStepIndex &&
             validByIndex[index];
 
           return (

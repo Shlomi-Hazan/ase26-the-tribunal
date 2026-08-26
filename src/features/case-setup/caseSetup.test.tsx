@@ -321,6 +321,81 @@ describe("case setup workflow", () => {
       ).not.toHaveTextContent("Complete");
       expect(within(setupProgress).queryAllByText("Complete")).toHaveLength(0);
     });
+
+    it("does not mark Advocates Complete when the user reaches it and immediately goes Back without confirming it", async () => {
+      // furthestReachedStepIndex records the furthest step REACHED, not
+      // the furthest step COMPLETED -- Continue to Advocates sets it to
+      // ADVOCATES the instant Advocates becomes active, before its own
+      // data has ever been confirmed by leaving it forward.
+      const user = userEvent.setup();
+      renderWithAppProviders(<AppRoutes />);
+
+      await user.type(screen.getByLabelText(/defendant/i), "Alex Rowan");
+      await user.type(screen.getByLabelText(/^act/i), "Entered the restricted lab.");
+      await user.type(
+        screen.getByLabelText(/exact question/i),
+        "Did Alex knowingly violate the lab protocol?"
+      );
+      await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
+      await user.click(screen.getByRole("link", { name: /^back$/i }));
+
+      const setupProgress = screen.getByLabelText("Case setup progress");
+      expect(
+        within(setupProgress).getByRole("link", { name: /Charge Sheet/i })
+      ).not.toHaveTextContent("Complete");
+      expect(
+        within(setupProgress).getByRole("link", { name: /Advocates/i })
+      ).not.toHaveTextContent("Complete");
+      expect(
+        within(setupProgress).getByRole("link", { name: /Judges/i })
+      ).not.toHaveTextContent("Complete");
+    });
+
+    it("does not mark Judges Complete when the user reaches it and immediately goes Back without confirming it", async () => {
+      const user = userEvent.setup();
+      renderWithAppProviders(<AppRoutes />);
+
+      await user.type(screen.getByLabelText(/defendant/i), "Alex Rowan");
+      await user.type(screen.getByLabelText(/^act/i), "Entered the restricted lab.");
+      await user.type(
+        screen.getByLabelText(/exact question/i),
+        "Did Alex knowingly violate the lab protocol?"
+      );
+      await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
+      await user.click(screen.getByRole("link", { name: /continue to judges/i }));
+      await user.click(screen.getByRole("link", { name: /^back$/i }));
+
+      const setupProgress = screen.getByLabelText("Case setup progress");
+      expect(
+        within(setupProgress).getByRole("link", { name: /Charge Sheet/i })
+      ).toHaveTextContent("Complete");
+      expect(
+        within(setupProgress).getByRole("link", { name: /Advocates/i })
+      ).not.toHaveTextContent("Complete");
+      expect(
+        within(setupProgress).getByRole("link", { name: /Judges/i })
+      ).not.toHaveTextContent("Complete");
+
+      // Continuing forward normally from here still reaches Review with
+      // the first three steps Complete -- the earlier premature Back does
+      // not permanently corrupt legitimate forward progression.
+      await user.click(screen.getByRole("link", { name: /continue to judges/i }));
+      await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+
+      const finalSetupProgress = screen.getByLabelText("Case setup progress");
+      expect(
+        within(finalSetupProgress).getByRole("link", { name: /Charge Sheet/i })
+      ).toHaveTextContent("Complete");
+      expect(
+        within(finalSetupProgress).getByRole("link", { name: /Advocates/i })
+      ).toHaveTextContent("Complete");
+      expect(
+        within(finalSetupProgress).getByRole("link", { name: /Judges/i })
+      ).toHaveTextContent("Complete");
+      expect(
+        within(finalSetupProgress).getByRole("link", { name: /Review/i })
+      ).not.toHaveTextContent("Complete");
+    });
   });
 
   it("renders exactly four fixed advocates and exactly three fixed judges", () => {

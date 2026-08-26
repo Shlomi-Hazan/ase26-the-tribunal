@@ -147,7 +147,7 @@ export function ChargeSheetPage() {
       <PageHeader
         eyebrow="New Case"
         title="Charge Sheet"
-        description="Define the case in three deterministic fields before any mock deliberation can be reviewed."
+        description="Define the case in three deterministic fields before configuring the Tribunal."
       />
       <Paper component="form" noValidate sx={{ p: { xs: 2, md: 4 } }}>
         <Stack spacing={3}>

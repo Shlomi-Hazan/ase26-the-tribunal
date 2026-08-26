@@ -63,17 +63,23 @@ export type SetupState = {
   sharedModelId: string;
   participants: Record<ParticipantId, ParticipantConfig>;
   savedCase: SavedCaseIdentity | null;
-  // Highest setup-step index the user has actually reached via a genuine
+  // Highest setup-step index the user has actually REACHED via a genuine
   // forward transition (a validated Continue/Review Tribunal click, or a
   // successful Full Tribunal Package import) -- never via route position
-  // alone. Distinct from "this step's current data is valid": the
-  // SetupStepper's Complete badge requires BOTH a step to have been
-  // reached AND to still be currently valid, so it cannot show Complete
-  // merely because default participant data happens to already be valid,
-  // and it stays accurate if previously-valid data is edited into an
-  // invalid state and back again. Only ever increases (never reset by
-  // back-navigation), so completion history survives normal setup
-  // back-navigation.
+  // alone. This is "reached," not "completed": the instant Continue to
+  // Advocates fires, this becomes ADVOCATES even though Advocates' own
+  // data has never itself been confirmed by leaving it forward. A step
+  // only counts as *completed* once some LATER step has been reached
+  // (SetupStepper compares with strict "<", not "<="), so pressing Back
+  // immediately after reaching a step -- without ever confirming it --
+  // correctly does not mark it Complete. Distinct from "this step's
+  // current data is valid": the SetupStepper's Complete badge requires the
+  // step to have been left forward, to still be currently valid, and to
+  // not be the active step, so it cannot show Complete merely because
+  // default participant data happens to already be valid, and it stays
+  // accurate if previously-valid data is edited into an invalid state and
+  // back again. Only ever increases (never reset by back-navigation), so
+  // completion history survives normal setup back-navigation.
   furthestReachedStepIndex: number;
 };
 
