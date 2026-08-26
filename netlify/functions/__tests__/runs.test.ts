@@ -9,13 +9,19 @@ import {
   type PersistedCase
 } from "../../server/cases";
 import {
+  computeRequestFingerprint,
+  PROMPT_VERSION_PLACEHOLDER,
   ROLE_BY_PARTICIPANT_ID,
   RunPersistenceError,
   SIDE_BY_PARTICIPANT_ID,
+  toCaseFingerprintInput,
+  toParticipantFingerprintInputs,
   type FreezeRunInput,
   type PersistedRun,
   type RunRepository
 } from "../../server/runs";
+import { ADVOCATE_PROMPT_VERSION, JUDGE_PROMPT_VERSION } from "../../../src/prompts/versions";
+import type { ParticipantId } from "../../../src/schemas/tribunalSetup";
 import { handleRunByIdRequest } from "../run-by-id";
 import { handler as runsHandler, handleRunsRequest } from "../runs";
 
@@ -41,9 +47,14 @@ class FakeRunRepository implements RunRepository {
     { run: PersistedRun; fingerprint: string }
   >();
   freezeCallCount = 0;
+  // Captures the last FreezeRunInput acceptRun actually computed and
+  // sent, so tests can inspect its requestFingerprint directly (Section
+  // 14D) without exposing it through the public run response.
+  lastFreezeInput: FreezeRunInput | null = null;
 
   async freeze(input: FreezeRunInput): Promise<PersistedRun> {
     this.freezeCallCount += 1;
+    this.lastFreezeInput = input;
 
     const existing = this.runsByClientRequestId.get(input.clientRequestId);
 
@@ -474,6 +485,49 @@ describe("run persistence functions", () => {
     expect(response?.statusCode).toBe(500);
     expect(response?.body).not.toContain("/Users/");
     expect(response?.body).not.toContain(" at ");
+  });
+
+  // Section 14D: the Create Run service uses the current application-
+  // owned role-specific prompt versions, not the retired M6 placeholder
+  // (independent review, pre-live gate).
+  it("computes the request fingerprint from the current role-specific prompt versions, not the M6 placeholder", async () => {
+    const runRepository = new FakeRunRepository();
+    const deps = { caseRepository: new FakeIdempotentCaseRepository(), runRepository };
+
+    await handleRunsRequest(
+      { httpMethod: "POST", body: validBody() } as HandlerEvent,
+      deps
+    );
+
+    const actualFingerprint = runRepository.lastFreezeInput?.requestFingerprint;
+    expect(actualFingerprint).toBeDefined();
+
+    const participantFingerprintInputs = toParticipantFingerprintInputs(
+      validParticipants().map((entry) => ({
+        ...entry,
+        participantId: entry.participantId as ParticipantId,
+        personalitySource: "manual" as const
+      }))
+    );
+
+    const withCurrentVersions = computeRequestFingerprint({
+      caseInput: toCaseFingerprintInput({ kind: "existing", caseId: storedCase.id }),
+      executionMode: "SHARED",
+      participants: participantFingerprintInputs,
+      promptVersions: { advocate: ADVOCATE_PROMPT_VERSION, judge: JUDGE_PROMPT_VERSION }
+    });
+    const withPlaceholder = computeRequestFingerprint({
+      caseInput: toCaseFingerprintInput({ kind: "existing", caseId: storedCase.id }),
+      executionMode: "SHARED",
+      participants: participantFingerprintInputs,
+      promptVersions: {
+        advocate: PROMPT_VERSION_PLACEHOLDER,
+        judge: PROMPT_VERSION_PLACEHOLDER
+      }
+    });
+
+    expect(actualFingerprint).toBe(withCurrentVersions);
+    expect(actualFingerprint).not.toBe(withPlaceholder);
   });
 
   it("no OpenRouter/model call occurs anywhere in the accept path", async () => {

@@ -61,7 +61,16 @@ describe("prompt-version anti-drift check", () => {
     );
   });
 
-  it("never edits the already-applied Milestone 6 migration file", () => {
+  // Correction (independent review, pre-live gate, Section 23): this
+  // test proves only that the M6 migration file's content still contains
+  // its original placeholder literal, as a quick sanity check -- it is
+  // NOT, and never claims to be, proof that the file is byte-identical
+  // to its already-applied historical state. That authoritative check is
+  // `git diff --check origin/main...HEAD --
+  // supabase/migrations/20260825214212_participant_configuration.sql`,
+  // run separately as part of every M7 correction pass's verification
+  // (recorded in docs/verification/milestone-7-openrouter-infrastructure.md).
+  it("the M6 migration file still contains its original placeholder literal (a sanity check, not a byte-identity proof)", () => {
     const m6Migration = readFileSync(
       path.join(migrationsDir, "20260825214212_participant_configuration.sql"),
       "utf8"
@@ -75,6 +84,30 @@ describe("prompt-version anti-drift check", () => {
 
     expect(migrationSource).toContain(
       "create or replace function public.freeze_participant_configuration(\n  p_case_id uuid,\n  p_client_request_id text,\n  p_request_fingerprint text,\n  p_execution_mode text,\n  p_participants jsonb\n)"
+    );
+  });
+
+  // Section 23 strengthening: the SQL-vs-TypeScript check alone is not
+  // the complete current contract -- the application's own idempotency
+  // fingerprint (netlify/server/runs.ts) must also use these same
+  // current role-specific constants, not a stale hardcoded string. This
+  // reads that source file directly (never a separately maintained copy
+  // of the expected code) and asserts it imports and actually passes
+  // both constants into computeRequestFingerprint's promptVersions
+  // argument, and no longer references the retired placeholder there.
+  it("netlify/server/runs.ts's fingerprint computation uses the current role-specific constants, not the retired placeholder", () => {
+    const runsSource = readFileSync(
+      path.resolve(process.cwd(), "netlify", "server", "runs.ts"),
+      "utf8"
+    );
+
+    expect(runsSource).toContain("ADVOCATE_PROMPT_VERSION");
+    expect(runsSource).toContain("JUDGE_PROMPT_VERSION");
+    expect(runsSource).toMatch(
+      /promptVersions:\s*{\s*advocate:\s*ADVOCATE_PROMPT_VERSION,\s*judge:\s*JUDGE_PROMPT_VERSION/
+    );
+    expect(runsSource).not.toMatch(
+      /computeRequestFingerprint\(\{[\s\S]*?promptVersion:\s*PROMPT_VERSION_PLACEHOLDER/
     );
   });
 });

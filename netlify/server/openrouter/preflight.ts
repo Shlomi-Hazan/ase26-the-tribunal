@@ -19,6 +19,7 @@ import {
   type ResolvedModelRoute,
   type RouteRole
 } from "./routeResolution";
+import { computeConservativeFullTribunalCostForRoute } from "./routeTierEconomics";
 import {
   estimateAdvocateInputTokens,
   estimateJudgeInputTokens,
@@ -27,15 +28,22 @@ import {
 import type { OpenRouterProvider } from "./provider";
 import type { RawOpenRouterEndpoint, RawOpenRouterModel } from "./schemas";
 import type { ParticipantId } from "../../../src/schemas/tribunalSetup";
-
-export const MAX_RUN_COST_USD = new Decimal("5.00");
-export const BUDGET_SAFETY_FACTOR = new Decimal("1.10");
-// Initial attempt + one permitted retry (SPEC.md Sec 10.1). No cache hit,
-// warm cache, or provider discount may ever reduce this reserve
-// (ADR Decision 7B).
-export const MAX_PROVIDER_ATTEMPTS_PER_LOGICAL_CALL = 2;
-// Fixed Tribunal shape: 4 advocates + 3 judges = 7 logical calls.
-export const TOTAL_LOGICAL_CALLS = 7;
+// Correction (independent review, pre-live gate): these locked economics
+// constants now live in economicsConstants.ts, shared unchanged with
+// routeTierEconomics.ts and modelDiscovery.ts -- re-exported here so
+// nothing importing them from preflight.ts (their original home) breaks.
+export {
+  MAX_RUN_COST_USD,
+  BUDGET_SAFETY_FACTOR,
+  MAX_PROVIDER_ATTEMPTS_PER_LOGICAL_CALL,
+  TOTAL_LOGICAL_CALLS
+} from "./economicsConstants";
+import {
+  MAX_RUN_COST_USD,
+  BUDGET_SAFETY_FACTOR,
+  MAX_PROVIDER_ATTEMPTS_PER_LOGICAL_CALL,
+  TOTAL_LOGICAL_CALLS
+} from "./economicsConstants";
 
 const ROLE_BY_PARTICIPANT_ID: Record<ParticipantId, RouteRole> = {
   "advocate-pro-1": "ADVOCATE",
@@ -156,24 +164,18 @@ function splitModelId(modelId: string): { author: string; slug: string } {
   };
 }
 
-// Complete-Tribunal discovery tier estimate (ADR Decision 12): "computed
-// from the exact ResolvedModelRoute's conservative complete-Tribunal cost
-// estimate, never a per-token rate, never a model-family average."
-// Implementation note: rather than requiring every OTHER participant's
-// own estimated token count (which this single participant's route
-// resolution does not have), the complete-Tribunal figure is this
-// participant's own retry-reserved attempt cost scaled to the fixed
-// seven-logical-call Tribunal shape, using this route's own pricing
-// throughout -- never a per-token rate or model-family average, and
-// always at least as large as this participant's own real contribution.
-// This keeps the tier informational and conservative; it is never itself
-// budget authority (ADR Decision 12) regardless of the exact scaling
-// approach.
-function computeCompleteTribunalTierCostUsd(participantAttemptCostWithRetry: Decimal): Decimal {
-  return participantAttemptCostWithRetry
-    .times(TOTAL_LOGICAL_CALLS)
-    .times(BUDGET_SAFETY_FACTOR);
-}
+// Correction (independent review, pre-live gate): the prior "one
+// participant's own retry-reserved cost x 7" approximation is removed.
+// It was wrong for any judge participant -- judge economics (1200-token
+// output cap, plus the 4x1000-token advocate-speech input reservation no
+// advocate carries) differ materially from advocate economics, so
+// scaling a judge's own cost by 7 systematically misrepresented what
+// the same route would cost across the real 4-advocate/3-judge shape.
+// `computeConservativeFullTribunalCostForRoute` (routeTierEconomics.ts)
+// is now the single shared helper for this route-discovery tier,
+// correctly weighting 4 advocate + 3 judge attempts with their own
+// distinct token/output bounds -- used identically here and by
+// GET /api/models (modelDiscovery.ts).
 
 export async function runPreflight(
   runId: string,
@@ -337,8 +339,15 @@ export async function runPreflight(
       modelEligible: true,
       providerName: route.providerDisplayName,
       providerEndpointIdOrTag: route.providerEndpointTag,
+      // Route-discovery tier: what this exact resolved route/pricing
+      // would conservatively cost across the complete fixed Tribunal
+      // shape -- a reusable category of the ROUTE, not a measurement of
+      // this participant's own contribution (that remains
+      // conservativeParticipantCostUsd, just below, unaffected by this
+      // correction). Identical helper/formula to GET /api/models
+      // (modelDiscovery.ts) for the same route.
       priceTier: classifyPriceTier(
-        computeCompleteTribunalTierCostUsd(participantCostWithRetry)
+        computeConservativeFullTribunalCostForRoute(route.pricing)
       ),
       conservativeParticipantCostUsd: toDecimalString(participantCostWithRetry),
       pricing: {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { participantIds, type ParticipantId } from "../../src/schemas/tribunalSetup";
+import { ADVOCATE_PROMPT_VERSION, JUDGE_PROMPT_VERSION } from "../../src/prompts/versions";
 import {
   computeRequestFingerprint,
   PROMPT_VERSION_PLACEHOLDER,
@@ -59,14 +60,20 @@ function baseFingerprintInput(
     caseInput: CaseFingerprintInput;
     executionMode: "SHARED" | "SEPARATE";
     participants: ParticipantFingerprintInput[];
-    promptVersion: string;
+    promptVersions: { advocate: string; judge: string };
   }> = {}
 ) {
   return {
     caseInput: existingCase,
     executionMode: "SHARED" as const,
     participants: sevenParticipants(),
-    promptVersion: PROMPT_VERSION_PLACEHOLDER,
+    // Correction (independent review, pre-live gate): the current
+    // application-owned role-specific versions -- never the old M6
+    // placeholder -- matching what acceptRun now actually supplies.
+    promptVersions: {
+      advocate: ADVOCATE_PROMPT_VERSION,
+      judge: JUDGE_PROMPT_VERSION
+    },
     ...overrides
   };
 }
@@ -213,6 +220,53 @@ describe("computeRequestFingerprint", () => {
 
     expect(withProfileName).not.toBe(withEmptyStrings);
   });
+
+  // Idempotency regression tests (independent review, pre-live gate,
+  // Section 14) -- prove the fingerprint now represents the current
+  // role-specific prompt-version contract, not the retired M6 placeholder.
+
+  it("A: same semantic request + same current advocate/judge versions -> same fingerprint", () => {
+    const first = computeRequestFingerprint(baseFingerprintInput());
+    const second = computeRequestFingerprint(baseFingerprintInput());
+
+    expect(first).toBe(second);
+  });
+
+  it("B: advocate-v1 -> advocate-v2 changes the fingerprint (judge version held constant)", () => {
+    const withV1 = computeRequestFingerprint(baseFingerprintInput());
+    const withV2 = computeRequestFingerprint(
+      baseFingerprintInput({
+        promptVersions: { advocate: "advocate-v2", judge: JUDGE_PROMPT_VERSION }
+      })
+    );
+
+    expect(withV1).not.toBe(withV2);
+  });
+
+  it("C: judge-v1 -> judge-v2 changes the fingerprint (advocate version held constant)", () => {
+    const withV1 = computeRequestFingerprint(baseFingerprintInput());
+    const withV2 = computeRequestFingerprint(
+      baseFingerprintInput({
+        promptVersions: { advocate: ADVOCATE_PROMPT_VERSION, judge: "judge-v2" }
+      })
+    );
+
+    expect(withV1).not.toBe(withV2);
+  });
+
+  it("distinguishes the current role-specific versions from the retired M6 placeholder", () => {
+    const currentVersions = computeRequestFingerprint(baseFingerprintInput());
+    const placeholderVersions = computeRequestFingerprint(
+      baseFingerprintInput({
+        promptVersions: {
+          advocate: PROMPT_VERSION_PLACEHOLDER,
+          judge: PROMPT_VERSION_PLACEHOLDER
+        }
+      })
+    );
+
+    expect(currentVersions).not.toBe(placeholderVersions);
+  });
 });
 
 describe("validateCreateRunInput", () => {
@@ -292,6 +346,23 @@ describe("validateCreateRunInput", () => {
     );
 
     participants[0] = { ...participants[0], promptVersion: "v2" };
+    expect(() => validateCreateRunInput({ ...input, participants })).toThrow(
+      RunValidationError
+    );
+  });
+
+  // Section 14E: caller cannot supply/override prompt versions -- neither
+  // the retired singular field name (already covered above) nor the
+  // current plural, role-specific shape acceptRun now computes
+  // internally.
+  it("rejects a caller-supplied promptVersions field", () => {
+    const input = validCreateRunInput();
+    const participants = input.participants as Array<Record<string, unknown>>;
+    participants[0] = {
+      ...participants[0],
+      promptVersions: { advocate: "advocate-v2", judge: "judge-v2" }
+    };
+
     expect(() => validateCreateRunInput({ ...input, participants })).toThrow(
       RunValidationError
     );
