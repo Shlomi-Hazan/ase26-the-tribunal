@@ -140,7 +140,7 @@ export function ReviewPage() {
       <PageHeader
         eyebrow="Review"
         title="Review Tribunal"
-        description="This is the final mock review gate before the UI-only deliberation route."
+        description="Review the case and seven-participant configuration before freezing it."
       />
       {state.importNotice ? <Alert severity="info">{state.importNotice}</Alert> : null}
       <Card>
@@ -274,7 +274,7 @@ export function ReviewPage() {
         <Alert severity="error">
           <Stack spacing={1}>
             <Typography sx={{ fontWeight: 800 }}>
-              Mock Tribunal cannot be convened yet.
+              Tribunal configuration cannot be frozen yet.
             </Typography>
             {blockedReasons.map((reason) => (
               <Typography key={reason} variant="body2">

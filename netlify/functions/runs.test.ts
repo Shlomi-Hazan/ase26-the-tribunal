@@ -2,6 +2,7 @@ import type { HandlerContext, HandlerEvent } from "@netlify/functions";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  CasePersistenceError,
   IdempotencyConflictError,
   type CreateCaseInput,
   type IdempotentCaseRepository,
@@ -151,6 +152,30 @@ class FakeIdempotentCaseRepository implements IdempotentCaseRepository {
   }
 }
 
+// Simulates a genuine cases-table/database failure (a real Supabase error,
+// distinct from "not found," which the real SupabaseCaseRepository/
+// IdempotencyConflictError paths already model separately) surfacing from
+// any of the three cases-repository calls acceptRun's step F can make:
+// the existing-case lookup, the idempotent new-case insert, or its
+// idempotent fallback SELECT.
+class ThrowingCaseRepository implements IdempotentCaseRepository {
+  async create(): Promise<PersistedCase> {
+    throw new Error("not used in these tests");
+  }
+
+  async list(): Promise<PersistedCase[]> {
+    throw new Error("not used in these tests");
+  }
+
+  async getById(): Promise<PersistedCase | null> {
+    throw new CasePersistenceError();
+  }
+
+  async createIdempotent(): Promise<PersistedCase> {
+    throw new CasePersistenceError();
+  }
+}
+
 function validParticipants() {
   return [
     "advocate-pro-1",
@@ -242,6 +267,58 @@ describe("run persistence functions", () => {
 
     expect(response.statusCode).toBe(404);
     expect(JSON.parse(response.body ?? "").error).toBe("case_not_found");
+  });
+
+  it("maps a genuine cases-table failure during existing-case lookup to run_persistence_failed", async () => {
+    // Pre-live correction: runErrorResponse previously left
+    // CasePersistenceError unmapped, so it fell through to the generic
+    // run_request_failed category instead of the stable
+    // run_persistence_failed one RunPersistenceError already gets.
+    const deps = {
+      caseRepository: new ThrowingCaseRepository(),
+      runRepository: new FakeRunRepository()
+    };
+
+    const response = await handleRunsRequest(
+      {
+        httpMethod: "POST",
+        body: validBody({ case: { kind: "existing", caseId: storedCase.id } })
+      } as HandlerEvent,
+      deps
+    );
+
+    expect(response.statusCode).toBe(500);
+    expect(JSON.parse(response.body ?? "").error).toBe("run_persistence_failed");
+    expect(JSON.parse(response.body ?? "").error).not.toBe("run_request_failed");
+  });
+
+  it("maps a genuine cases-table failure during idempotent new-case creation to run_persistence_failed", async () => {
+    const deps = {
+      caseRepository: new ThrowingCaseRepository(),
+      runRepository: new FakeRunRepository()
+    };
+
+    const response = await handleRunsRequest(
+      {
+        httpMethod: "POST",
+        body: validBody({
+          case: {
+            kind: "new",
+            case: {
+              defendant: "Alex Rowan",
+              act: "Entered the restricted lab.",
+              exactQuestion: "Did Alex knowingly violate the lab protocol?",
+              sourceType: "MANUAL"
+            }
+          }
+        })
+      } as HandlerEvent,
+      deps
+    );
+
+    expect(response.statusCode).toBe(500);
+    expect(JSON.parse(response.body ?? "").error).toBe("run_persistence_failed");
+    expect(JSON.parse(response.body ?? "").error).not.toBe("run_request_failed");
   });
 
   it("reuses the existing run for a same-key/same-payload retry (lost-response retry)", async () => {

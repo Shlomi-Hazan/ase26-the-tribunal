@@ -1,5 +1,5 @@
 import type { HandlerResponse } from "@netlify/functions";
-import { IdempotencyConflictError } from "./cases";
+import { CasePersistenceError, IdempotencyConflictError } from "./cases";
 import { RunPersistenceError, RunValidationError, type PersistedRun } from "./runs";
 
 // Public response shape: deliberately excludes request_fingerprint,
@@ -68,7 +68,13 @@ export function runErrorResponse(error: unknown): HandlerResponse {
     return runJsonResponse(409, { error: "idempotency_conflict" });
   }
 
-  if (error instanceof RunPersistenceError) {
+  // A genuine cases-table failure encountered while resolving/creating the
+  // case for this run (existing-case lookup, idempotent new-case insert,
+  // or its idempotent fallback SELECT -- see acceptRun step F) is still a
+  // run-acceptance persistence failure from the caller's point of view,
+  // not a generic/opaque one -- map it to the same stable safe category
+  // as RunPersistenceError, never a raw Supabase/Postgres detail.
+  if (error instanceof RunPersistenceError || error instanceof CasePersistenceError) {
     return runJsonResponse(500, { error: "run_persistence_failed" });
   }
 

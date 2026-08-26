@@ -521,9 +521,28 @@ export class SupabaseRunRepository implements RunRepository {
       executionMode,
       status: run.status,
       createdAt: run.created_at,
-      participants
+      participants: sortParticipantsCanonically(participants)
     };
   }
+}
+
+// PostgreSQL does not promise row order without an explicit ORDER BY, and
+// none is applied to the participant_configs query above. Normalize into
+// the canonical application participant order (participantIds -- the same
+// fixed order used everywhere else: fingerprint computation, the freeze
+// RPC's known-key check, the UI) before this ever becomes a public
+// response, rather than adding a speculative DB ordering column for a
+// seven-row, sort-in-memory case. Exported (rather than inlined) so this
+// normalization can be unit-tested directly against shuffled input,
+// independent of mocking the Supabase query builder.
+export function sortParticipantsCanonically(
+  participants: PersistedParticipantConfig[]
+): PersistedParticipantConfig[] {
+  return [...participants].sort(
+    (a, b) =>
+      participantIds.indexOf(a.participantId) -
+      participantIds.indexOf(b.participantId)
+  );
 }
 
 const runSelectColumns = [

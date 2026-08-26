@@ -248,6 +248,8 @@ declare
   v_role text;
   v_side text;
   v_keys text[];
+  v_model_ids text[];
+  v_model_id text;
 begin
   if p_execution_mode not in ('SHARED', 'SEPARATE') then
     raise exception 'invalid execution_mode' using errcode = '22023';
@@ -284,12 +286,63 @@ begin
       using errcode = '22023';
   end if;
 
+  -- Independent DB-level Shared-mode model_id invariant (pre-live
+  -- correction). The Netlify Zod layer already rejects a Shared request
+  -- whose seven model IDs differ, but this function is the sole
+  -- structural write path and must not trust the caller merely because
+  -- ordinary server code already validated the request -- a direct RPC
+  -- caller (or a future code path) must be unable to bypass it. This
+  -- also independently rejects a missing, null, blank, or otherwise
+  -- structurally invalid model_id in either mode, before any row is
+  -- written -- the same 1..256-char, no-C0/DEL bound as
+  -- participant_configs_model_id_check, checked here too so a bad
+  -- model_id fails with a plain input/validation error rather than
+  -- surfacing as a CHECK-constraint violation deep inside the
+  -- participant insert loop below.
+  select array_agg(btrim(elem ->> 'model_id') order by elem ->> 'participant_key')
+  into v_model_ids
+  from jsonb_array_elements(p_participants) as elem;
+
+  foreach v_model_id in array v_model_ids loop
+    if v_model_id is null
+      or char_length(v_model_id) < 1
+      or char_length(v_model_id) > 256
+      or v_model_id ~ '[\x01-\x1f\x7f]'
+    then
+      raise exception 'invalid or missing model_id' using errcode = '22023';
+    end if;
+  end loop;
+
+  if p_execution_mode = 'SHARED' then
+    if (select count(distinct m) from unnest(v_model_ids) as m) <> 1 then
+      raise exception
+        'shared execution mode requires all seven participants to use the same model_id'
+        using errcode = '22023';
+    end if;
+  end if;
+
   -- Race-safe by construction: attempt the insert directly rather than
   -- SELECT-then-INSERT. The UNIQUE(client_request_id) constraint
   -- arbitrates concurrent identical requests; exactly one wins, the
   -- other falls through to the compare-and-decide branch below.
+  --
+  -- "AS new_run" + "RETURNING new_run.id" (rather than a bare "RETURNING
+  -- id") is required, not stylistic: this function's RETURNS TABLE
+  -- clause declares "id" (and case_id/client_request_id/execution_mode/
+  -- status/created_at) as PL/pgSQL output-parameter variables in scope
+  -- for the whole function body. Postgres's default
+  -- plpgsql.variable_conflict = 'error' makes a bare "id" inside this
+  -- INSERT's RETURNING clause ambiguous between that output variable and
+  -- the tribunal_runs.id column, raising "column reference is
+  -- ambiguous" at execution time. Qualifying with the table alias
+  -- resolves it unambiguously in favor of the column, per
+  -- https://www.postgresql.org/docs/current/sql-insert.html (INSERT
+  -- INTO table_name [ AS alias ]; RETURNING may reference that alias)
+  -- and https://www.postgresql.org/docs/current/plpgsql-implementation.html
+  -- (qualifying a column reference with its table alias resolves the
+  -- conflict even under variable_conflict = error).
   begin
-    insert into public.tribunal_runs (
+    insert into public.tribunal_runs as new_run (
       case_id,
       client_request_id,
       request_fingerprint,
@@ -303,7 +356,7 @@ begin
       p_execution_mode,
       'READY'
     )
-    returning id into v_new_run_id;
+    returning new_run.id into v_new_run_id;
   exception
     when unique_violation then
       v_new_run_id := null;
@@ -343,16 +396,25 @@ begin
         model_id,
         prompt_version
       )
+      -- Defense in depth: the Netlify Zod layer remains the
+      -- user-facing authoritative normalizer, but the freeze RPC is the
+      -- sole write path, so it trims free-text fields itself rather
+      -- than persisting an obviously non-normalized (leading/trailing
+      -- whitespace, or whitespace-only) value if ever called directly.
+      -- btrim() is ordinary text trimming, unrelated to and not a
+      -- substitute for the participant_configs_model_id_check /
+      -- v_model_id C0-control-character validation above -- no chr(0)
+      -- is introduced (PostgreSQL text cannot contain a NUL byte).
       values (
         v_new_run_id,
         v_key,
         v_role,
         v_side,
-        nullif(v_participant ->> 'profile_name', ''),
-        v_participant ->> 'personality_text',
+        nullif(btrim(v_participant ->> 'profile_name'), ''),
+        btrim(v_participant ->> 'personality_text'),
         v_participant ->> 'personality_source',
-        nullif(v_participant ->> 'personality_source_filename', ''),
-        v_participant ->> 'model_id',
+        nullif(btrim(v_participant ->> 'personality_source_filename'), ''),
+        btrim(v_participant ->> 'model_id'),
         'unassigned-pre-m7'
       );
     end loop;

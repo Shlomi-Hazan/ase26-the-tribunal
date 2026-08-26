@@ -146,7 +146,7 @@ describe("case setup workflow", () => {
     // participant configuration.
     expect(screen.getByRole("button", { name: /save case/i })).toBeDisabled();
     expect(
-      screen.getByText(/mock tribunal cannot be convened yet/i)
+      screen.getByText(/tribunal configuration cannot be frozen yet/i)
     ).toBeVisible();
     expect(screen.getByText(/charge sheet fields must be complete/i)).toBeVisible();
   });
@@ -518,6 +518,121 @@ describe("case setup workflow", () => {
       await screen.findByRole("button", { name: "Configuration frozen" })
     ).toBeDisabled();
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses the same client_request_id when retrying an unchanged submission after an ambiguous failure", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    // An ambiguous/network failure -- the client cannot tell whether the
+    // server actually received and processed the request.
+    fetchSpy.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          run: {
+            id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            caseId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+            executionMode: "shared",
+            status: "READY",
+            createdAt: "2026-08-25T10:00:00.000Z",
+            participants: []
+          }
+        }),
+        { status: 201 }
+      )
+    );
+
+    renderWithAppProviders(<AppRoutes />);
+    await user.type(screen.getByLabelText(/defendant/i), "Alex Rowan");
+    await user.type(screen.getByLabelText(/^act/i), "Entered the restricted lab.");
+    await user.type(
+      screen.getByLabelText(/exact question/i),
+      "Did Alex knowingly violate the lab protocol?"
+    );
+    await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
+    await user.click(screen.getByRole("link", { name: /continue to judges/i }));
+    await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+
+    await user.click(screen.getByRole("button", { name: "Convene Tribunal" }));
+    expect(
+      await screen.findByText(/tribunal configuration could not be frozen/i)
+    ).toBeVisible();
+
+    // Retry with no edits at all -- the same semantic submission.
+    await user.click(screen.getByRole("button", { name: "Convene Tribunal" }));
+    expect(await screen.findByText(/tribunal configuration frozen/i)).toBeVisible();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    const [, firstInit] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    const [, secondInit] = fetchSpy.mock.calls[1] as [string, RequestInit];
+    const firstBody = JSON.parse(firstInit.body as string);
+    const secondBody = JSON.parse(secondInit.body as string);
+
+    expect(typeof firstBody.clientRequestId).toBe("string");
+    expect(secondBody.clientRequestId).toBe(firstBody.clientRequestId);
+  });
+
+  it("uses a fresh client_request_id after a failed submission is materially edited", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          run: {
+            id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            caseId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+            executionMode: "shared",
+            status: "READY",
+            createdAt: "2026-08-25T10:00:00.000Z",
+            participants: []
+          }
+        }),
+        { status: 201 }
+      )
+    );
+
+    renderWithAppProviders(<AppRoutes />);
+    await user.type(screen.getByLabelText(/defendant/i), "Alex Rowan");
+    await user.type(screen.getByLabelText(/^act/i), "Entered the restricted lab.");
+    await user.type(
+      screen.getByLabelText(/exact question/i),
+      "Did Alex knowingly violate the lab protocol?"
+    );
+    await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
+    await user.click(screen.getByRole("link", { name: /continue to judges/i }));
+    await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+
+    await user.click(screen.getByRole("button", { name: "Convene Tribunal" }));
+    expect(
+      await screen.findByText(/tribunal configuration could not be frozen/i)
+    ).toBeVisible();
+
+    // Material edit before retrying: the Charge Sheet itself changes.
+    await user.click(
+      within(screen.getByLabelText("Case setup progress")).getByRole("link", {
+        name: /Charge Sheet/i
+      })
+    );
+    await user.type(screen.getByLabelText(/defendant/i), " Jr.");
+    await user.click(
+      within(screen.getByLabelText("Case setup progress")).getByRole("link", {
+        name: /Review/i
+      })
+    );
+
+    await user.click(
+      await screen.findByRole("button", { name: "Convene Tribunal" })
+    );
+    expect(await screen.findByText(/tribunal configuration frozen/i)).toBeVisible();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    const [, firstInit] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    const [, secondInit] = fetchSpy.mock.calls[1] as [string, RequestInit];
+    const firstBody = JSON.parse(firstInit.body as string);
+    const secondBody = JSON.parse(secondInit.body as string);
+
+    expect(secondBody.clientRequestId).not.toBe(firstBody.clientRequestId);
   });
 
   it("reuses the saved case identity on Convene after Save Case", async () => {

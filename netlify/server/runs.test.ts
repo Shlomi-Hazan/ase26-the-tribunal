@@ -4,11 +4,29 @@ import {
   computeRequestFingerprint,
   PROMPT_VERSION_PLACEHOLDER,
   RunValidationError,
+  sortParticipantsCanonically,
   validateCreateRunInput,
   validateRunId,
   type CaseFingerprintInput,
-  type ParticipantFingerprintInput
+  type ParticipantFingerprintInput,
+  type PersistedParticipantConfig
 } from "./runs";
+
+function persistedParticipant(id: ParticipantId): PersistedParticipantConfig {
+  const isAdvocate = id.startsWith("advocate-");
+
+  return {
+    participantId: id,
+    role: isAdvocate ? "ADVOCATE" : "JUDGE",
+    side: id.includes("-pro-") ? "PRO" : id.includes("-con-") ? "CON" : null,
+    profileName: null,
+    personality: `Personality for ${id}.`,
+    personalitySource: "manual",
+    personalitySourceFilename: null,
+    modelId: "mock/free-deliberator",
+    promptVersion: "unassigned-pre-m7"
+  };
+}
 
 function participant(
   id: ParticipantId,
@@ -434,5 +452,55 @@ describe("validateRunId", () => {
 
   it("rejects a malformed id", () => {
     expect(() => validateRunId("not-a-uuid")).toThrow(RunValidationError);
+  });
+});
+
+describe("sortParticipantsCanonically", () => {
+  it("normalizes a shuffled persisted participant array into canonical order", () => {
+    // PostgreSQL does not promise participant_configs row order without an
+    // explicit ORDER BY (none is applied) -- simulate an arbitrary
+    // database-return order and confirm the public output is always the
+    // fixed application order (participantIds), regardless of input order.
+    const shuffled: PersistedParticipantConfig[] = [
+      persistedParticipant("judge-2"),
+      persistedParticipant("advocate-con-2"),
+      persistedParticipant("judge-1"),
+      persistedParticipant("advocate-pro-1"),
+      persistedParticipant("judge-3"),
+      persistedParticipant("advocate-con-1"),
+      persistedParticipant("advocate-pro-2")
+    ];
+
+    const sorted = sortParticipantsCanonically(shuffled);
+
+    expect(sorted.map((entry) => entry.participantId)).toEqual([
+      "advocate-pro-1",
+      "advocate-pro-2",
+      "advocate-con-1",
+      "advocate-con-2",
+      "judge-1",
+      "judge-2",
+      "judge-3"
+    ]);
+  });
+
+  it("does not mutate the input array", () => {
+    const shuffled: PersistedParticipantConfig[] = [
+      persistedParticipant("judge-1"),
+      persistedParticipant("advocate-pro-1")
+    ];
+    const originalOrder = shuffled.map((entry) => entry.participantId);
+
+    sortParticipantsCanonically(shuffled);
+
+    expect(shuffled.map((entry) => entry.participantId)).toEqual(originalOrder);
+  });
+
+  it("is already-sorted-input stable (idempotent)", () => {
+    const canonical = participantIds.map((id) => persistedParticipant(id));
+
+    expect(sortParticipantsCanonically(canonical).map((entry) => entry.participantId)).toEqual(
+      participantIds
+    );
   });
 });
