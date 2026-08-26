@@ -1,7 +1,12 @@
 import Decimal from "decimal.js";
 import { describe, expect, it } from "vitest";
-import { buildPricingSnapshot, classifyPriceTier, toDecimalString } from "./pricing";
-import type { RawPublicPricing } from "./schemas";
+import {
+  buildPricingSnapshot,
+  classifyPriceTier,
+  toDecimalString,
+  toDisplayUsdString
+} from "./pricing";
+import { publicPricingSchema, type RawPublicPricing } from "./schemas";
 
 function basePricing(overrides: Partial<RawPublicPricing> = {}): RawPublicPricing {
   return {
@@ -391,5 +396,142 @@ describe("toDecimalString", () => {
   it("serializes a Decimal as a fixed-precision decimal string, never scientific notation", () => {
     expect(toDecimalString(new Decimal("0.000003"))).toBe("0.000003");
     expect(toDecimalString(new Decimal(0))).not.toContain("e");
+  });
+
+  // Lossless-serialization regression tests (independent review, pre-live
+  // gate, Section 20). The prior implementation used .toFixed(6), which
+  // could turn a legitimate non-zero provider per-token rate into "0".
+  it("serializes zero as a valid, unambiguous zero", () => {
+    expect(toDecimalString(new Decimal(0))).toBe("0");
+  });
+
+  it("never rounds a small non-zero rate to zero", () => {
+    expect(toDecimalString(new Decimal("0.00000007"))).toBe("0.00000007");
+    expect(toDecimalString(new Decimal("0.00000007"))).not.toBe("0");
+    expect(toDecimalString(new Decimal("0.00000007"))).not.toBe("0.000000");
+  });
+
+  it("round-trips common OpenRouter per-token rates exactly", () => {
+    for (const rate of ["0.000003", "0.000006", "0.0000005", "0.000001", "0.00003"]) {
+      expect(toDecimalString(new Decimal(rate))).toBe(rate);
+    }
+  });
+
+  it("preserves an extremely small positive rate as non-zero", () => {
+    const tiny = new Decimal("0.0000000000001");
+
+    expect(toDecimalString(tiny)).not.toBe("0");
+    expect(new Decimal(toDecimalString(tiny)).isZero()).toBe(false);
+  });
+
+  it("never uses scientific notation for a very small value", () => {
+    expect(toDecimalString(new Decimal("0.0000000000001"))).not.toMatch(/e/i);
+  });
+});
+
+describe("toDisplayUsdString", () => {
+  it("is a distinct, separately-named display formatter that MAY round", () => {
+    expect(toDisplayUsdString(new Decimal("0.00000007"))).toBe("0.00");
+    // The authoritative serializer must never do this -- proving the two
+    // are genuinely different functions, not aliases of each other.
+    expect(toDecimalString(new Decimal("0.00000007"))).not.toBe(
+      toDisplayUsdString(new Decimal("0.00000007"))
+    );
+  });
+
+  it("defaults to 2 decimal places for human-facing USD totals", () => {
+    expect(toDisplayUsdString(new Decimal("1.005"))).toMatch(/^1\.0[01]$/);
+    expect(toDisplayUsdString(new Decimal("5"))).toBe("5.00");
+  });
+});
+
+describe("unknown pricing keys fail closed (independent review, pre-live gate)", () => {
+  // These tests parse through the REAL publicPricingSchema first -- the
+  // defect being fixed is that a plain z.object(...) silently stripped
+  // unrecognized keys before buildPricingSnapshot ever saw them. Building
+  // a RawPublicPricing object by hand (bypassing the schema) would not
+  // exercise that failure mode at all.
+
+  it("an unknown pricing key with a zero-like value fails closed (PRICING_UNREPRESENTABLE)", () => {
+    const parsed = publicPricingSchema.parse({
+      prompt: "0.000003",
+      completion: "0.000006",
+      future_billable_dimension: "0"
+    });
+
+    const result = buildPricingSnapshot(
+      "openai/gpt-5",
+      "openai",
+      parsed,
+      "2026-08-26T00:00:00.000Z"
+    );
+
+    expect(result).toEqual({ eligible: false, reasonCode: "PRICING_UNREPRESENTABLE" });
+  });
+
+  it("an unknown pricing key with a non-zero value fails closed (PRICING_UNREPRESENTABLE)", () => {
+    const parsed = publicPricingSchema.parse({
+      prompt: "0.000003",
+      completion: "0.000006",
+      future_billable_dimension: "0.01"
+    });
+
+    const result = buildPricingSnapshot(
+      "openai/gpt-5",
+      "openai",
+      parsed,
+      "2026-08-26T00:00:00.000Z"
+    );
+
+    expect(result).toEqual({ eligible: false, reasonCode: "PRICING_UNREPRESENTABLE" });
+  });
+
+  it("a future object/array-shaped pricing modifier key fails closed", () => {
+    const parsed = publicPricingSchema.parse({
+      prompt: "0.000003",
+      completion: "0.000006",
+      future_conditional_modifier: [{ some: "structure" }]
+    });
+
+    const result = buildPricingSnapshot(
+      "openai/gpt-5",
+      "openai",
+      parsed,
+      "2026-08-26T00:00:00.000Z"
+    );
+
+    expect(result).toEqual({ eligible: false, reasonCode: "PRICING_UNREPRESENTABLE" });
+  });
+
+  it("the unknown key survives Zod parsing instead of being silently stripped", () => {
+    const parsed = publicPricingSchema.parse({
+      prompt: "0.000003",
+      completion: "0.000006",
+      future_billable_dimension: "0.01"
+    });
+
+    expect(parsed).toHaveProperty("future_billable_dimension", "0.01");
+  });
+
+  it("known current pricing keys continue to parse and classify normally", () => {
+    const parsed = publicPricingSchema.parse({
+      prompt: "0.000003",
+      completion: "0.000006",
+      request: "0.001",
+      input_cache_read: "0.0000003",
+      input_cache_write: "0.00000375",
+      internal_reasoning: "0",
+      discount: 0.1,
+      overrides: []
+    });
+
+    const result = buildPricingSnapshot(
+      "openai/gpt-5",
+      "openai",
+      parsed,
+      "2026-08-26T00:00:00.000Z"
+    );
+
+    expect(result.eligible).toBe(true);
   });
 });

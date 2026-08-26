@@ -41,6 +41,45 @@ export type PricingResult =
 
 const MILLION = new Decimal(1_000_000);
 
+// ---------------------------------------------------------------------
+// Unknown-pricing-key fail-closed check (independent review, pre-live
+// gate). ADR Decision 7: "no unknown current/future billable behavior
+// may silently authorize a route." schemas.ts's publicPricingSchema now
+// preserves unrecognized keys (z.looseObject) instead of stripping them
+// -- this is the one allowlist that decides which keys are "known," kept
+// in exactly one place so it can never silently drift from the fields
+// buildPricingSnapshot actually classifies below.
+// ---------------------------------------------------------------------
+
+const KNOWN_PRICING_KEYS: ReadonlySet<string> = new Set([
+  "prompt",
+  "completion",
+  "request",
+  "image",
+  "image_output",
+  "image_token",
+  "audio",
+  "audio_output",
+  "input_audio_cache",
+  "web_search",
+  "internal_reasoning",
+  "input_cache_read",
+  "input_cache_write",
+  "input_cache_write_1h",
+  "overrides",
+  "discount"
+]);
+
+function findUnknownPricingKey(pricing: RawPublicPricing): string | null {
+  for (const key of Object.keys(pricing)) {
+    if (!KNOWN_PRICING_KEYS.has(key)) {
+      return key;
+    }
+  }
+
+  return null;
+}
+
 // A present rate string must parse to a finite, non-negative decimal.
 // Malformed provider metadata must never silently become an eligible
 // route (Section 6) -- returns "invalid" rather than throwing so callers
@@ -95,6 +134,17 @@ export function buildPricingSnapshot(
   pricing: RawPublicPricing,
   observedAt: string
 ): PricingResult {
+  // (C) blocks, checked FIRST: any pricing key this schema/classifier
+  // does not recognize (independent review, pre-live gate). An unknown
+  // key might represent a real, currently-uncharted billable dimension
+  // -- it must never be silently dropped by parsing and then treated as
+  // though it were absent. This check runs before every other check
+  // below so an unknown key can never be masked by, or race against, a
+  // more specific classification.
+  if (findUnknownPricingKey(pricing) !== null) {
+    return { eligible: false, reasonCode: "PRICING_UNREPRESENTABLE" };
+  }
+
   // (A) impossible for the Tribunal's text-only, no-cache-control request
   // to invoke: image/image_output/image_token/audio/audio_output/
   // input_audio_cache/web_search. Deliberately never parsed or considered
@@ -232,6 +282,26 @@ export function classifyPriceTier(conservativeCompleteRunCostUsd: Decimal): Pric
   return "HARD_BLOCK";
 }
 
+// Correction (independent review, pre-live gate): the first pass rounded
+// to 6 decimal places here, which could serialize a legitimate non-zero
+// provider per-token rate (e.g. $0.00000007) as "0.000000" -- a real
+// price silently becoming zero in an authoritative API/audit field.
+// `Decimal#toFixed()` called with NO argument returns the value's exact
+// fixed-point (never scientific-notation) representation at full
+// precision, with no rounding -- this is the authoritative serializer
+// for every provider rate / budget / audit monetary field this
+// application emits over HTTP. A non-zero Decimal can never serialize as
+// "0" through this function.
 export function toDecimalString(value: Decimal): string {
-  return value.toFixed(6);
+  return value.toFixed();
+}
+
+// Display-only USD formatter -- deliberately separate from
+// toDecimalString above, and never used for a provider rate, an
+// authoritative budget comparison, or an audit economics field. Rounding
+// here is a presentation choice for a future human-facing UI (e.g. "the
+// run cost $0.02"), not a serialization of the underlying exact value --
+// callers that need the authoritative figure must use toDecimalString.
+export function toDisplayUsdString(value: Decimal, decimalPlaces = 2): string {
+  return value.toFixed(decimalPlaces);
 }

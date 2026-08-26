@@ -35,7 +35,20 @@ export const pricingOverrideSchema = z.object({
 
 export type RawPricingOverride = z.infer<typeof pricingOverrideSchema>;
 
-export const publicPricingSchema = z.object({
+// Correction (independent review, pre-live gate): a plain z.object(...)
+// strips unknown keys before pricing.ts's classifier ever sees them --
+// a future OpenRouter billable dimension this repository does not yet
+// know about would silently vanish and could authorize an unrepresented
+// charge, violating ADR Decision 7's "no unknown billable behavior may
+// silently pass" rule. z.looseObject(...) (Zod 4's passthrough
+// mechanism) keeps every unrecognized key on the parsed object instead
+// of discarding it, so pricing.ts's `hasUnknownPricingKey` check
+// (KNOWN_PRICING_KEYS allowlist) can see and reject it with
+// PRICING_UNREPRESENTABLE. The known fields below are still fully typed
+// and validated exactly as before -- only genuinely unrecognized keys
+// are affected, and only by being preserved rather than dropped; this
+// schema still rejects a known field of the wrong type.
+export const publicPricingSchema = z.looseObject({
   prompt: z.string(),
   completion: z.string(),
   request: z.string().optional(),
@@ -54,6 +67,9 @@ export const publicPricingSchema = z.object({
   discount: z.number().optional()
 });
 
+// z.looseObject's inferred type is the known shape intersected with an
+// index signature for anything else that survived parsing -- exactly
+// what pricing.ts's Object.keys(...) allowlist check needs to see.
 export type RawPublicPricing = z.infer<typeof publicPricingSchema>;
 
 // ---------------------------------------------------------------------
@@ -109,6 +125,16 @@ export const endpointListResponseSchema = z.object({
 // M7 may IMPLEMENT this; M7 must never INVOKE it for real).
 // ---------------------------------------------------------------------
 
+// Correction (independent review, pre-live gate): reverified directly
+// against the current official https://openrouter.ai/openapi.json
+// ProviderPreferences.max_price schema -- "prompt"/"completion"/
+// "request" (also "audio"/"image", not used by V1) are documented as
+// `string`, "USD per million prompt/completion tokens" /
+// "USD per request" respectively -- the same decimal-string convention
+// as PublicPricing's rate fields, never a JS number. The first
+// implementation pass used `z.number()` here, which does not match the
+// current documented contract and would have forced a lossy
+// Decimal -> Number conversion at the request boundary.
 export const providerPreferencesSchema = z.object({
   order: z.array(z.string()).optional(),
   only: z.array(z.string()).optional(),
@@ -116,9 +142,9 @@ export const providerPreferencesSchema = z.object({
   require_parameters: z.boolean().optional(),
   max_price: z
     .object({
-      prompt: z.number().optional(),
-      completion: z.number().optional(),
-      request: z.number().optional()
+      prompt: z.string().optional(),
+      completion: z.string().optional(),
+      request: z.string().optional()
     })
     .optional()
 });

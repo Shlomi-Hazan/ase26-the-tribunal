@@ -7,6 +7,7 @@
 
 import type { ProviderChatRequest } from "./provider";
 import type { ResolvedModelRoute } from "./routeResolution";
+import { toDecimalString } from "./pricing";
 
 export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 
@@ -58,9 +59,34 @@ export function buildFutureCompletionRequest(params: {
       only: [route.providerEndpointTag],
       allow_fallbacks: false,
       require_parameters: true,
+      // Correction (independent review, pre-live gate): reverified
+      // against the current official OpenRouter OpenAPI spec --
+      // ProviderPreferences.max_price.{prompt,completion,request} are
+      // documented as decimal STRINGS ("USD per million prompt/
+      // completion tokens" / "USD per request"), the same convention as
+      // PublicPricing's own rate fields -- never a JS number. The
+      // first pass called `.toNumber()` here, an unnecessary and lossy
+      // conversion of an authoritative Decimal value; toDecimalString
+      // (pricing.ts) serializes the exact value with no rounding
+      // instead.
+      //
+      // This is provider-routing DEFENSE IN DEPTH, not the authoritative
+      // budget control -- local preflight (preflight.ts) remains sole
+      // authority for the complete Tribunal economics, including
+      // cache-write exposure via effectiveInputPricePerToken. Setting
+      // max_price.prompt to the exact accepted effectiveInputPricePerToken
+      // (never the raw, possibly-lower promptPricePerToken) means this
+      // ceiling can never itself accept a request preflight would have
+      // rejected -- it can only ever reject a request whose real-time
+      // provider price has drifted upward since preflight observed it,
+      // never accept one preflight's own bound already excludes.
       max_price: {
-        prompt: route.pricing.effectiveInputPricePerToken.times(1_000_000).toNumber(),
-        completion: route.pricing.completionPricePerToken.times(1_000_000).toNumber()
+        prompt: toDecimalString(route.pricing.effectiveInputPricePerToken.times(1_000_000)),
+        completion: toDecimalString(route.pricing.completionPricePerToken.times(1_000_000)),
+        // Included consistently, even when zero, matching the documented
+        // schema shape and keeping the contract simple/testable rather
+        // than conditionally omitting it only when a request fee exists.
+        request: toDecimalString(route.pricing.requestPriceUsd)
       }
     }
   };

@@ -90,7 +90,52 @@ describe("buildFutureCompletionRequest (ADR Decision 6)", () => {
     });
 
     expect(request.provider?.require_parameters).toBe(true);
-    expect(request.provider?.max_price?.prompt).toBeGreaterThan(0);
+    expect(typeof request.provider?.max_price?.prompt).toBe("string");
+    expect(Number(request.provider?.max_price?.prompt)).toBeGreaterThan(0);
+  });
+
+  it("serializes max_price fields as decimal strings, never JS numbers (current OpenRouter contract)", () => {
+    const route = resolvedRoute();
+
+    const request = buildFutureCompletionRequest({
+      route,
+      messages: [{ role: "user", content: "hi" }],
+      maxCompletionTokens: 1000,
+      structuredOutput: { name: "advocate_speech", schema: { type: "object" } }
+    });
+
+    expect(typeof request.provider?.max_price?.prompt).toBe("string");
+    expect(typeof request.provider?.max_price?.completion).toBe("string");
+    expect(typeof request.provider?.max_price?.request).toBe("string");
+    // 0.000003 (prompt) * 1_000_000 = 3, serialized losslessly, no ".00"
+    // padding and no scientific notation.
+    expect(request.provider?.max_price?.prompt).toBe("3");
+    expect(request.provider?.max_price?.completion).toBe("6");
+    expect(request.provider?.max_price?.request).toBe("0");
+  });
+
+  it("uses effectiveInputPricePerToken (not the raw prompt rate) for max_price.prompt", () => {
+    const route = resolvedRoute();
+    // Simulate a cache-write-inclusive route where the effective input
+    // price exceeds the raw prompt rate -- max_price.prompt must reflect
+    // the higher, conservative figure, never the lower raw rate.
+    const cacheAwareRoute = {
+      ...route,
+      pricing: {
+        ...route.pricing,
+        effectiveInputPricePerToken: route.pricing.promptPricePerToken.plus("0.000002")
+      }
+    };
+
+    const request = buildFutureCompletionRequest({
+      route: cacheAwareRoute,
+      messages: [{ role: "user", content: "hi" }],
+      maxCompletionTokens: 1000,
+      structuredOutput: { name: "advocate_speech", schema: { type: "object" } }
+    });
+
+    // (0.000003 + 0.000002) * 1_000_000 = 5
+    expect(request.provider?.max_price?.prompt).toBe("5");
   });
 
   it("uses the canonical model id and the requested structured-output schema", () => {
