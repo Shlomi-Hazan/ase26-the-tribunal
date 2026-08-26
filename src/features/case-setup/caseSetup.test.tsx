@@ -231,6 +231,11 @@ describe("case setup workflow", () => {
     it("preserves legitimately reached completion across back-navigation, but keeps it gated on current validity", async () => {
       const user = userEvent.setup();
       renderWithAppProviders(<AppRoutes />);
+      // A long sequence of real userEvent typing/navigation across the
+      // whole setup flow: reliably ~2-3s locally, but can tip past
+      // vitest's 5000ms default under a loaded/shared CI runner (observed
+      // in CI, not locally) -- an explicit, generous per-test timeout,
+      // not a behavior change, per vitest's own suggested remedy.
 
       await user.type(screen.getByLabelText(/defendant/i), "Alex Rowan");
       await user.type(screen.getByLabelText(/^act/i), "Entered the restricted lab.");
@@ -306,7 +311,7 @@ describe("case setup workflow", () => {
       expect(
         within(setupProgress).getByRole("link", { name: /Advocates/i })
       ).toHaveTextContent("Complete");
-    });
+    }, 15000);
 
     it("does not fabricate completion history merely from directly visiting a later route", () => {
       renderWithAppProviders(<AppRoutes />, "/new/judges");
