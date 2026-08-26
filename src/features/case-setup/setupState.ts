@@ -40,6 +40,18 @@ export type SavedCaseIdentity = {
   };
 };
 
+// Setup stepper indices, in the fixed linear order the workflow always
+// follows: Charge Sheet -> Advocates -> Judges -> Review. Shared between
+// SetupStepper (rendering) and the pages that dispatch "advanceFurthestStep"
+// on a genuine forward transition, so neither has to hard-code magic
+// numbers independently.
+export const SETUP_STEP_INDEX = {
+  CHARGE_SHEET: 0,
+  ADVOCATES: 1,
+  JUDGES: 2,
+  REVIEW: 3
+} as const;
+
 export type SetupState = {
   chargeSheet: ChargeSheet;
   caseSource: {
@@ -51,6 +63,18 @@ export type SetupState = {
   sharedModelId: string;
   participants: Record<ParticipantId, ParticipantConfig>;
   savedCase: SavedCaseIdentity | null;
+  // Highest setup-step index the user has actually reached via a genuine
+  // forward transition (a validated Continue/Review Tribunal click, or a
+  // successful Full Tribunal Package import) -- never via route position
+  // alone. Distinct from "this step's current data is valid": the
+  // SetupStepper's Complete badge requires BOTH a step to have been
+  // reached AND to still be currently valid, so it cannot show Complete
+  // merely because default participant data happens to already be valid,
+  // and it stays accurate if previously-valid data is edited into an
+  // invalid state and back again. Only ever increases (never reset by
+  // back-navigation), so completion history survives normal setup
+  // back-navigation.
+  furthestReachedStepIndex: number;
 };
 
 export type SetupAction =
@@ -69,7 +93,8 @@ export type SetupAction =
       filename: string;
     }
   | { type: "setParticipantModel"; participantId: ParticipantId; modelId: string }
-  | { type: "recordSavedCase"; id: string };
+  | { type: "recordSavedCase"; id: string }
+  | { type: "advanceFurthestStep"; index: number };
 
 export type SetupContextValue = {
   state: SetupState;
@@ -104,7 +129,12 @@ export const initialSetupState: SetupState = {
   executionMode: "shared",
   sharedModelId: defaultModelId,
   participants: initialParticipants,
-  savedCase: null
+  savedCase: null,
+  // Charge Sheet (index 0) is the starting page, trivially "reached", but
+  // -- being the currently active step -- never shows Complete regardless.
+  // Nothing past it has been reached yet on a fresh setup, even though the
+  // default advocate/judge personalities are already valid.
+  furthestReachedStepIndex: SETUP_STEP_INDEX.CHARGE_SHEET
 };
 
 export function setupReducer(state: SetupState, action: SetupAction): SetupState {
@@ -153,7 +183,18 @@ export function setupReducer(state: SetupState, action: SetupAction): SetupState
               }
             ];
           })
-        ) as SetupState["participants"]
+        ) as SetupState["participants"],
+        // A successful package import validly populates the Charge Sheet
+        // and all seven participants and lands the user on Review -- the
+        // same forward-progression outcome as walking Continue -> Continue
+        // -> Review Tribunal by hand, so it marks the same steps reached.
+        // An import that fails never reaches this reducer case at all (the
+        // page only dispatches on success), so an invalid package cannot
+        // advance completion.
+        furthestReachedStepIndex: Math.max(
+          state.furthestReachedStepIndex,
+          SETUP_STEP_INDEX.REVIEW
+        )
       };
     case "clearImportNotice":
       return {
@@ -226,6 +267,18 @@ export function setupReducer(state: SetupState, action: SetupAction): SetupState
           chargeSheet: state.chargeSheet,
           caseSource: state.caseSource
         }
+      };
+    case "advanceFurthestStep":
+      // Only ever grows -- dispatched exclusively from validated forward
+      // transitions (see SETUP_STEP_INDEX callers), never from route
+      // position, so simply visiting a route directly can never advance
+      // it, and normal back-navigation never regresses it.
+      return {
+        ...state,
+        furthestReachedStepIndex: Math.max(
+          state.furthestReachedStepIndex,
+          action.index
+        )
       };
     default:
       return state;

@@ -139,7 +139,11 @@ describe("case setup workflow", () => {
     expect(
       within(setupProgress).getByRole("link", { name: /Charge Sheet/i })
     ).not.toHaveTextContent("Complete");
-    expect(within(setupProgress).getAllByText("Complete")).toHaveLength(2);
+    // Direct navigation to a later route must never fabricate completion
+    // history: Advocates/Judges have default-valid data but were never
+    // actually reached via a genuine Continue transition, so neither shows
+    // Complete even though this lands directly on Review.
+    expect(within(setupProgress).queryAllByText("Complete")).toHaveLength(0);
     expect(screen.getByRole("button", { name: "Convene Tribunal" })).toBeDisabled();
     // An invalid Charge Sheet blocks Save Case too — a case cannot be
     // persisted without its three required fields, regardless of
@@ -149,6 +153,174 @@ describe("case setup workflow", () => {
       screen.getByText(/tribunal configuration cannot be frozen yet/i)
     ).toBeVisible();
     expect(screen.getByText(/charge sheet fields must be complete/i)).toBeVisible();
+  });
+
+  describe("setup stepper completion semantics", () => {
+    it("does not mark Advocates or Judges Complete on a fresh setup, even though their default data is already valid", () => {
+      renderWithAppProviders(<AppRoutes />);
+
+      const setupProgress = screen.getByLabelText("Case setup progress");
+
+      expect(
+        within(setupProgress).getByRole("link", { name: /Advocates/i })
+      ).not.toHaveTextContent("Complete");
+      expect(
+        within(setupProgress).getByRole("link", { name: /Judges/i })
+      ).not.toHaveTextContent("Complete");
+      expect(within(setupProgress).queryAllByText("Complete")).toHaveLength(0);
+    });
+
+    it("marks a step Complete only once genuinely left via a validated Continue, never merely because it is current and valid", async () => {
+      const user = userEvent.setup();
+      renderWithAppProviders(<AppRoutes />);
+
+      let setupProgress;
+
+      await user.type(screen.getByLabelText(/defendant/i), "Alex Rowan");
+      await user.type(screen.getByLabelText(/^act/i), "Entered the restricted lab.");
+      await user.type(
+        screen.getByLabelText(/exact question/i),
+        "Did Alex knowingly violate the lab protocol?"
+      );
+      await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
+
+      setupProgress = screen.getByLabelText("Case setup progress");
+      expect(
+        within(setupProgress).getByRole("link", { name: /Charge Sheet/i })
+      ).toHaveTextContent("Complete");
+      // Advocates is now the current step; its default data is valid, but
+      // it must not show Complete merely for being current and valid.
+      expect(
+        within(setupProgress).getByRole("link", { name: /Advocates/i })
+      ).not.toHaveTextContent("Complete");
+      expect(
+        within(setupProgress).getByRole("link", { name: /Judges/i })
+      ).not.toHaveTextContent("Complete");
+
+      await user.click(screen.getByRole("link", { name: /continue to judges/i }));
+
+      setupProgress = screen.getByLabelText("Case setup progress");
+      expect(
+        within(setupProgress).getByRole("link", { name: /Charge Sheet/i })
+      ).toHaveTextContent("Complete");
+      expect(
+        within(setupProgress).getByRole("link", { name: /Advocates/i })
+      ).toHaveTextContent("Complete");
+      expect(
+        within(setupProgress).getByRole("link", { name: /Judges/i })
+      ).not.toHaveTextContent("Complete");
+
+      await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+
+      setupProgress = screen.getByLabelText("Case setup progress");
+      expect(
+        within(setupProgress).getByRole("link", { name: /Charge Sheet/i })
+      ).toHaveTextContent("Complete");
+      expect(
+        within(setupProgress).getByRole("link", { name: /Advocates/i })
+      ).toHaveTextContent("Complete");
+      expect(
+        within(setupProgress).getByRole("link", { name: /Judges/i })
+      ).toHaveTextContent("Complete");
+      // Review is the current step and never shows Complete itself.
+      expect(
+        within(setupProgress).getByRole("link", { name: /Review/i })
+      ).not.toHaveTextContent("Complete");
+    });
+
+    it("preserves legitimately reached completion across back-navigation, but keeps it gated on current validity", async () => {
+      const user = userEvent.setup();
+      renderWithAppProviders(<AppRoutes />);
+
+      await user.type(screen.getByLabelText(/defendant/i), "Alex Rowan");
+      await user.type(screen.getByLabelText(/^act/i), "Entered the restricted lab.");
+      await user.type(
+        screen.getByLabelText(/exact question/i),
+        "Did Alex knowingly violate the lab protocol?"
+      );
+      await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
+      await user.click(screen.getByRole("link", { name: /continue to judges/i }));
+      await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+
+      // Back-navigate all the way to Charge Sheet via the stepper itself.
+      await user.click(
+        within(screen.getByLabelText("Case setup progress")).getByRole("link", {
+          name: /Charge Sheet/i
+        })
+      );
+
+      let setupProgress = screen.getByLabelText("Case setup progress");
+      expect(
+        within(setupProgress).getByRole("link", { name: /Advocates/i })
+      ).toHaveTextContent("Complete");
+      expect(
+        within(setupProgress).getByRole("link", { name: /Judges/i })
+      ).toHaveTextContent("Complete");
+
+      // Invalidate Advocates: navigate there and clear PRO I's personality.
+      await user.click(
+        within(screen.getByLabelText("Case setup progress")).getByRole("link", {
+          name: /Advocates/i
+        })
+      );
+      await user.clear(
+        screen.getByLabelText(/PRO I personality/i, { selector: "textarea" })
+      );
+
+      // Navigate away so Advocates' own badge (suppressed while current) is
+      // observable again.
+      await user.click(
+        within(screen.getByLabelText("Case setup progress")).getByRole("link", {
+          name: /Charge Sheet/i
+        })
+      );
+
+      setupProgress = screen.getByLabelText("Case setup progress");
+      expect(
+        within(setupProgress).getByRole("link", { name: /Advocates/i })
+      ).not.toHaveTextContent("Complete");
+      // Judges was untouched and remains Complete -- invalidation does not
+      // cascade to unrelated, already-reached steps.
+      expect(
+        within(setupProgress).getByRole("link", { name: /Judges/i })
+      ).toHaveTextContent("Complete");
+
+      // Restore validity: Advocates was already reached, so Complete
+      // returns without needing to "Continue" through it again.
+      await user.click(
+        within(screen.getByLabelText("Case setup progress")).getByRole("link", {
+          name: /Advocates/i
+        })
+      );
+      await user.type(
+        screen.getByLabelText(/PRO I personality/i, { selector: "textarea" }),
+        "Restored PRO I personality."
+      );
+      await user.click(
+        within(screen.getByLabelText("Case setup progress")).getByRole("link", {
+          name: /Charge Sheet/i
+        })
+      );
+
+      setupProgress = screen.getByLabelText("Case setup progress");
+      expect(
+        within(setupProgress).getByRole("link", { name: /Advocates/i })
+      ).toHaveTextContent("Complete");
+    });
+
+    it("does not fabricate completion history merely from directly visiting a later route", () => {
+      renderWithAppProviders(<AppRoutes />, "/new/judges");
+
+      const setupProgress = screen.getByLabelText("Case setup progress");
+
+      expect(
+        within(setupProgress).getByRole("link", { name: /Charge Sheet/i })
+      ).not.toHaveTextContent("Complete");
+      expect(
+        within(setupProgress).getByRole("link", { name: /Advocates/i })
+      ).not.toHaveTextContent("Complete");
+      expect(within(setupProgress).queryAllByText("Complete")).toHaveLength(0);
+    });
   });
 
   it("renders exactly four fixed advocates and exactly three fixed judges", () => {
@@ -408,6 +580,23 @@ describe("case setup workflow", () => {
       "/api/import/tribunal-package",
       expect.objectContaining({ method: "POST" })
     );
+    // A successful package import validly populates the Charge Sheet and
+    // all seven participants in one atomic step -- the same forward
+    // progression as walking Continue -> Continue -> Review Tribunal by
+    // hand, so it marks the same three prior steps Complete on arrival.
+    const setupProgress = screen.getByLabelText("Case setup progress");
+    expect(
+      within(setupProgress).getByRole("link", { name: /Charge Sheet/i })
+    ).toHaveTextContent("Complete");
+    expect(
+      within(setupProgress).getByRole("link", { name: /Advocates/i })
+    ).toHaveTextContent("Complete");
+    expect(
+      within(setupProgress).getByRole("link", { name: /Judges/i })
+    ).toHaveTextContent("Complete");
+    expect(
+      within(setupProgress).getByRole("link", { name: /Review/i })
+    ).not.toHaveTextContent("Complete");
   });
 
   it("freezes a valid Tribunal configuration on Convene and remains on Review", async () => {
@@ -868,5 +1057,11 @@ describe("case setup workflow", () => {
     expect(await screen.findByText(/Missing package section/)).toBeVisible();
     expect(screen.getByDisplayValue("Manual Alex")).toBeVisible();
     expect(screen.getByRole("heading", { name: "Charge Sheet" })).toBeVisible();
+    // An invalid package import must not advance completion state.
+    expect(
+      within(screen.getByLabelText("Case setup progress")).queryAllByText(
+        "Complete"
+      )
+    ).toHaveLength(0);
   });
 });

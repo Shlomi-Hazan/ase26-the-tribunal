@@ -13,6 +13,7 @@ import { PageHeader } from "../components/PageHeader";
 import { SetupStepper } from "../components/SetupStepper";
 import {
   chargeSheetLimits,
+  SETUP_STEP_INDEX,
   validateChargeSheet
 } from "../features/case-setup/setupState";
 import { useSetup } from "../features/case-setup/useSetup";
@@ -77,6 +78,10 @@ export function ChargeSheetPage() {
       return;
     }
 
+    dispatch({
+      type: "advanceFurthestStep",
+      index: SETUP_STEP_INDEX.ADVOCATES
+    });
     navigate("/new/advocates");
   }
 

@@ -4,12 +4,15 @@ import { ExecutionModeControl } from "../components/ExecutionModeControl";
 import { PageHeader } from "../components/PageHeader";
 import { ParticipantCard } from "../components/ParticipantCard";
 import { SetupStepper } from "../components/SetupStepper";
-import { areJudgePersonalitiesValid } from "../features/case-setup/setupState";
+import {
+  areJudgePersonalitiesValid,
+  SETUP_STEP_INDEX
+} from "../features/case-setup/setupState";
 import { useSetup } from "../features/case-setup/useSetup";
 import { judgeParticipants } from "../mocks/tribunalMockData";
 
 export function JudgesPage() {
-  const { state } = useSetup();
+  const { state, dispatch } = useSetup();
   const canContinue = areJudgePersonalitiesValid(state);
 
   return (
@@ -39,7 +42,17 @@ export function JudgesPage() {
           Back
         </Button>
         {canContinue ? (
-          <Button component={RouterLink} to="/new/review" variant="contained">
+          <Button
+            component={RouterLink}
+            onClick={() =>
+              dispatch({
+                type: "advanceFurthestStep",
+                index: SETUP_STEP_INDEX.REVIEW
+              })
+            }
+            to="/new/review"
+            variant="contained"
+          >
             Review Tribunal
           </Button>
         ) : (
