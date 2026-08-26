@@ -20,12 +20,22 @@
 | 5 | `a33edf4…` | `feat: wire Tribunal configuration freeze` |
 | 6 | `73a6ea9…` | `docs: record Milestone 6 pre-live verification` |
 | 7 | `2a2eb32…` | `fix: harden Milestone 6 freeze boundary` |
-| 8 | *(this commit)* | `docs: correct Milestone 6 pre-live evidence` |
+| 8 | `fa81f7e…` | `docs: correct Milestone 6 pre-live evidence` |
+| 9 | `f57fd1a…` | `fix: repair integrated local development routing` |
+| 10 | `0ea646f…` | `fix: track setup step completion accurately` |
+| 11 | `e4ef0c0…` | `fix: complete setup steps only after leaving them` |
+| 12 | *(this evidence-update commit, recorded after commit)* | `docs: record Milestone 6 live Supabase verification` |
 
 Commits 1–3 are the pre-existing planning gate (out of scope for this
 implementation pass, listed here only for a complete branch history).
-Commits 4–6 are the implementation pass. Commits 7–8 are this narrow
-pre-live correction pass (see "Pre-live correction pass" below).
+Commits 4–6 are the implementation pass. Commits 7–8 are the narrow
+pre-live SQL correction pass (see "Pre-live correction pass" below).
+Commit 9 is an infrastructure-only fix to `npm run dev:netlify` (see
+"Local development environment fix" below). Commits 10–11 are two setup-
+stepper Complete-badge correctness passes (see "Setup stepper completion
+UX fixes" below). Commit 12 records this task's real, live Supabase
+integration gate — see "Live Supabase integration gate" below, which is
+the authoritative record of the migration actually being applied.
 
 ## Scope implemented
 
@@ -34,7 +44,13 @@ validation → idempotent case resolution → immutable run/configuration
 freeze → `READY` → remains on Review. No model/OpenRouter call exists
 anywhere in this scope.
 
-## Migration (NOT applied to any real database in this task)
+## Migration
+
+**This migration is now APPLIED to the real linked Supabase database** — see
+"Live Supabase integration gate" below for the exact application evidence.
+It was not applied during the implementation or pre-live correction passes
+that originally wrote the section below; that history is preserved as
+written at the time.
 
 `supabase/migrations/20260825214212_participant_configuration.sql` — one
 new forward migration, created via
@@ -327,14 +343,79 @@ commit (`79b83f9…`), verified still in effect by the
   pricing is M7 scope). No copy implies model execution occurs, and Convene
   still never navigates to `/demo/deliberation`.
 
+## Local development environment fix
+
+`npm run dev:netlify` served a blank page (Vite import-analysis errors
+against `index.html`, e.g. `Rewrote URL to /index.html` followed by
+`Failed to parse source for import analysis`) whenever a local `dist/`
+build artifact existed (e.g. after `npm run build`/`npm run verify`, both
+normal parts of this workflow). Root cause: Netlify Dev's SPA catch-all
+redirect (`/* -> /index.html status=200`, required for production deep
+links) was resolving against the local publish directory instead of
+transparently proxying Vite's own asset/module requests
+(`/src/main.tsx`, `/@vite/client`) to the running Vite dev server.
+**Fixed** by setting `[dev].publish = "public"` in `netlify.toml` — a
+directory this project doesn't have, so it can never shadow the proxy;
+`[build].publish = "dist"` (production) and its SPA fallback are
+untouched. Verified directly against a running `netlify dev`: asset/module
+requests return real JavaScript, `/api/*` still reaches the real functions,
+and a fresh full-page navigation to a deep client route (`/cases/:id`)
+still receives the HTML shell. Separately, the four
+`netlify/functions/*.test.ts` files (which Netlify's function discovery
+was treating as deployable functions, warning about invalid names) were
+moved into `netlify/functions/__tests__/` — outside the top-level function
+scan and not matching the directory-function naming convention — with
+only their relative imports adjusted; no test logic changed. Commit
+`f57fd1a`.
+
+## Setup stepper completion UX fixes
+
+Two passes corrected `SetupStepper`'s `Complete` badge, which conflated
+"this step's current data is valid" with "the user has actually reached
+and left this step":
+
+1. **`0ea646f`** — on a fresh setup the stepper immediately showed
+   "2 Advocates Complete" / "3 Judges Complete" merely because their
+   default personalities are already valid, before the user had ever
+   visited either page. Fixed by adding `SetupState.furthestReachedStepIndex`,
+   advanced only by an explicit `advanceFurthestStep` action dispatched
+   from a validated forward transition (Charge Sheet's "Continue to
+   Advocates", Advocates' "Continue to Judges", Judges' "Review Tribunal",
+   or a successful Full Tribunal Package import) — never from route
+   position alone, and never regressed by back-navigation. The badge then
+   requires the step to be reached, currently valid, and not the active
+   step.
+2. **`e4ef0c0`** — a further independent review found the completion rule
+   used `index <= furthestReachedStepIndex`, but that field records the
+   furthest step *reached*, not *completed*: `Continue to Advocates` sets
+   it to `ADVOCATES` the instant Advocates becomes active, before its own
+   data is ever confirmed. With `<=`, reaching a step and immediately
+   pressing Back without ever clicking that step's own Continue still
+   showed it as Complete once inactive. Fixed by changing the comparison
+   to strict `index < furthestReachedStepIndex` — a step now reads
+   Complete only once some *later* step has genuinely been reached, i.e.
+   only after the step itself was actually left forward.
+
+Both passes were verified live via `npm run dev:netlify` and direct
+browser interaction (fresh setup → no premature Complete; full
+Charge → Advocates → Judges → Review progression → badges appear at
+exactly the right point; Charge → Advocates → immediate Back → no
+Complete anywhere; Charge → Advocates → Judges → immediate Back → Judges
+correctly not Complete, Charge Sheet still Complete; continuing forward
+from there still reaches Review with all three prior steps Complete), in
+addition to the automated tests listed below. Neither pass touched
+persistence, RPC, or API semantics.
+
 ## Tests
 
 The test breakdown recorded in this document's initial (pre-correction)
-version was inaccurate. The table below is corrected against the exact
-count from the last CI run **before** this correction pass, then shows what
-this correction pass added.
+version was inaccurate. The first table below is corrected against the
+exact count from the last CI run **before** the pre-live SQL correction
+pass, then shows what that pass added; the second table shows the two
+further passes since then, ending at the count current as of this live
+Supabase gate.
 
-| File | Before this pass | Added | After this pass |
+| File | Before pre-live pass | Added | After pre-live pass |
 |---|---|---|---|
 | `netlify/functions/health.test.ts` | 2 | — | 2 |
 | `netlify/server/supabase.test.ts` | 3 | — | 3 |
@@ -350,14 +431,28 @@ this correction pass added.
 | `src/features/case-setup/caseSetup.test.tsx` | 19 | +2 (client_request_id lifecycle) | 21 |
 | **Total** | **99** | **+7** | **106** |
 
-**12 test files, 106 tests, all passing** — verified by an actual local run
-of `npm run test` in this session (not carried forward from memory), listed
-test-by-test with `vitest run --reporter=verbose` and cross-checked against
-this table. The prior version of this document additionally claimed "84
-tests existed before this milestone; 15 are new to M6" — that specific
-84/15 split was not derived from Git history and is retracted rather than
-repeated; the verified-correct total immediately before this correction
-pass was 99 (per the table above), not re-derived further back.
+The prior version of this document additionally claimed "84 tests existed
+before this milestone; 15 are new to M6" — that specific 84/15 split was
+not derived from Git history and was retracted rather than repeated; the
+verified-correct total immediately before the pre-live correction pass was
+99, not re-derived further back.
+
+Since the 106-test pre-live baseline, two further passes changed the count
+(neither touched persistence/RPC semantics):
+
+| Change | File(s) | Delta |
+|---|---|---|
+| Local dev routing fix (`f57fd1a`) | moved `netlify/functions/{health,import,cases,runs}.test.ts` into `netlify/functions/__tests__/` (imports adjusted, no test added/removed/weakened) | 0 |
+| Setup stepper fix pass 1 (`0ea646f`) | `src/features/case-setup/caseSetup.test.tsx` | +4 (fresh-setup, full-progression, back-navigation/invalidate/restore, direct-route-navigation) |
+| Setup stepper fix pass 2 (`e4ef0c0`) | `src/features/case-setup/caseSetup.test.tsx` | +2 (reached-but-not-completed Advocates/Judges regression tests) |
+| **Total (this live gate's pre-existing baseline)** | | **106 → 112** |
+
+**12 test files, 112 tests, all passing** — this is the exact count verified
+live in this task by an actual local run of `npm run test` (not carried
+forward from memory), listed test-by-test with
+`vitest run --reporter=verbose` and cross-checked against the table above.
+This matches the task's stated pre-live baseline of 112 tests / 12 files
+exactly.
 
 New this correction pass:
 
@@ -385,11 +480,13 @@ caller-supplied `role`/`side`/`promptVersion` rejected, `profileName`/
 `personality` bounds, personality source/filename cross-field rules,
 `modelId` 1/256/257-char boundaries, control characters/DEL rejected,
 Shared-mode model mismatch rejected — **note: this specific test proves
-only the TypeScript/Zod-level rejection; the newly added DB-level Shared
-invariant inside the freeze RPC has not yet been exercised against a real
-Postgres engine, see "Migration security inspection" below** —, malformed
-case union, invalid `caseId`, extra structural top-level fields rejected);
-`validateRunId` (valid/invalid UUID).
+only the TypeScript/Zod-level rejection; at the time this was written the
+DB-level Shared invariant inside the freeze RPC had not yet been exercised
+against a real Postgres engine — it has been since, directly, against the
+real deployed function; see "Live Supabase integration gate" below (Test A,
+"Direct RPC negative tests")** —, malformed case union, invalid `caseId`,
+extra structural top-level fields rejected); `validateRunId` (valid/invalid
+UUID).
 
 `netlify/functions/runs.test.ts` — valid accept returns `READY` with no
 internal metadata (`fingerprint`/`convene_request_id`/`client_request_id`)
@@ -410,12 +507,33 @@ case is reused via `case.kind: "existing"`; a case edited after saving is
 resubmitted as `case.kind: "new"`; server `409` and `400` responses are both
 shown honestly without navigating away.
 
+(Note: `netlify/functions/{health,import,cases,runs}.test.ts` above now
+live under `netlify/functions/__tests__/` after the local dev routing fix
+— see "Local development environment fix" below — same tests, same
+assertions, only their file location and relative imports moved.)
+
+New in the two setup-stepper completion passes (`0ea646f`, `e4ef0c0`; see
+"Setup stepper completion UX fixes" below for the underlying bug/fix) —
+`caseSetup.test.tsx`: fresh setup shows neither Advocates nor Judges
+Complete despite valid defaults; a step shows Complete only once genuinely
+left via Continue, never merely for being current and valid (full
+Charge Sheet → Advocates → Judges → Review progression); back-navigation
+preserves legitimately reached completion, invalidating a
+previously-completed participant removes its Complete status, and
+restoring validity brings it back; directly visiting a later route does
+not fabricate completion history; a Full Tribunal Package import marks the
+first three steps Complete on arrival at Review; reaching Advocates (or
+Judges) and immediately pressing Back without confirming that step via its
+own Continue does **not** mark it Complete (the specific edge case
+`e4ef0c0` fixed) — and continuing forward normally afterward still reaches
+Review with all three prior steps correctly Complete.
+
 ## Automated verification
 
 ```text
 npm run lint        PASS
 npm run typecheck   PASS
-npm run test        PASS (12 files, 106 tests)
+npm run test        PASS (12 files, 112 tests)
 npm run build       PASS
 npm run verify:client-bundle   PASS (no secret in client bundle)
 npm run verify      PASS (full chain)
@@ -507,15 +625,290 @@ Supabase gate, and this document does not claim otherwise.
 - [x] No secret, credential, project ref, or `.env` content appears in the
       migration or in this document.
 
-**This migration has NOT been applied to any real Supabase database in this
-task.** No `supabase db push` or equivalent was run. Read-only confirmation
-via `npx supabase@2.115.0 migration list --linked` (a listing call, not a
-schema-modifying one) shows both M5 migrations as `local == remote` and the
-M6 migration with an **empty** `remote` field — i.e. not applied. Real
-Supabase live smoke testing of this schema/RPC (including the two
-corrections in this pass) is therefore explicitly **NOT VERIFIED** and is
-out of scope for this task by instruction; the corrected migration is to
-receive one more independent audit before remote application.
+**At the time this static-review section was originally written, this
+migration had NOT been applied to any real Supabase database** — that
+sentence is preserved as written then. **It has since been applied**, in
+this task, after one more independent audit as anticipated above; see
+"Live Supabase integration gate" immediately below for the full live
+application, schema, function, privilege, and behavioral evidence.
+
+## Live Supabase integration gate
+
+This section records the real, live Milestone 6 Supabase integration —
+the migration being applied to the actual linked database and every
+behavior above being re-verified against it directly, not statically.
+Every result below is reproduced from an actual command run in this task;
+none is inferred or assumed. No project URL, project ref, database
+password, secret key, access token, or `.env` content appears anywhere in
+this section.
+
+### 1. Starting state
+
+Before touching Supabase: branch `milestone/06-participant-configuration`,
+local `HEAD` == remote branch `HEAD` == `e4ef0c0cbc4b195e084f580dd728e737248ecb0d`,
+`origin/main` == `fece1e159dff7e18fb53d186564cfb298d4ae6eb`, PR #10 `OPEN`,
+Issue #9 `OPEN`, working tree clean except untracked `.claude/`, `.env`
+present and gitignored (confirmed via `git check-ignore -v .env` and
+`git ls-files .env` returning nothing), `SUPABASE_URL` and
+`SUPABASE_SERVICE_ROLE_KEY` both present and non-empty (checked by length
+only, never printed), and both M5 migrations byte-identical to
+`origin/main` (`git diff origin/main...HEAD -- <both M5 migration paths>`
+empty).
+
+### 2. Pre-push migration history
+
+`npx supabase@2.115.0 migration list` (read-only):
+
+```json
+{"migrations":[
+  {"local":"20260825000000","remote":"20260825000000"},
+  {"local":"20260825204419","remote":"20260825204419"},
+  {"local":"20260825214212","remote":""}
+]}
+```
+
+Both M5 migrations `local == remote`; M6 `remote` empty — not yet applied,
+exactly as required before proceeding.
+
+### 3. Dry run
+
+`npx supabase@2.115.0 db push --dry-run`:
+
+```
+Would push these migrations:
+ • 20260825214212_participant_configuration.sql
+```
+
+Exactly one pending migration, no seeds, no roles — the only expected
+migration.
+
+### 4. Migration applied
+
+`npx supabase@2.115.0 db push` → `"upToDate":false,"dryRun":false,"migrations":["20260825214212_participant_configuration.sql"]`.
+Re-ran `migration list` immediately after:
+
+```json
+{"migrations":[
+  {"local":"20260825000000","remote":"20260825000000"},
+  {"local":"20260825204419","remote":"20260825204419"},
+  {"local":"20260825214212","remote":"20260825214212"}
+]}
+```
+
+All three `local == remote`. **`20260825214212_participant_configuration.sql`
+is now immutable historical truth and was not edited afterward** (any
+future correction, if ever needed, requires a new forward migration).
+
+### 5. Real remote schema
+
+Queried directly via `npx supabase@2.115.0 db query --linked` against
+`information_schema.columns`, `pg_constraint`, `pg_class.relrowsecurity`,
+`information_schema.role_table_grants`, and `pg_policies` — not inferred
+from the source file.
+
+**`public.cases`**: `convene_request_id` exists, `text`, nullable
+(`is_nullable = YES`); `cases_convene_request_id_key` is a real `UNIQUE`
+constraint (`contype = 'u'`); `relrowsecurity = true`; grants are exactly
+`service_role: SELECT, INSERT` (no `UPDATE`/`DELETE`; `postgres`, the table
+owner, is expected and is not an application-facing role); no rows at all
+for `anon`/`authenticated` in `role_table_grants`, confirming zero
+privileges; `pg_policies` empty (no browser/public policy).
+
+**`public.tribunal_runs`**: columns exactly `id, case_id, client_request_id,
+request_fingerprint, execution_mode, status, created_at`; constraints
+exactly `tribunal_runs_case_id_fkey` (FK → `cases(id)`),
+`tribunal_runs_client_request_id_key` (`UNIQUE`),
+`tribunal_runs_execution_mode_check` (`SHARED`/`SEPARATE`),
+`tribunal_runs_status_check` (the full 7-value `SPEC.md` vocabulary),
+`tribunal_runs_request_fingerprint_format`
+(`~ '^[0-9a-f]{64}$'`); `relrowsecurity = true`; grants exactly
+`service_role: SELECT` (no `INSERT`/`UPDATE`/`DELETE`); no
+`anon`/`authenticated` rows; `pg_policies` empty.
+
+**`public.participant_configs`**: columns exactly `id, run_id,
+participant_key, role, side, profile_name, personality_text,
+personality_source, personality_source_filename, model_id, prompt_version,
+created_at`; constraints exactly matching the migration —
+`participant_configs_run_key_unique` (`UNIQUE(run_id, participant_key)`),
+`participant_configs_participant_key_check` (exactly the 7 known keys),
+`participant_configs_role_check`, `participant_configs_side_check`,
+`participant_configs_role_side_consistency`,
+`participant_configs_profile_name_check`,
+`participant_configs_personality_text_check`,
+`participant_configs_personality_source_check`,
+`participant_configs_source_filename_check`,
+`participant_configs_source_filename_required`,
+`participant_configs_model_id_check`; `relrowsecurity = true`; grants
+exactly `service_role: SELECT`; no `anon`/`authenticated` rows;
+`pg_policies` empty.
+
+### 6. Real stored freeze function
+
+`pg_get_functiondef` on `public.freeze_participant_configuration` was
+pulled directly from the live database and is **byte-identical** to the
+migration source: `language plpgsql`, `security definer`,
+`proconfig = ["search_path=\"\""]` (empty `search_path`), every table
+reference schema-qualified (`public.tribunal_runs`, `public.participant_configs`),
+no dynamic SQL, the exactly-seven/known-key check, the independent
+DB-level Shared-mode `model_id` equality check (gated on
+`p_execution_mode = 'SHARED'` only), the structural `model_id` validation
+loop, the application-owned `'unassigned-pre-m7'` literal, the fingerprint
+format check, and the alias-qualified `INSERT INTO public.tribunal_runs AS
+new_run ... RETURNING new_run.id`.
+
+**Function privileges** (`information_schema.role_routine_grants`): exactly
+`postgres: EXECUTE` (owner, not application-facing) and
+`service_role: EXECUTE` — no `PUBLIC`, `anon`, or `authenticated` rows,
+confirming `EXECUTE` is denied to all three and granted only to
+`service_role`.
+
+### 7. Direct RPC negative tests
+
+Called `public.freeze_participant_configuration(...)` directly via SQL
+against a real persisted case (`057a244d-c35d-4c8f-a224-80816d07db59`),
+with a structurally valid but semantically-wrong payload each time, and
+verified `public.tribunal_runs`/`public.participant_configs` row counts
+before and after.
+
+- **Test A — SHARED mismatch** (six participants share one `model_id`,
+  one differs): `ERROR: 22023: shared execution mode requires all seven
+  participants to use the same model_id`. Row counts: 0 runs, 0 configs
+  before and after — **FAIL, nothing persisted**.
+- **Test B — structurally invalid `model_id`** (whitespace-only, `"   "`,
+  in `SEPARATE` mode): `ERROR: 22023: invalid or missing model_id`. Row
+  counts: 0 runs, 0 configs before and after — **FAIL, nothing persisted**.
+
+### 8. Direct RPC positive tests — SHARED
+
+Same case, fresh `client_request_id`, all seven participants sharing
+`model_id = "mock/free-deliberator"`, `SHARED`:
+
+- **Success**: returned `status = READY`; DB confirms 1 run, 7
+  `participant_configs` rows for that run, each with the correct
+  `role`/`side` (`advocate-pro-*` → `ADVOCATE`/`PRO`, `advocate-con-*` →
+  `ADVOCATE`/`CON`, `judge-*` → `JUDGE`/`NULL`) and
+  `prompt_version = 'unassigned-pre-m7'` on all seven.
+- **Exact replay** (same `client_request_id`, same fingerprint): returned
+  the identical run `id` and identical `created_at` timestamp — still
+  exactly 1 run, still exactly 7 configs (no duplicate insert).
+- **Same `client_request_id`, different valid-format fingerprint**:
+  `ERROR: P0001: idempotency_conflict` (with `HINT: idempotency_conflict`).
+  The original run row is unchanged (same `id`, same `request_fingerprint`,
+  same `created_at`) and still exactly 1 run total — no second run.
+
+### 9. Direct RPC positive test — SEPARATE
+
+Fresh `client_request_id`, same case, seven **distinct** valid `model_id`
+values, `SEPARATE`: **Success** — `status = READY`, 7 configs persisted.
+This directly proves the SHARED equality check does not incorrectly apply
+to SEPARATE mode (the DB-level check is explicitly gated on
+`p_execution_mode = 'SHARED'` — confirmed both by reading the deployed
+function definition in step 6 and by this passing call).
+
+### 10. Real application API — existing case
+
+Via a running `npm run dev:netlify`: `POST /api/runs` with a valid UUID
+`clientRequestId`, `case.kind = "existing"` referencing a real persisted
+case, and a valid seven-participant `SHARED` configuration → **HTTP 201**,
+`status: "READY"`, all 7 participants present in canonical
+`advocate-pro-1, advocate-pro-2, advocate-con-1, advocate-con-2, judge-1,
+judge-2, judge-3` order. The full response body was inspected directly:
+it contains no `requestFingerprint`, `clientRequestId`, or
+`convene_request_id` key anywhere, and no economics/speech/verdict field
+of any kind. `GET /api/runs/:id` on the returned id → **HTTP 200**,
+byte-identical body to the `POST` response (exact frozen round-trip).
+
+### 11. Real application API — new case
+
+`POST /api/runs` with `case.kind = "new"` and a fresh `clientRequestId` →
+**HTTP 201**. Direct DB query on the returned `caseId` confirms exactly
+one new `cases` row, with `convene_request_id` internally set to the
+request's `clientRequestId` (never exposed in the public response — a
+`grep` of the raw response body for `convene_request_id` found nothing),
+exactly one `tribunal_runs` row for that case, and exactly seven
+`participant_configs` rows for that run.
+
+### 12. Idempotency — lost-response retry and conflicts
+
+Repeating the **identical** new-case request with the **same**
+`clientRequestId` → **HTTP 201** again, with the identical `run.id` and
+`caseId` and identical `createdAt` as the first response — DB confirms
+still exactly 1 case, 1 run, 7 configs (no duplicates).
+
+Same `clientRequestId` + **changed case content** (different `defendant`)
+→ **HTTP 409 `idempotency_conflict`**; DB confirms still exactly 1 case
+matching the original content, 1 run — no duplicate case was created.
+
+Same `clientRequestId` + same case + **changed participant/model**
+(different `modelId` and `executionMode`) → **HTTP 409
+`idempotency_conflict`** again; DB confirms the original run's `id` and
+`execution_mode` (`SHARED`) are unchanged — it was never overwritten to
+`SEPARATE`.
+
+### 13. Concurrency
+
+Sent **two simultaneous** identical `case.kind = "new"` `POST /api/runs`
+requests (same fresh `clientRequestId`, identical body, fired in parallel
+via two backgrounded `curl` processes) → both returned **HTTP 201** with
+the **identical** `run.id` and `caseId`. Final DB state: exactly 1 case, 1
+run, 7 participant configs — no duplicate case/run/config set from the
+race. This is the mandatory live proof of the race-safe
+insert-first/catch-unique-violation design actually holding under real
+concurrent load against the real database, not merely reasoned about
+statically.
+
+### 14. M5 regression
+
+Two standalone `MANUAL` `POST /api/cases` requests → both **HTTP 201**,
+public response contract unchanged (no `convene_request_id` field, exact
+same shape as before M6). DB query confirms 4 rows with `convene_request_id
+IS NULL` coexisting without any constraint violation (the 2 original M5
+smoke-test rows plus these 2 new ones) — proving the nullable-unique
+column change is fully backward compatible with unlimited `NULL`s.
+`GET /api/cases` and `GET /api/cases/:id` both return **HTTP 200** with
+the expected case list/detail shape, `convene_request_id` never present.
+
+### 15. Import regression
+
+Re-tested against the real running server, no OpenRouter/model call:
+Charge Sheet `.txt` import → **HTTP 200**, normalized fields correct.
+Personality `.md` import → **HTTP 200**, normalized text correct. Full
+Tribunal Package import (`docs/examples/tribunal-package-v1.txt`) →
+**HTTP 200**. An invalid package (with `[JUDGE_3]` removed) →
+**HTTP 400** `{"error":"invalid_import","errors":["Missing package section
+[JUDGE_3]."]}`.
+
+### 16. Browser smoke
+
+Browser automation was available and used directly (one transient
+"Could not proxy request" mid-session, resolved by a clean restart of
+`npm run dev:netlify` — recorded honestly, not hidden; all evidence below
+is from the working session after that restart). Confirmed live:
+
+- Application shell loads at `http://localhost:8888`.
+- **Past Cases** lists real Supabase-persisted cases, including every
+  case created during this gate (M5's two original smoke cases plus the
+  M6-gate cases from steps 10–14 above) — real data, not fixtures, each
+  correctly showing "No verdict yet."
+- **Stepper semantics**: on a fresh Charge Sheet, no premature
+  Advocates/Judges `Complete`. After a validated `Continue to Advocates`,
+  the stepper showed "1 Charge Sheet COMPLETE / 2 Advocates" (no badge on
+  the active step). After `Continue to Judges`, "1 Charge Sheet COMPLETE /
+  2 Advocates COMPLETE / 3 Judges" — only prior genuinely-left steps show
+  Complete.
+- Full setup reached **Review** with "1 Charge Sheet COMPLETE / 2
+  Advocates COMPLETE / 3 Judges COMPLETE / 4 Review" (Review itself never
+  badged, as designed).
+- Clicking **Convene Tribunal** performed a real `POST /api/runs` against
+  the now-live schema and RPC. The page **remained on Review** (URL and
+  heading unchanged) and displayed exactly:
+  *"Tribunal configuration frozen. Model execution is not enabled yet. Run
+  ID: 06d035f4-e40d-447e-805e-024455cfc360"* — the Convene button changed
+  to a disabled "CONFIGURATION FROZEN" state (no re-arm). No navigation to
+  any mock/demo deliberation route occurred, and no speech, verdict, or
+  fake progress indicator appeared anywhere on the page. A direct DB query
+  on that exact run id confirmed `status = READY` with 7 persisted
+  `participant_configs` rows, matching what the browser displayed exactly.
 
 ## Explicit scope confirmation
 
@@ -536,24 +929,30 @@ Verified by `grep`/reading over the full branch diff against `origin/main`:
 
 ## Known limitations
 
-- Real Supabase live smoke testing of the M6 schema/RPC is unverified —
-  explicitly out of scope for this task (migration not applied).
-- Browser click-through of the Convene flow was not captured as screenshots
-  in this session; the equivalent behavior was verified through the full
-  automated test suite driving the real component tree
-  (`renderWithAppProviders`/`AppRoutes`) with a mocked `fetch`, exercising
-  the same client code path a browser would.
+The two limitations below were true at the time this section was
+originally written, before the live Supabase gate. Both are now resolved
+— see "Live Supabase integration gate" above — and are struck through
+rather than deleted, so the historical record stays honest about what was
+and wasn't known at each point:
+
+- ~~Real Supabase live smoke testing of the M6 schema/RPC is unverified —
+  explicitly out of scope for this task (migration not applied).~~
+  **Resolved**: the migration is applied and the schema/function/
+  privileges/RPC/API/idempotency/concurrency behavior is verified live —
+  see "Live Supabase integration gate."
+- ~~The two SQL-level corrections in this pass (Shared-mode DB invariant,
+  `RETURNING` alias qualification) are verified only by static reading…
+  not by executing the function against a real Postgres engine.~~
+  **Resolved**: both are now proven directly against the real deployed
+  function (Live Supabase integration gate, steps 6–9).
+- Browser click-through of the Convene flow was not captured as
+  screenshots in the pre-live implementation session; the equivalent
+  behavior was verified then through the full automated test suite
+  driving the real component tree with a mocked `fetch`. It has since
+  been captured live, with real browser interaction against the real
+  Supabase-backed server — see "Live Supabase integration gate," step 16.
 - The production build's pre-existing "chunk larger than 500 kB" warning is
   unchanged from M5 and not addressed here.
-- The two SQL-level corrections in this pass (Shared-mode DB invariant,
-  `RETURNING` alias qualification) are verified only by static reading and
-  by the authoritative PostgreSQL documentation cited above — not by
-  executing the function against a real Postgres engine. No disposable
-  local Supabase/Postgres stack was available for this repository in this
-  environment without provisioning new infrastructure (a local Supabase
-  stack was running, but it belonged to an unrelated project on the same
-  machine and was not used), so this remains deferred to the live gate,
-  consistent with instruction for this task.
 
 ## Pre-live correction pass
 
@@ -575,11 +974,16 @@ exact commit(s).
 
 ## Remote state
 
-Pushed to `origin/milestone/06-participant-configuration` after this
-correction pass's commits; local `HEAD` and remote branch `HEAD` match
-exactly (see the PR for the exact SHA). PR #10 to `main` remains open,
-still explicitly marked **not** ready to merge — see the PR body for the
-full `DO NOT MERGE` gate list, updated to reflect this correction pass. It
-was not merged. Issue #9 remains open. `main` was not touched. The M6
-migration remains unapplied to any real Supabase database (confirmed via
-the read-only `migration list --linked` check above).
+As of this commit: pushed to `origin/milestone/06-participant-configuration`;
+local `HEAD` and remote branch `HEAD` match exactly. **The M6 migration IS
+now applied to the real linked Supabase database** — see "Live Supabase
+integration gate" above; `npx supabase@2.115.0 migration list` shows all
+three migrations `local == remote`. This is the one piece of remote state
+that is genuinely mutated by this task; everything else (branch, PR,
+Issue, `main`) follows the same process this project has used at every
+prior gate: PR #10 is updated (see the PR body) with the truthful current
+test count and a summary of every fix since the last update, and is only
+taken off `DO NOT MERGE` and merged with a normal merge commit after this
+evidence is pushed and CI is confirmed green on the exact resulting head —
+never before. If this document is being read before that merge has
+happened, `main` has not yet been touched and Issue #9 is still open.
