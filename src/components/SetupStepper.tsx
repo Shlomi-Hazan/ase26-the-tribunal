@@ -3,7 +3,8 @@ import { Link as RouterLink, useLocation } from "react-router-dom";
 import {
   areAdvocatePersonalitiesValid,
   areJudgePersonalitiesValid,
-  isChargeSheetValid
+  isChargeSheetValid,
+  SETUP_STEP_INDEX
 } from "../features/case-setup/setupState";
 import { useSetup } from "../features/case-setup/useSetup";
 
@@ -21,19 +22,37 @@ export function SetupStepper() {
     steps.findIndex((step) => step.path === location.pathname),
     0
   );
-  const completeByPath: Record<string, boolean> = {
-    "/new/charge-sheet": isChargeSheetValid(state.chargeSheet),
-    "/new/advocates": areAdvocatePersonalitiesValid(state),
-    "/new/judges": areJudgePersonalitiesValid(state),
-    "/new/review": false
-  };
+  // Current data validity per step, indexed by SETUP_STEP_INDEX. Review has
+  // no standalone "valid" concept of its own (it never shows Complete --
+  // there is nothing past it to have "moved on" from).
+  const validByIndex: boolean[] = [];
+  validByIndex[SETUP_STEP_INDEX.CHARGE_SHEET] = isChargeSheetValid(state.chargeSheet);
+  validByIndex[SETUP_STEP_INDEX.ADVOCATES] = areAdvocatePersonalitiesValid(state);
+  validByIndex[SETUP_STEP_INDEX.JUDGES] = areJudgePersonalitiesValid(state);
+  validByIndex[SETUP_STEP_INDEX.REVIEW] = false;
 
   return (
     <Box aria-label="Case setup progress" component="nav">
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
         {steps.map((step, index) => {
           const active = index === activeIndex;
-          const complete = completeByPath[step.path];
+          // A step shows Complete only once it has genuinely been LEFT --
+          // strictly less than furthestReachedStepIndex, not <=. That
+          // field records the furthest step REACHED, not the furthest step
+          // COMPLETED: Continue to Advocates sets it to ADVOCATES the
+          // instant Advocates becomes the active step, before its own data
+          // has ever been confirmed. Using <= would let a step it read as
+          // Complete the moment it's merely reached (e.g. pressing Back
+          // immediately, without ever clicking that step's own Continue),
+          // even though the user never left it forward. Combined with the
+          // "not active" and "still currently valid" checks: validity and
+          // completion are deliberately not conflated -- default advocate/
+          // judge data is valid from the start, but that alone must never
+          // read as "reached," let alone "completed."
+          const complete =
+            !active &&
+            index < state.furthestReachedStepIndex &&
+            validByIndex[index];
 
           return (
             <Button

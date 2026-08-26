@@ -934,6 +934,78 @@ These are target criteria, not claims that implementation already exists.
 - **PART-006** — Manual and supported-file personality input both work within limits.
 - **PART-007** — Optional participant `profileName` is editable/importable, limited to 120 characters, and remains human-facing metadata.
 
+### CONFIG (Milestone 6)
+
+- **CONFIG-001** — An accepted run persists exactly seven participant
+  configurations, keyed by the seven fixed application participant
+  identifiers; a duplicate, missing, or unknown key is rejected.
+- **CONFIG-002** — Each participant's role and advocate side (where
+  applicable) is fixed by its participant key and cannot be altered by
+  user/import input.
+- **CONFIG-003** — `profileName` is persisted per participant as optional
+  human-facing metadata (`<=120` normalized characters) and never changes
+  role, side, or seat.
+- **CONFIG-004** — Shared-Model Mode persists the same `model_id` on all
+  seven participant rows.
+- **CONFIG-005** — Separate-Model Mode persists all seven independently
+  configured `model_id` values.
+- **CONFIG-006** — `model_id` is validated structurally before any
+  persistence occurs: trimmed, `1`–`256` characters, no C0 control
+  characters or `DEL`; no semantic/catalog check (that is Milestone 7's
+  responsibility). A value failing this bound is rejected.
+- **CONFIG-006A** — Personality source/filename combinations are
+  cross-field validated at freeze time, not trusted from the browser:
+  `manual` requires no filename; `individual_file`/`tribunal_package`
+  require a safe `.txt`/`.md` filename (same safe-filename rules
+  established for `cases` and imports in Milestone 5). A structurally
+  inconsistent combination is rejected before persistence.
+- **CONFIG-007** — Once accepted, a run's participant configuration is
+  immutable: no application-facing role (including `service_role`, the
+  only role application/server code ever authenticates as) has an
+  `INSERT`, `UPDATE`, or `DELETE` grant on `tribunal_runs` or
+  `participant_configs`; the one function that can write either table is
+  not itself an update path.
+- **CONFIG-008** — Accepting a run is idempotent on `client_request_id`; a
+  repeated request with the same identifier **and** an unchanged
+  normalized configuration returns the already-accepted run rather than
+  creating a second one.
+- **CONFIG-008A** — A repeated `client_request_id` whose normalized
+  configuration has materially changed is rejected with `409` and a
+  stable `idempotency_conflict` category; it never silently returns an
+  unrelated run and never creates a second one.
+- **CONFIG-009** — An accepted run references a valid, existing case,
+  selected by an unambiguous request (an existing `caseId` or new case
+  fields — never both). If the current setup's case was not already
+  saved, Convene creates it using the same validated case-creation path as
+  `Save Case`, as a step before — not inside the same atomic operation
+  as — freezing the run; a case may remain persisted even if the
+  subsequent freeze fails or conflicts.
+- **CONFIG-009A** — Only `tribunal_runs` together with its exactly seven
+  `participant_configs` rows is guaranteed atomic; a failed or conflicting
+  freeze never leaves a partial run or a `participant_configs` row count
+  other than 0 or 7 for that run.
+- **CONFIG-009B** — A new-case Convene request is itself idempotent: a
+  retry after a lost HTTP response (same `client_request_id`, same
+  normalized new-case fields) reuses the same case row rather than
+  creating a second one, and the request-level idempotency fingerprint
+  (CONFIG-008) is computed from the case's normalized *content*, never
+  from a generated case ID — so this retry correctly returns the existing
+  run rather than a false `409`. A same-key request whose new-case
+  content has materially changed is rejected `409 idempotency_conflict`
+  without modifying the existing case.
+- **CONFIG-010** — Accepting a run performs zero OpenRouter/model calls and
+  produces no advocate speech, judge verdict, or economics data.
+- **CONFIG-011** — A package-imported `TribunalSetupDraft` (Milestone 5)
+  can be accepted/frozen through the same path as a manually-configured
+  draft, with no additional constraints.
+- **CONFIG-012** — A run's `prompt_version` is application-owned, never
+  user/import-controlled; a run frozen with the pre-Milestone-7 prompt
+  placeholder is a configuration-stage record only, and a later milestone
+  must not execute it while that placeholder remains. `READY` means
+  accepted/frozen configuration, not execution-eligible.
+- **CONFIG-013** — A successful Milestone 6 Convene never navigates to, or
+  displays content from, a mock/fabricated deliberation or result state.
+
 ### OUTPUT
 
 - **OUT-001** — Advocate output must be schema-valid JSON with non-empty `speech`.

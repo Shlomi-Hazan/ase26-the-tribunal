@@ -13,6 +13,7 @@ import { PageHeader } from "../components/PageHeader";
 import { SetupStepper } from "../components/SetupStepper";
 import {
   chargeSheetLimits,
+  SETUP_STEP_INDEX,
   validateChargeSheet
 } from "../features/case-setup/setupState";
 import { useSetup } from "../features/case-setup/useSetup";
@@ -77,6 +78,10 @@ export function ChargeSheetPage() {
       return;
     }
 
+    dispatch({
+      type: "advanceFurthestStep",
+      index: SETUP_STEP_INDEX.ADVOCATES
+    });
     navigate("/new/advocates");
   }
 
@@ -142,7 +147,7 @@ export function ChargeSheetPage() {
       <PageHeader
         eyebrow="New Case"
         title="Charge Sheet"
-        description="Define the case in three deterministic fields before any mock deliberation can be reviewed."
+        description="Define the case in three deterministic fields before configuring the Tribunal."
       />
       <Paper component="form" noValidate sx={{ p: { xs: 2, md: 4 } }}>
         <Stack spacing={3}>

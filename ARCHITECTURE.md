@@ -443,16 +443,57 @@ Exact route filenames are implementation details, but the V1 HTTP contract shoul
 
 `POST /api/runs`
 
-Request includes a stable `client_request_id` plus case and seven participant configurations.
+Request includes a stable `client_request_id`, a discriminated `case`
+field (`{ kind: "existing", caseId }` or `{ kind: "new", ...CreateCaseInput }`
+— never both), and seven participant configurations.
 
-Server:
+Server, in the following precise order (`docs/adr/0002-participant-configuration-freeze.md`
+Decision 10 — the exact ordering is the fix for a real defect an
+independent review found in an earlier draft, see below):
 
-- validates again independently of browser
-- reruns authoritative preflight
-- writes immutable run snapshot
-- idempotently returns existing run if same request was already accepted
-- invokes worker
-- returns `202` with `run_id`
+1. validates the request again independently of browser
+2. resolves the *canonical semantic* case input: `kind: "existing"` loads
+   and trusts the already-immutable M5 case by ID (rejecting an unknown
+   ID) without writing anything; `kind: "new"` validates the normalized
+   case fields but does **not** create the row yet
+3. normalizes the seven participant configs
+4. computes a deterministic `request_fingerprint` (SHA-256, Node built-in
+   `crypto`) over the **canonical case input from step 2** — `{kind:
+   "existing", caseId}` or `{kind: "new", defendant, act, exactQuestion,
+   sourceType, sourceFilename}` — **never** a generated/resolved case
+   UUID, plus execution mode and the normalized seven-participant
+   configuration (ADR Decision 11) — server-computed, never
+   browser-authoritative. Computing this *before* any case row exists is
+   deliberate: fingerprinting a `kind: "new"` case's *resolved* ID instead
+   would make a legitimate retry after a lost HTTP response mint a second
+   case UUID and produce a different fingerprint, incorrectly reporting a
+   conflict for an identical request
+5. reruns authoritative preflight *(from Milestone 7 onward; Milestone 6
+   has no preflight to run since no model pricing exists yet — see below)*
+6. resolves/creates the case idempotently — for `kind: "new"`, an ordinary
+   insert keyed by `convene_request_id = client_request_id`, falling back
+   to a compare-and-reuse (or `409`) read on a unique-constraint conflict;
+   race-safe by construction, no new database function required (ADR
+   Decision 9)
+7. calls the freeze function (`SECURITY DEFINER`, the only write path for
+   `tribunal_runs`/`participant_configs` — see §8.3.1) with
+   `client_request_id`, the `request_fingerprint` from step 4,
+   `execution_mode`, the `case_id` resolved in step 6, and the seven
+   participant entries. The function is the **final** atomic authority
+   (ADR Decision 6): it atomically reuses an existing run if the
+   fingerprint matches, rejects with a conflict if it doesn't, or inserts
+   exactly the run row + seven `participant_configs` rows and returns them
+8. returns `202`/`201` with `run_id`, or `409 idempotency_conflict` if
+   either case resolution (step 6) or the freeze function (step 7)
+   detected a same-key/different-payload conflict
+9. invokes worker *(from Milestone 8 onward; Milestone 6 performs no
+   execution and stops at `READY`)*
+
+Milestone 6 implements this endpoint's validation, case resolution, and
+atomic freeze. It performs zero model/OpenRouter calls and never
+transitions a run past `READY`. `READY` means accepted/frozen
+configuration only — it does not by itself mean execution-eligible (see
+ADR Decision 12 on the `prompt_version` placeholder).
 
 ### 7.5 Read run/history
 
@@ -494,53 +535,137 @@ Milestone 5 source types distinguish at minimum:
 
 Milestone 5 persists normalized case data only. It does not create participant/run/output/protocol tables early.
 
+A future Milestone 6 forward migration (not yet created) adds exactly one
+nullable column, `convene_request_id text` (`UNIQUE` when non-null — plain
+PostgreSQL `UNIQUE` semantics, so any number of `NULL` rows remain
+allowed), so a Convene-created `kind: "new"` case is itself idempotent
+under a lost-response retry (`docs/adr/0002-participant-configuration-freeze.md`
+Decision 9). Standalone M5 `Save Case` is unaffected and continues to
+write `NULL`. This column is internal persistence metadata only — it is
+never added to the public `StoredCase`/browser response shape, since the
+case repository already selects an explicit column list rather than
+`select *`. No other `cases` column, constraint, or grant changes; the
+existing Milestone 5 privilege model (`service_role`: `SELECT` + `INSERT`
+only, no `UPDATE`/`DELETE`; `anon`/`authenticated`: no access; RLS
+enabled) is unchanged.
+
 ### 8.2 `tribunal_runs`
+
+Milestone 6 creates only the columns needed to accept and freeze a
+configuration. Execution/economics columns below are **not** created by
+Milestone 6; they are added by a later forward migration when M8/M10
+actually need them (see `docs/adr/0002-participant-configuration-freeze.md`).
+
+Milestone 6 columns:
 
 ```text
 id                  uuid PK
-case_id             uuid FK -> cases
+case_id             uuid FK -> cases NOT NULL
 client_request_id   text UNIQUE NOT NULL
-execution_mode      text NOT NULL
-status              text NOT NULL
-majority_verdict    text NULL
+request_fingerprint text NOT NULL   -- SHA-256 of the canonical semantic request (never a resolved case UUID); see ADR Decision 11
+execution_mode      text NOT NULL   -- SHARED | SEPARATE
+status              text NOT NULL   -- CHECK against the full SPEC.md §14 vocabulary;
+                                     -- M6 itself only ever writes READY
+created_at          timestamptz NOT NULL
+```
 
+`client_request_id` is the first duplicate-spend guard, and doubles as the
+Milestone 6 Convene idempotency key even though no spend occurs yet.
+`request_fingerprint` lets the freeze function distinguish a genuine retry
+(same key, same fingerprint → reuse) from a same-key/different-payload
+conflict (→ `409 idempotency_conflict`), atomically, without trusting a
+client-supplied fingerprint.
+
+Deferred to M8/M10 (documented here for forward reference only — not part
+of the Milestone 6 migration):
+
+```text
+majority_verdict    text NULL
 total_input_tokens  bigint NULL
 total_output_tokens bigint NULL
 total_tokens        bigint NULL
 advocate_cost_usd   numeric NULL
 judge_cost_usd      numeric NULL
 total_cost_usd      numeric NULL
-
 failure_code        text NULL
 failure_message     text NULL
 started_at          timestamptz NULL
 completed_at        timestamptz NULL
-created_at          timestamptz NOT NULL
 ```
-
-`client_request_id` is the first duplicate-spend guard.
 
 ### 8.3 `participant_configs`
 
-Exactly seven rows per run.
+Exactly seven rows per run, inserted atomically together with the
+`tribunal_runs` row (see §8.3.1).
 
 ```text
 id                          uuid PK
-run_id                      uuid FK -> tribunal_runs
+run_id                      uuid FK -> tribunal_runs NOT NULL
 participant_key             text NOT NULL
 role                        text NOT NULL   -- ADVOCATE | JUDGE
-side                        text NULL       -- PRO | CON for advocates
+side                        text NULL       -- PRO | CON for advocates, NULL for judges
+profile_name                text NULL       -- optional, <=120 normalized chars
 personality_text            text NOT NULL
-personality_source          text NOT NULL   -- MANUAL | FILE
+personality_source          text NOT NULL   -- manual | individual_file | tribunal_package
 personality_source_filename text NULL
 model_id                    text NOT NULL
-prompt_version              text NOT NULL
+prompt_version              text NOT NULL   -- placeholder constant until M7 prompts exist
 created_at                  timestamptz NOT NULL
 
 UNIQUE(run_id, participant_key)
 ```
 
-Participant keys are stable logical identities such as `PRO_1`, `PRO_2`, `CON_1`, `CON_2`, `JUDGE_1`, `JUDGE_2`, `JUDGE_3`.
+Participant keys use the application's established `ParticipantId`
+convention (`advocate-pro-1`, `advocate-pro-2`, `advocate-con-1`,
+`advocate-con-2`, `judge-1`, `judge-2`, `judge-3` — see
+`src/schemas/tribunalSetup.ts`), **not** the Milestone 5 Tribunal Package
+seat identifiers (`PRO_1`, `CON_1`, `JUDGE_1`, …), which are a distinct,
+narrower namespace used only for parsing the `TRIBUNAL_PACKAGE_V1` file
+format. `personality_source` uses the same three-value taxonomy already
+established by Milestone 5 (`personalitySourceSchema`), not the two-value
+`MANUAL | FILE` this document previously (and incorrectly) implied.
+
+#### 8.3.1 Atomic freeze and privilege model
+
+No client can perform a cross-table transaction against Supabase's REST
+Data API. Milestone 6 therefore defines one `SECURITY DEFINER` Postgres
+function, invoked via `supabase.rpc(...)`, that is the **only** write path
+for `tribunal_runs` and `participant_configs`:
+
+- **`service_role` is granted `SELECT` only** on both tables — no
+  `INSERT`/`UPDATE`/`DELETE` grant at all. `anon`/`authenticated` have no
+  privileges. RLS is enabled with no public/browser policy.
+- The freeze function runs `SECURITY DEFINER` (required, since the calling
+  role deliberately cannot `INSERT` directly), with `SET search_path = ''`
+  and every referenced object schema-qualified, no dynamic SQL, no
+  user-controlled identifiers, and the smallest parameter contract that
+  works (`role`/`side`/`prompt_version` are never caller-supplied — the
+  function derives them internally from a fixed mapping of the seven known
+  `participant_key` values).
+- `EXECUTE` on the function is explicitly revoked from `PUBLIC`, `anon`,
+  and `authenticated`, and granted only to `service_role`, in the same
+  migration that creates the function.
+- The function independently re-validates exactly seven known participant
+  keys, performs the idempotency fingerprint check (§7.4), and inserts the
+  run row plus all seven `participant_configs` rows in one implicit
+  transaction — either the complete accepted configuration exists, a
+  conflict is reported, or nothing new is written. It performs no
+  model/provider/network work.
+
+See `docs/adr/0002-participant-configuration-freeze.md` Decision 6 for the
+full rationale and the rejected alternative (an `INSERT` grant to
+`service_role` alongside the function, which would let server code bypass
+the invariant).
+
+Once a run is accepted, no application-facing role (`service_role`,
+`anon`, `authenticated`, `PUBLIC`) has an `UPDATE`/`DELETE` grant for
+either table — immutability is a structural database privilege, not only
+an application code path that happens not to expose one. (Administrative/
+function-owner privileges necessarily exist so the `SECURITY DEFINER`
+function above can insert, but that ownership authority is never itself
+an application call path.) Case persistence is a separate, ordinarily-
+atomic predecessor step, not part of this same transaction — see ADR
+Decision 7.
 
 ### 8.4 `model_call_attempts`
 
@@ -627,9 +752,16 @@ Persist:
 - seven participant configurations
 - chosen model IDs
 - prompt versions
-- pricing/preflight context required for audit
+- pricing/preflight context required for audit *(from Milestone 7/10
+  onward; Milestone 6 has no pricing/preflight to persist yet, since no
+  OpenRouter infrastructure exists — see M6 columns in §8.2)*
 
-These inputs are frozen for that run.
+These inputs are frozen for that run. The case is persisted first, as an
+ordinary independently-atomic step (reused if already saved); only the run
+plus its seven participant configurations are guaranteed atomic together,
+via the `SECURITY DEFINER` freeze function (§8.3.1). A case can end up
+persisted without a corresponding frozen run if the freeze step
+subsequently fails or conflicts — that is an accepted outcome, not a bug.
 
 ### During execution
 

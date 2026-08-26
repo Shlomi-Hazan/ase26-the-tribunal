@@ -7,7 +7,7 @@
   command = "npm run dev"
   targetPort = 5173
   port = 8888
-  publish = "dist"
+  publish = "public"
 
 [[redirects]]
   from = "/api/health"
@@ -37,6 +37,16 @@
 [[redirects]]
   from = "/api/cases"
   to = "/.netlify/functions/cases"
+  status = 200
+
+[[redirects]]
+  from = "/api/runs/:id"
+  to = "/.netlify/functions/run-by-id?id=:id"
+  status = 200
+
+[[redirects]]
+  from = "/api/runs"
+  to = "/.netlify/functions/runs"
   status = 200
 
 [[redirects]]
