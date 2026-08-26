@@ -141,4 +141,56 @@ describe("GET /api/models", () => {
 
     expect(provider.listModelsCallCount).toBe(callCountAfterFirst);
   });
+
+  it("excludes an advocate-capable, judge-incapable model from the HTTP response (Sections 3-6 regression)", async () => {
+    const provider = new FakeOpenRouterProvider();
+    provider.listModelsResult = [
+      {
+        id: "openai/gpt-5-advocate-only",
+        canonical_slug: "openai/gpt-5-advocate-only",
+        name: "Advocate Only",
+        context_length: 200_000
+      }
+    ];
+    provider.listEndpointsResult["openai/gpt-5-advocate-only"] = [
+      {
+        tag: "openai",
+        provider_name: "OpenAI",
+        name: "OpenAI",
+        context_length: 200_000,
+        max_prompt_tokens: 190_000,
+        // Below the judge minimum (1200) but above the advocate minimum
+        // (1000) -- the previous, advocate-only resolution would have
+        // returned this model; the corrected dual-role resolution must not.
+        max_completion_tokens: 1100,
+        supported_parameters: ["response_format", "max_completion_tokens"],
+        quantization: null,
+        status: 0,
+        pricing: { prompt: "0.000003", completion: "0.000006" }
+      }
+    ];
+
+    const response = await handleModelsRequest(
+      { httpMethod: "GET" } as HandlerEvent,
+      { provider }
+    );
+    const payload = JSON.parse(response.body ?? "");
+
+    expect(payload.models.map((m: { id: string }) => m.id)).not.toContain(
+      "openai/gpt-5-advocate-only"
+    );
+  });
+
+  it("exposes pricingObservedAt as the endpoint metadata fetch timestamp", async () => {
+    const response = await handleModelsRequest(
+      { httpMethod: "GET" } as HandlerEvent,
+      { provider: providerWithModels() }
+    );
+    const payload = JSON.parse(response.body ?? "");
+    const paid = payload.models.find((m: { id: string }) => m.id === "openai/gpt-5-paid");
+
+    expect(paid).toHaveProperty("pricingObservedAt");
+    expect(typeof paid.pricingObservedAt).toBe("string");
+    expect(() => new Date(paid.pricingObservedAt).toISOString()).not.toThrow();
+  });
 });
