@@ -4,9 +4,9 @@ import type {
   HandlerResponse
 } from "@netlify/functions";
 import { describe, expect, it } from "vitest";
-import { handler as importChargeSheet } from "./import-charge-sheet";
-import { handler as importPersonality } from "./import-personality";
-import { handler as importTribunalPackage } from "./import-tribunal-package";
+import { handler as importChargeSheet } from "../import-charge-sheet";
+import { handler as importPersonality } from "../import-personality";
+import { handler as importTribunalPackage } from "../import-tribunal-package";
 
 const encoder = new TextEncoder();
 

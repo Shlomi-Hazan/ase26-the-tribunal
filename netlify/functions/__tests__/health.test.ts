@@ -1,6 +1,6 @@
 import type { HandlerContext, HandlerEvent, HandlerResponse } from "@netlify/functions";
 import { describe, expect, it } from "vitest";
-import { handler } from "./health";
+import { handler } from "../health";
 
 async function callHealth(method: string): Promise<HandlerResponse> {
   const result = await handler(

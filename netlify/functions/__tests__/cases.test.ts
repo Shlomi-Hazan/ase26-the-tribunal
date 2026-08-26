@@ -4,9 +4,9 @@ import {
   type CaseRepository,
   type CreateCaseInput,
   type PersistedCase
-} from "../server/cases";
-import { handler as caseByIdHandler, handleCaseByIdRequest } from "./case-by-id";
-import { handler as casesHandler, handleCasesRequest } from "./cases";
+} from "../../server/cases";
+import { handler as caseByIdHandler, handleCaseByIdRequest } from "../case-by-id";
+import { handler as casesHandler, handleCasesRequest } from "../cases";
 
 const storedCase: PersistedCase = {
   id: "11111111-1111-4111-8111-111111111111",

@@ -7,7 +7,7 @@ import {
   type CreateCaseInput,
   type IdempotentCaseRepository,
   type PersistedCase
-} from "../server/cases";
+} from "../../server/cases";
 import {
   ROLE_BY_PARTICIPANT_ID,
   RunPersistenceError,
@@ -15,9 +15,9 @@ import {
   type FreezeRunInput,
   type PersistedRun,
   type RunRepository
-} from "../server/runs";
-import { handleRunByIdRequest } from "./run-by-id";
-import { handler as runsHandler, handleRunsRequest } from "./runs";
+} from "../../server/runs";
+import { handleRunByIdRequest } from "../run-by-id";
+import { handler as runsHandler, handleRunsRequest } from "../runs";
 
 const storedCase: PersistedCase = {
   id: "11111111-1111-4111-8111-111111111111",
