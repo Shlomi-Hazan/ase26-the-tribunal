@@ -661,11 +661,15 @@ It does not count OpenRouter credit-purchase fees as per-run inference cost; the
 
 ---
 
-## 22. Future Smart Extraction Economics
+## 22. Smart Extraction Economics (Milestone 7A)
 
-`M7A - Smart Tribunal Package Extraction` may add one setup-time structured extraction model call for free-form full-document import after OpenRouter infrastructure exists.
+`M7A - Smart Tribunal Package Extraction` adds exactly one setup-time
+structured extraction model call for free-form full-document import,
+planned in full in `docs/adr/0004-smart-package-extraction.md`
+(Decisions 9–11).
 
-That extraction call is not a Tribunal participant logical call. A successful Tribunal run still has:
+That extraction call is not a Tribunal participant logical call. A
+successful Tribunal run still has:
 
 ```text
 4 advocate logical calls
@@ -673,15 +677,163 @@ That extraction call is not a Tribunal participant logical call. A successful Tr
 = 7 Tribunal logical calls
 ```
 
-The extraction call occurs before run creation and must be displayed/accounted separately from the seven-call Tribunal run cost.
+The extraction call occurs before run creation and is
+displayed/accounted separately from the seven-call Tribunal run cost.
 
-Before M7A can be implemented, this document must define:
+**Locked extraction economics policy (corrected by independent review —
+see `docs/adr/0004-smart-package-extraction.md` for full detail):**
 
-- explicit maximum spend policy for document extraction
-- token and output bounds
-- model eligibility requirements
-- usage/cost telemetry requirements
-- failure and retry policy
-- display treatment for extraction cost versus Tribunal-run cost
+- **Maximum spend**: `EXTRACTION_HARD_CEILING_USD = "0.50"` per
+  **logical extraction call, including both permitted provider
+  attempts combined** — not per attempt. $0.50 happens to equal the
+  existing `BUDGET` tier's upper bound (§14/`TIER_THRESHOLDS_USD`),
+  reused only as a familiar number for product simplicity. **Extraction
+  eligibility is never inferred from a route's Tribunal tier label** —
+  the `FREE`/`BUDGET`/`PREMIUM` tiers are computed from
+  complete-Tribunal (4 advocate + 3 judge) economics, a structurally
+  different workload from one extraction call; a `PREMIUM`-Tribunal-tier
+  route may still be extraction-eligible, and a `BUDGET`-Tribunal-tier
+  route may still be extraction-ineligible. An extraction-specific
+  conservative Decimal preflight is the sole authority. The existing
+  `$5.00` ceiling remains the hard intentional model-spend policy for
+  the seven-participant Tribunal run and is never disguised by folding
+  extraction into a fake seven-call count.
+- **New this pass (final independent review, security/idempotency
+  audit): a per-logical-call ceiling does not bound the *rate* at which
+  new logical calls can be started.** `POST /api/setup-extractions`
+  carries a dedicated admission-control policy — 3 accepted new
+  logical-extraction starts per 180 seconds per source IP
+  (`SECURITY.md` §10), deliberately aligned with the existing `POST
+  /api/runs` target — checked before any spend, rejecting with
+  `RATE_LIMITED` (429) at zero cost. A fingerprint-matched idempotent
+  replay of an *existing* `extractionRequestId` never consumes this
+  admission allowance, so it can be repeated freely without being
+  throttled; only genuinely new logical extractions count toward the
+  limit. `POST .../retry` and `POST .../preflight` each carry their own
+  bounded operational rate limit as well, distinct from — and permitted
+  to be looser than — this billable-start limit.
+- **Token/output bounds**: `EXTRACTION_OUTPUT_CAP_TOKENS = 65,000` — a
+  bound covering the **canonical compact JSON serialization** of every
+  schema-valid semantic extraction object (an exact, computed
+  reference value of 55,942 conservative tokens for the maximum
+  fixture, not an estimate), resting on a dedicated `safeExtractionText`
+  character-class contract (excludes raw control characters other than
+  newline/tab, DEL, and unpaired Unicode surrogates on every free-text
+  field). This is a **semantic representability guarantee** — no valid
+  content is structurally impossible to express within the cap when
+  serialized without gratuitous escaping — not a claim that every
+  possible way a provider might lexically encode that content (e.g.
+  unnecessary `\uXXXX` escaping, which RFC 8259 permits) also fits; a
+  provider choosing an inflated encoding is ordinary provider-output
+  variance, handled by the existing `INVALID_STRUCTURED_OUTPUT` +
+  one-retry policy, not a schema defect. Worst-case input bounded by
+  `NORMALIZED_DOSSIER_TEXT_MAX_CHARS = 40,000` characters plus fixed
+  prompt overhead, estimated with the same conservative `ceil(UTF-8
+  bytes / 2)` proxy §7/§8 already use for the seven-call Tribunal — no
+  new estimation methodology.
+- **Model eligibility**: a dedicated, server-only-configured extraction
+  model (`PACKAGE_EXTRACTION_MODEL_ID`, never chosen by dossier
+  content), resolved through the existing M7 exact-endpoint/
+  unique-pinnability/no-fallback contract with an extraction-specific
+  bounded-output check substituted for the advocate/judge output caps.
+- **Pre-spend confirmation**: a read-only, non-billable
+  `POST /api/setup-extractions/preflight` quote (zero
+  `createChatCompletion` calls) is available before the user commits to
+  spend; the billable initial call always reruns the same
+  authoritative eligibility/budget guard fresh immediately before any
+  provider call — the browser's earlier quote is never trusted as
+  authoritative.
+- **Retry/timeout**: at most 2 provider attempts per logical extraction
+  call, reusing the existing `RETRYABLE_CATEGORIES` plus a schema-invalid
+  response or a stale-claim `UNKNOWN_OUTCOME` (below); a **new,
+  extraction-specific** `PACKAGE_EXTRACTION_PROVIDER_TIMEOUT_MS =
+  45,000` (not M7's 60,000 ms Tribunal constant), bounded further by a
+  **complete-Function soft deadline**
+  (`PACKAGE_EXTRACTION_HANDLER_SOFT_DEADLINE_MS = 55,000`, 5s of
+  margin below Netlify's reverified 60s hard limit). A retry is a
+  separate, explicit endpoint call (resending the same dossier source,
+  since nothing dossier-derived persists server-side) whose eligibility
+  the server alone determines from persisted attempt state — never a
+  client-declared attempt number. No provider call may begin before
+  that specific attempt is atomically claimed in the database
+  (claim-then-spend, never spend-then-claim), so concurrent duplicate
+  requests can never both spend.
+- **Corrected this pass (final independent review): the deadline is
+  rechecked twice, not once, and a minimum provider start window is now
+  locked.** `PACKAGE_EXTRACTION_MIN_PROVIDER_WINDOW_MS = 5,000`. Two
+  checks against freshly recomputed monotonic elapsed/remaining time:
+  **pre-claim** (before the atomic claim is even attempted — if
+  insufficient, fail with `INPUT_PROCESSING_TIMEOUT`, zero attempt rows
+  created, zero spend) and **post-claim** (immediately before the
+  provider fetch, recomputed fresh, since the claim operation itself
+  consumes real time and can make the pre-claim value stale — if
+  insufficient here, zero provider calls are made, but the
+  already-claimed attempt row is terminalized to
+  `INPUT_PROCESSING_TIMEOUT` rather than left stuck `CLAIMED`, with all
+  actual telemetry `null`). Only past both checks is
+  `effectiveProviderTimeoutMs = min(PACKAGE_EXTRACTION_PROVIDER_TIMEOUT_MS,
+  postClaimRemainingMs)` computed — always from the **post-claim** value,
+  never the pre-claim one.
+- **Unknown-cost retry economics**: the retry-budget guard is
+  `(actual_cost_usd ?? conservative_max_cost_usd) +
+  fresh_attempt2_conservative_max_cost_usd <=
+  EXTRACTION_HARD_CEILING_USD` — attempt #1's real cost is used when
+  known (and preferred over the stored conservative maximum if it
+  turns out larger), but a `null` actual cost (e.g. after a timeout)
+  falls back to the claim-time `conservative_max_cost_usd`, **never**
+  `$0.00`. Guard failure → `BLOCKED_BUDGET`, zero attempt-#2 calls.
+- **Stale-claim handling**: a provider attempt claimed but never
+  finalized (e.g. a Function that died mid-attempt) is reconciled,
+  opportunistically and race-safely, from `CLAIMED` to a terminal
+  `UNKNOWN_OUTCOME` state after `STALE_EXTRACTION_CLAIM_AFTER_MS =
+  120,000` — telemetry stays `null` unless real evidence exists, that
+  attempt number never calls the provider again, and an
+  `UNKNOWN_OUTCOME` on attempt #1 may still permit one retry (using the
+  unknown-cost formula above); an `UNKNOWN_OUTCOME` on attempt #2 is
+  final — the user may start an entirely new, separately billable
+  logical extraction instead.
+- **Idempotency**: a server-computed semantic fingerprint over the
+  normalized dossier content plus the fixed extraction configuration
+  (prompt version, configured model — deliberately excluding
+  `source.kind`, which is audit metadata only) proves a replayed/retried
+  request is the *same* logical extraction; a mismatch is rejected with
+  zero provider calls, never silently treated as a new attempt of
+  something else.
+- **Corrected this pass (final independent review): a fingerprint match
+  must actually recover the paid-for result, not merely confirm it
+  once existed.** The validated, schema-shaped extraction result is now
+  persisted (`validated_result`, bounded and re-validated on every
+  read — never the raw provider response) so a lost HTTP response after
+  a successful, billed extraction can be replayed with the same draft
+  and warnings and **zero new provider calls** — a customer is never
+  charged twice for the same successful extraction merely because the
+  response never reached the browser.
+- **New this pass (final independent review, security/idempotency
+  audit): "the fixed extraction configuration" above means the value
+  frozen at that logical extraction's first acceptance, not whatever
+  the deployment currently has configured.** A logical extraction's
+  `prompt_version`/configured model are read once, when the
+  `extractionRequestId` is first accepted, and persisted — every later
+  replay or retry recomputes/checks the fingerprint against those
+  **stored** values, never the live deployment configuration. This is
+  what makes the lost-response guarantee above actually hold across
+  time: a successful extraction under Model A remains replayable at
+  zero cost even after a later deployment defaults to Model B. A retry
+  (attempt #2) likewise re-prices and re-checks eligibility for that
+  same stored model, not the deployment's current one — if the stored
+  model has since become ineligible, the retry blocks
+  (`MODEL_NOT_ELIGIBLE`) rather than silently spending against a
+  different model the user never agreed to.
+- **Telemetry**: actual `usage.cost` decoded once, Decimal throughout,
+  unknown telemetry stays `null` — never a fabricated zero, matching §9
+  exactly; recorded per provider attempt (a logical call's two attempts
+  remain independently auditable, never overwriting each other) —
+  including whenever the provider itself supplied usage/cost data, even
+  if the application later rejects that same response as
+  `INVALID_STRUCTURED_OUTPUT`.
+- **Display**: an estimated (pre-attempt) and an actual (post-attempt)
+  extraction cost are both shown, visually and textually distinct from
+  the Tribunal run's own cost figures — never summed into or mistaken
+  for the $5.00 ceiling.
 
-No unbounded extraction call is permitted. The existing `$5.00` ceiling remains the hard intentional model-spend policy for the seven-participant Tribunal run and must not be disguised by folding extraction into a fake seven-call count.
+No unbounded extraction call is permitted.

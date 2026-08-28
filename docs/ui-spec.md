@@ -128,12 +128,139 @@ Allow either:
 - manual text entry
 - supported `.txt` / `.md` import
 - strict structured Full Tribunal Package import
+- Smart Import (Milestone 7A — free-form dossier extraction, below)
 
 Import is a convenience, not a separate case type. After successful import, the normalized three fields become visible/editable before continuing.
 
 Charge Sheet import fills only the three case fields. Full Tribunal Package import fills the case plus all seven participant profile names/personalities, preserves application-owned execution/model configuration, and navigates to Review.
 
 Full Tribunal Package import must never automatically convene the Tribunal.
+
+### Smart Import (Milestone 7A)
+
+A third import method, for a free-form dossier that isn't structured
+with `[SECTION]`/`FIELD:` markers. Full contract:
+`docs/adr/0004-smart-package-extraction.md`.
+
+```text
+New Case
+  -> Smart Import
+  -> Upload / Paste dossier
+  -> [client-side type/size check]
+  -> read-only quote (zero spend -- shows eligibility/estimated cost)
+  -> explicit "Confirm & Extract" (this is where spend can occur; the
+     server re-checks eligibility/budget fresh, never trusting the
+     quote shown above)
+  -> Extracting
+  -> Extraction Review (staged preview -- does not touch the active draft)
+       - unresolved/ambiguous fields visibly highlighted
+       - all fields editable
+       - warning summary visible
+       - source filename/type visible
+       - extraction model/version visible at a secondary, collapsible
+         audit-detail level
+       - estimated cost (pre-attempt) and actual cost (post-attempt) --
+         if a Retry occurs, the running total across both attempts is
+         shown against the $0.50 extraction ceiling, not a per-attempt
+         figure in isolation -- both always clearly separate from the
+         Tribunal run's own cost
+       - "Apply extracted draft" / "Cancel" (Cancel preserves whatever
+         draft existed before Smart Import was opened)
+  -> existing setup Review (same screen imported/manual drafts already use)
+  -> explicit Convene Tribunal (unchanged; never automatic)
+```
+
+Failure states use the exact reason codes
+`docs/adr/0004-smart-package-extraction.md` Decision 16 defines,
+surfaced in plain language, with a "Retry" action when the failure is
+retryable and an "edit and try again" path otherwise. At most one
+Retry is ever offered per extraction attempt (2 provider attempts
+total per logical extraction) -- the server, not the client, decides
+whether Retry is available. The UI resends the same dossier content
+the user already provided when Retry is pressed -- the user is never
+asked to re-upload/re-paste.
+
+`UNKNOWN_OUTCOME` (Decision 13/16 -- the application lost authoritative
+knowledge of whether a claimed provider attempt actually completed) is
+a distinct message from an ordinary timeout: it must say plainly that
+the outcome could not be confirmed, not imply a normal retryable
+failure. A Retry action may still be offered after an `UNKNOWN_OUTCOME`
+on the *first* attempt; after the *second*, no Retry is offered -- the
+UI instead offers to start a fresh extraction (a new, separately
+billable attempt, going through the read-only quote and confirmation
+again).
+
+**New this pass (final independent review, prompt-version resolution
+audit): `PROMPT_VERSION_UNAVAILABLE` (Decision 7/16) is an
+application-side unavailability, not something the user's dossier or
+Retry action caused.** If a Retry cannot resolve the historical prompt
+its original attempt used, the UI must say so plainly (e.g. "this
+extraction attempt can't be retried right now -- please start a new
+extraction") rather than implying a dossier problem or offering a
+misleading "try again" that would repeat the same unresolved state.
+The UI's recovery path is the same one already offered after a
+terminal `UNKNOWN_OUTCOME` on attempt #2: start a fresh extraction
+(new `extractionRequestId`, through the read-only quote and
+confirmation again), never a bespoke workaround.
+
+**Corrected in the fourth pass (final independent review, Decision
+13/15): a lost network response after a successful extraction must
+never present as data loss.** If the connection between the browser
+and the server
+drops after the server has already extracted and validated a draft
+(the request appears to fail client-side, e.g. as a network error or a
+stalled "Extracting" state), re-submitting the same request (retrying
+the action, or simply reloading and re-entering the flow with the same
+in-progress extraction) recovers the exact same validated draft and
+warning summary with **no additional charge** — the server replays the
+persisted, re-validated result rather than calling the provider again.
+The UI does not need bespoke "did my request actually work?" messaging
+for this case; it behaves exactly like a normal successful extraction
+reaching the Extraction Review screen, just arriving on a later
+attempt.
+
+The same privacy notice shown before Charge Sheet entry (below) must
+also be shown before dossier upload/paste — free-form dossier text is
+at least as likely to carry incidental personal information.
+**Corrected this pass (final independent review, security/idempotency
+audit, `SECURITY.md` §15): the Smart Import notice must say more than
+the base "do not submit sensitive data" line.** It must explicitly
+disclose all four of the following before the user uploads/pastes:
+
+1. The raw dossier and its normalized text are **not retained** past
+   the extraction attempt that processed them.
+2. The **validated, structured extraction result** produced from it
+   **may be retained** to support recovering it after a lost response
+   and for audit — even before the user presses "Apply extracted
+   draft" or convenes the Tribunal.
+3. **V1 has no accounts or login** (unchanged from the rest of this
+   spec, §3/§15 below) and therefore no private per-user ownership
+   guarantee for that retained result — it is not made private merely
+   because the raw dossier itself is discarded.
+4. Do not submit sensitive, private, confidential, or personally
+   identifying material — the existing base rule, unchanged.
+
+**Also corrected this pass: nothing in the Smart Import flow may imply
+a logged-in session, "my extractions," or any form of private
+ownership** — Smart Import, like every other V1 flow, is a shared
+single-tenant demo surface, not an authenticated one.
+
+**New this pass (final independent review, security/idempotency
+audit): a source that starts too many fresh Smart Import extractions
+in a short window is rate-limited, not silently queued or
+substituted.** If the server rejects a new "Confirm & Extract" attempt
+with `RATE_LIMITED` (`docs/adr/0004-smart-package-extraction.md`
+Decision 16/19), the UI shows a clear "please try again shortly"
+message, distinct from a budget block or any extraction-content
+failure — it must not be presented as if the dossier itself was
+rejected. This limit applies only to **starting a new** extraction; it
+never blocks retrying/recovering an extraction already in progress or
+already completed (an already-open Extraction Review, or a Retry on an
+existing attempt, is unaffected by this limit).
+
+Smart Import must never automatically convene the Tribunal, and must
+never silently overwrite a draft already in progress before the user
+explicitly presses "Apply extracted draft."
 
 ### File error states
 
@@ -311,6 +438,11 @@ This notice should not be buried in a footer.
 After a successful Full Tribunal Package import, Review should clearly state:
 
 > Imported Tribunal package — review all extracted fields before convening.
+
+After a successful Smart Import extraction is applied (Milestone 7A),
+Review should clearly state:
+
+> Extracted from your dossier — review all fields, especially any marked as unresolved, before convening.
 
 Review should show all fixed seats, optional profile names, personalities, and model/execution configuration. The user must be able to return and edit imported fields before explicit convening.
 

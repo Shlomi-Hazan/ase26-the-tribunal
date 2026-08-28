@@ -43,8 +43,8 @@ Do not begin later milestones by destabilizing incomplete earlier work.
 | 4 | UI Shell with Mock Data | ✅ Complete |
 | 5 | Case Persistence & Import | ✅ Complete |
 | 6 | Participant Configuration | ✅ Complete |
-| 7 | OpenRouter Infrastructure | 🟡 Current |
-| 7A | Smart Tribunal Package Extraction | ⬜ Planned |
+| 7 | OpenRouter Infrastructure | ✅ Complete |
+| 7A | Smart Tribunal Package Extraction | 🟡 Current |
 | 8 | Shared-Model Tribunal | ⬜ Planned |
 | 9 | Separate-Model Tribunal | ⬜ Planned |
 | 10 | Protocol & Economics | ⬜ Planned |
@@ -396,6 +396,13 @@ One logical participant call can be made and audited safely, while normal automa
 ---
 
 # M7A — Smart Tribunal Package Extraction
+
+Full planning contract: `docs/adr/0004-smart-package-extraction.md`
+(structured-extraction schema, PDF extraction approach, economics
+ceiling, persistence, API/UI contracts, security, testing, live-gate
+policy). This section's Goal/Scope/non-goals/Verification/Exit
+condition are preserved unchanged below — the ADR resolves the detail
+they left open.
 
 ## Goal
 

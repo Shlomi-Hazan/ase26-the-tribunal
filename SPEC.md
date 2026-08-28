@@ -710,17 +710,25 @@ Milestone 5 persists basic normalized cases only. A stored case is not a complet
 
 ---
 
-## 19. Smart Tribunal Package Extraction Future Scope
+## 19. Smart Tribunal Package Extraction (Milestone 7A)
 
-After OpenRouter infrastructure exists in Milestone 7 and before real Tribunal orchestration in Milestone 8, the project plans a future `M7A - Smart Tribunal Package Extraction` milestone.
+Milestone 7 (OpenRouter infrastructure) is complete and merged. Milestone
+7A — `Smart Tribunal Package Extraction` — is now the current milestone,
+planned in full in `docs/adr/0004-smart-package-extraction.md`. This
+section is no longer future scope; it records the locked requirements
+the ADR resolves in detail.
 
-M7A will allow a free-form complete Tribunal document to be transformed into the same normalized `TribunalSetupDraft`. Minimum planned input support:
+M7A allows a free-form complete Tribunal document to be transformed into
+the same normalized `TribunalSetupDraft` Milestone 5's deterministic
+import already produces. Supported input:
 
 - `.txt`
 - `.md`
 - text-extractable `.pdf`
 
-PDF support belongs to M7A, not Milestone 5. Scanned-document OCR is not automatically included and requires a separate explicit scope decision.
+PDF support belongs to M7A, not Milestone 5. Scanned-document OCR is not
+included and requires a separate explicit scope decision (not made by
+this ADR).
 
 The smart extraction flow is:
 
@@ -731,8 +739,9 @@ Free-form document
   -> one setup-time structured extraction model call
   -> strict schema validation
   -> application normalization
-  -> Review
-  -> human correction/confirmation
+  -> Extraction Review (staged preview, not the active draft)
+  -> human correction/confirmation -> Apply
+  -> existing setup Review
   -> explicit Convene Tribunal
   -> 7 Tribunal participant logical calls
 ```
@@ -750,7 +759,12 @@ The extraction call:
 - must never automatically start Tribunal execution
 - must never hard-code a lecturer-provided dossier
 
-Before M7A implementation, `docs/economics.md` must define explicit extraction spend, token/output, retry, telemetry, model eligibility, and display policy. No unbounded extraction call is permitted.
+`docs/economics.md` §22 and `docs/adr/0004-smart-package-extraction.md`
+Decision 9 define the explicit extraction spend ceiling
+(`EXTRACTION_HARD_CEILING_USD = "0.50"`, separate from the $5.00
+Tribunal ceiling), token/output bounds, retry, telemetry, model
+eligibility, and display policy. No unbounded extraction call is
+permitted.
 
 ## 20. Browser / Server Authority Boundary
 
