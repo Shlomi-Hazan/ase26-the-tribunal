@@ -1068,24 +1068,163 @@ models). This is a genuine M7 implementation defect against real data,
 not an environment/credential issue, and not fixed in this pass per
 explicit instruction to stop and report rather than patch.
 
+## Live integration gate — utc_days schema correction and resumed metadata gate
+
+Independently reverified against the current official OpenRouter OpenAPI
+(`https://openrouter.ai/openapi.json`,
+`components.schemas.PricingOverride.properties.utc_days`) immediately
+before this fix: `type: array`, `items.type: string` (the documented
+weekday enum, `x-speakeasy-unknown-values: allow`), `minItems: 1` —
+unchanged since the defect was first found. `pricingOverrideSchema.utc_days`
+was corrected from `z.array(z.number()).optional()` to
+`z.array(z.string()).min(1).optional()` (commit `acd0187`), a parsing-only
+change — ADR Decision 7A's `pricing.overrides.length > 0 →
+PRICING_UNREPRESENTABLE` block is untouched and reverified by a new
+regression test using the exact real-shape string `utc_days` that
+previously failed to parse at all. 337 → 344 tests (27 files unchanged).
+CI green on the exact fix HEAD (run `33162105268`).
+
+### Direct production-code invocation (netlify dev sandbox bypass)
+
+Resuming the metadata gate through the running `netlify dev` server hit a
+**second, separate** finding: `GET /api/models` hung for exactly 30
+seconds and failed with `lambda-local`'s own `TimeoutError: Task timed
+out after 30.00 seconds` — reproduced twice, including after a clean
+restart. Isolated precisely before concluding anything: the identical
+`RealOpenRouterProvider.listModels()` call, invoked directly outside the
+`netlify dev` sandbox (real key, real network), succeeded in ~190ms with
+all 387 models parsed — proving the schema fix works and the code itself
+is fast and correct. The same running sandbox handles other real
+external calls fine (`POST /api/runs`, `POST /api/preflight` for the
+historical run — both Supabase-backed). With the user's explicit
+authorization, the remainder of this gate was therefore performed by
+invoking the real, unmodified, exported production functions directly
+(`RealOpenRouterProvider`, `handleModelsRequest`, `runPreflight`,
+`resolveSharedTribunalRoute`, `acceptRun` with the real Supabase
+repositories) — bypassing only `netlify dev`'s own broken Lambda-sandbox
+transport layer for OpenRouter-bound calls, never mocking OpenRouter or
+Supabase, never reimplementing application logic. This is documented as
+a substitution: **the local `netlify dev` HTTP path for OpenRouter-bound
+requests was not itself verified working; the real application code
+underneath it was.**
+
+### What succeeded, fully live, via direct invocation
+
+- **Real catalog**: `handleModelsRequest` (the real `GET /api/models`
+  handler export) succeeded, HTTP 200, 33 eligible models out of 387 raw
+  catalog models, tier breakdown `{BUDGET:10, FREE:1, ABOVE_PREMIUM:6,
+  PREMIUM:16}` — `HARD_BLOCK` correctly never returned as an eligible
+  option.
+- **Real endpoint metadata**: two real candidate models' endpoints
+  parsed successfully with all required fields present (`tag`,
+  `provider_name`, `context_length`, `max_completion_tokens`, `status`,
+  `pricing`).
+- **Real route resolution**: `resolveSharedTribunalRoute` for the
+  selected model (`liquid/lfm-2.5-2.6b:free`, FREE tier) returned
+  `eligible: true`, `providerEndpointTag: "liquid/fp8"`,
+  `isUniquelyPinnable: true`.
+- **Real frozen run**: a new Shared-mode synthetic run, created through
+  the real `acceptRun`/Supabase repository path using the real selected
+  model id, returned `status: READY`, exactly 7 participant configs,
+  advocates all `advocate-v1`, judges all `judge-v1`.
+- **Real preflight**: `runPreflight` for that run returned `eligible:
+  true`, `hardBudgetUsd: "5"`, `conservativeMaxCostUsd: "0"` (correct for
+  a FREE-tier route), `remainingBudgetUsd: "5"`, `blockedReasonCodes: []`,
+  all seven participants individually eligible with the correct resolved
+  endpoint (`liquid/fp8`), tier, and a real `observedAt` timestamp.
+- **Read-only proof**: `participant_configs` prompt-version counts before
+  and after every preflight call in this pass were confirmed identical
+  (42 `unassigned-pre-m7` unchanged throughout; the two synthetic frozen
+  runs created by this pass's diagnostics — one from an initial timed-out
+  attempt, one from the completed run — correctly added 12 `advocate-v1`
+  / 9 `judge-v1` total, exactly 7 rows per run, no duplication).
+- **Historical placeholder / failure boundary** (via real HTTP, since
+  these short-circuit before ever touching OpenRouter): the historical
+  `unassigned-pre-m7` run still returns `PROMPT_VERSION_UNASSIGNED`;
+  malformed `runId` → `400`; unknown `runId` → `404`.
+- **Zero completions**: `createChatCompletion` was not invoked anywhere
+  in this pass; no request reached `/chat/completions`. Every real
+  OpenRouter network call observed was a `GET /models` or `GET
+  /models/{author}/{slug}/endpoints` metadata request. Inference spend
+  attributable to this gate: `$0.00`.
+
+### A third real defect found — not fixed
+
+Timing the direct-invocation calls surfaced a genuine, previously-unknown
+issue distinct from the `utc_days` schema mismatch:
+
+- The **first**, cold `handleModelsRequest` call took **45,744 ms**
+  against the real 387-model catalog — `listEligibleModels()`
+  (`modelDiscovery.ts`) makes one real, sequential `listEndpoints()`
+  network round trip **per catalog model** (no batching/parallelism),
+  so wall-clock time scales linearly with real catalog size. At real
+  scale this is likely to exceed typical serverless function execution
+  limits in an actual deployment — a materially different concern from
+  anything the small fixed-size fake-provider catalogs in the automated
+  test suite could ever surface.
+- The **second** call, made moments later against the exact same
+  `modelCache`/`endpointCache` instances (well within the 5-minute TTL),
+  took **47,135 ms** — essentially the same duration as the first, not a
+  cache hit. The selected model's `pricingObservedAt` differed between
+  the two calls (`10:59:09.050Z` vs. `10:59:53.191Z`, ~44s apart),
+  proving a fresh network refetch occurred rather than a cache reuse.
+  Root cause, confirmed by reading `cache.ts` (read-only — not modified):
+  `MODEL_METADATA_CACHE_MAX_ENTRIES = 200`, whose own comment documents
+  it as sized for preflight's small per-run working set ("at most seven
+  participants, realistically far fewer distinct models"). A full-catalog
+  discovery sweep needs one entry per catalog model — currently 387,
+  which exceeds the 200-entry cap — so the least-recently-set eviction
+  policy discards early entries before the sweep even finishes,
+  producing continuous thrashing instead of effective caching for the
+  discovery use case. This was also observed to affect `POST
+  /api/preflight`: the chosen model's endpoint entry, freshly cached
+  moments earlier during the catalog sweep, had already been evicted by
+  the time preflight ran on the same warm caches, forcing a second real
+  refetch for a model that should have been a clean cache hit.
+- **Not fixed in this pass** — this is a distinct architectural/capacity
+  question (how the cache should be sized or scoped for a full-catalog
+  discovery sweep versus a single frozen run's small participant set),
+  out of scope for the narrow `utc_days` schema correction this pass was
+  authorized to make. Reported here for independent review rather than
+  patched.
+
+### Verdict (OpenRouter track, this resumed pass)
+
+**M7 LIVE GATE BLOCKED** — reason: the `utc_days` schema defect is fixed
+and verified (catalog parsing, endpoint parsing, route resolution, a real
+frozen run, and real preflight all succeed end to end against live
+OpenRouter data). Two things remain open, discovered only by this real,
+at-scale live test: (1) the local `netlify dev` HTTP path itself was not
+verified working for OpenRouter-bound requests — only the real
+application code underneath it, invoked directly, was; (2) a real cache
+capacity/latency defect (`MODEL_METADATA_CACHE_MAX_ENTRIES` too small
+for the real catalog size) causes `GET /api/models` to take ~45+ real
+seconds on every call, cold or warm, and can force spurious re-fetches
+inside `POST /api/preflight` too — reported for independent review, not
+fixed.
+
 ## Not yet live-verified
 
 The following are explicitly **not** performed as of this document:
 
-- **Real OpenRouter metadata integration beyond the authenticated
-  connection itself** — `GET /models` authenticates and reaches
-  OpenRouter successfully, but the response cannot be parsed due to the
-  `pricing.overrides[].utc_days` schema defect above. Real endpoint
-  metadata parsing, live route resolution, the real `/api/models` and
-  `/api/preflight` smokes against a real model, and the cache live
-  smoke remain **not performed**, blocked on that defect (not on
-  credentials — those are now configured and working).
+- **The local `netlify dev` HTTP path for OpenRouter-bound requests**
+  (`GET /api/models`, `POST /api/preflight` for a prompt-version-assigned
+  run) — not verified working; it times out in the local Lambda sandbox
+  for reasons now understood (see "A third real defect found" above) to
+  be a genuine latency/cache-capacity issue in the real implementation,
+  not a sandbox-only artifact. The underlying application code was
+  verified correct via direct production-code invocation instead.
+- **The cache-capacity defect itself** — not fixed; needs an independent
+  decision on how `MODEL_METADATA_CACHE_MAX_ENTRIES` (or the discovery
+  sweep's caching strategy) should be sized/scoped for a full real
+  catalog rather than a single run's participant set.
 - **Optional real completion smoke** (ADR Decision 20) — not authorized,
   not performed.
 
-The M7 Supabase migration and the missing-`OPENROUTER_API_KEY`-value
-blocker are **no longer** in this list — the migration was applied and
-the key was configured during the live integration gate passes above.
+The M7 Supabase migration, the missing-`OPENROUTER_API_KEY`-value
+blocker, and the `utc_days` schema defect are **no longer** in this list
+— all three were resolved in earlier sections of this live integration
+gate.
 
 No secret value appears anywhere in this document, the test suite, or
 the implementation.
