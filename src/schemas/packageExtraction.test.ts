@@ -1,8 +1,14 @@
 // Milestone 7A -- structured extraction schema tests (ADR 0004 Decisions
-// 5, 6, 11).
+// 5, 6, 11), including the server-authoritative relational/null semantic
+// validation added during the independent pre-live audit (Section 10).
 
 import { describe, expect, it } from "vitest";
-import { chargeSheetLimits, packageSeats, personalityLimit } from "./tribunalSetup";
+import {
+  chargeSheetLimits,
+  packageSeats,
+  personalityLimit,
+  type PackageSeat
+} from "./tribunalSetup";
 import {
   deriveExtractionStatus,
   extractionFieldPathSchema,
@@ -11,14 +17,51 @@ import {
   packageExtractionJsonSchema,
   packageExtractionSchema,
   safeExtractionText,
+  type ExtractionWarning,
   type PackageExtractionResult
 } from "./packageExtraction";
 
+const REQUIRED_NULL_FIELD_WARNINGS: ExtractionWarning[] = [
+  { code: "MISSING_FIELD", field: "chargeSheet.defendant" },
+  { code: "MISSING_FIELD", field: "chargeSheet.act" },
+  { code: "MISSING_FIELD", field: "chargeSheet.exactQuestion" },
+  ...packageSeats.map(
+    (seat): ExtractionWarning => ({
+      code: "MISSING_FIELD",
+      field: `participants.${seat}.personality`
+    })
+  )
+];
+
+// A schema-valid, fully-null draft -- every required field (Charge
+// Sheet act/exactQuestion + every seat's personality) carries the
+// explaining warning the relational validation now requires; every
+// optional profileName stays null with no warning, which is allowed.
 function emptyDraft(): PackageExtractionResult {
   return {
     chargeSheet: { defendant: null, act: null, exactQuestion: null },
     participants: Object.fromEntries(
       packageSeats.map((seat) => [seat, { profileName: null, personality: null }])
+    ) as PackageExtractionResult["participants"],
+    warnings: REQUIRED_NULL_FIELD_WARNINGS
+  };
+}
+
+// A fully-populated, zero-warning draft -- used to isolate assertions
+// (e.g. deriveExtractionStatus) from the required-field-null-needs-
+// warning rule entirely.
+function fullyPopulatedDraft(): PackageExtractionResult {
+  return {
+    chargeSheet: {
+      defendant: "The Accused",
+      act: "Did the thing.",
+      exactQuestion: "Did they do the thing?"
+    },
+    participants: Object.fromEntries(
+      packageSeats.map((seat) => [
+        seat,
+        { profileName: null, personality: `${seat} personality.` }
+      ])
     ) as PackageExtractionResult["participants"],
     warnings: []
   };
@@ -125,8 +168,8 @@ describe("extractionWarningSchema", () => {
   });
 });
 
-describe("packageExtractionSchema", () => {
-  it("accepts a fully-null draft with zero warnings", () => {
+describe("packageExtractionSchema -- structural rules", () => {
+  it("accepts a fully-null draft when every required field has an explaining warning", () => {
     expect(packageExtractionSchema.safeParse(emptyDraft()).success).toBe(true);
   });
 
@@ -157,32 +200,119 @@ describe("packageExtractionSchema", () => {
   });
 
   it("enforces reused tribunalSetup.ts field limits (defendant/act/exactQuestion/personality)", () => {
-    const draft = emptyDraft();
+    const draft = fullyPopulatedDraft();
 
     draft.chargeSheet.defendant = "x".repeat(chargeSheetLimits.defendant + 1);
 
     expect(packageExtractionSchema.safeParse(draft).success).toBe(false);
 
-    const overLongPersonality = emptyDraft();
+    const overLongPersonality = fullyPopulatedDraft();
 
     overLongPersonality.participants.PRO_1.personality = "x".repeat(personalityLimit + 1);
 
     expect(packageExtractionSchema.safeParse(overLongPersonality).success).toBe(false);
   });
 
-  it("bounds warnings at MAX_EXTRACTION_WARNINGS (40)", () => {
-    const draft = emptyDraft();
+  it("bounds warnings at MAX_EXTRACTION_WARNINGS (40) -- using UNSUPPORTED_CONTENT_IGNORED, which references no field and is orthogonal to the relational rules", () => {
+    const draft = fullyPopulatedDraft();
 
     draft.warnings = Array.from({ length: MAX_EXTRACTION_WARNINGS }, () => ({
-      code: "MISSING_FIELD" as const,
-      field: "chargeSheet.defendant" as const
+      code: "UNSUPPORTED_CONTENT_IGNORED" as const,
+      field: null
     }));
 
     expect(packageExtractionSchema.safeParse(draft).success).toBe(true);
 
-    draft.warnings.push({ code: "MISSING_FIELD", field: "chargeSheet.act" });
+    draft.warnings.push({ code: "UNSUPPORTED_CONTENT_IGNORED", field: null });
 
     expect(packageExtractionSchema.safeParse(draft).success).toBe(false);
+  });
+});
+
+describe("packageExtractionSchema -- server-authoritative relational/null semantics (Section 10)", () => {
+  it("rejects a fully-null draft with ZERO warnings -- required fields left null must be explained", () => {
+    const draft: PackageExtractionResult = { ...emptyDraft(), warnings: [] };
+
+    expect(packageExtractionSchema.safeParse(draft).success).toBe(false);
+  });
+
+  it("rejects MISSING_FIELD used for the optional profileName field", () => {
+    const draft = fullyPopulatedDraft();
+
+    draft.warnings = [{ code: "MISSING_FIELD", field: "participants.PRO_1.profileName" }];
+
+    expect(packageExtractionSchema.safeParse(draft).success).toBe(false);
+  });
+
+  it("accepts a non-MISSING_FIELD warning (e.g. AMBIGUOUS_FIELD) referencing a null profileName", () => {
+    const draft = fullyPopulatedDraft();
+
+    draft.participants.PRO_1.profileName = null; // already null; explicit for clarity
+    draft.warnings = [{ code: "AMBIGUOUS_FIELD", field: "participants.PRO_1.profileName" }];
+
+    expect(packageExtractionSchema.safeParse(draft).success).toBe(true);
+  });
+
+  it("rejects AMBIGUOUS_PARTICIPANT_MAPPING pointing at a Charge Sheet field (must point to a participant field)", () => {
+    const draft = fullyPopulatedDraft();
+
+    draft.chargeSheet.defendant = null;
+    draft.warnings = [{ code: "AMBIGUOUS_PARTICIPANT_MAPPING", field: "chargeSheet.defendant" }];
+
+    expect(packageExtractionSchema.safeParse(draft).success).toBe(false);
+  });
+
+  it("accepts AMBIGUOUS_PARTICIPANT_MAPPING pointing at a null participant field", () => {
+    const draft = fullyPopulatedDraft();
+
+    draft.participants.JUDGE_1.personality = null;
+    draft.warnings = [
+      { code: "AMBIGUOUS_PARTICIPANT_MAPPING", field: "participants.JUDGE_1.personality" }
+    ];
+
+    expect(packageExtractionSchema.safeParse(draft).success).toBe(true);
+  });
+
+  it("rejects UNSUPPORTED_CONTENT_IGNORED with a non-null field", () => {
+    const draft = fullyPopulatedDraft();
+
+    draft.warnings = [
+      { code: "UNSUPPORTED_CONTENT_IGNORED", field: "chargeSheet.defendant" as never }
+    ];
+
+    expect(packageExtractionSchema.safeParse(draft).success).toBe(false);
+  });
+
+  it("rejects a warning naming a field whose actual value is NOT null (e.g. AMBIGUOUS_FIELD on a populated field)", () => {
+    const draft = fullyPopulatedDraft(); // chargeSheet.act is populated, non-null
+
+    draft.warnings = [{ code: "AMBIGUOUS_FIELD", field: "chargeSheet.act" }];
+
+    expect(packageExtractionSchema.safeParse(draft).success).toBe(false);
+  });
+
+  it("rejects a required field left null with NO warning at all, even when other required fields ARE explained", () => {
+    const draft = emptyDraft();
+
+    // Remove just the exactQuestion warning -- every other required
+    // field remains properly explained.
+    draft.warnings = draft.warnings.filter(
+      (warning) => warning.field !== "chargeSheet.exactQuestion"
+    );
+
+    expect(packageExtractionSchema.safeParse(draft).success).toBe(false);
+  });
+
+  it("re-validation of a persisted validated_result applies the exact same relational rules (replay path parity)", () => {
+    // Simulates loading a persisted validated_result whose relational
+    // invariant was corrupted after the fact (e.g. storage drift) --
+    // the SAME packageExtractionSchema the replay path re-validates
+    // against must reject it, not just the original write path.
+    const corrupted = fullyPopulatedDraft();
+
+    corrupted.chargeSheet.act = null; // now null, but zero warning added
+
+    expect(packageExtractionSchema.safeParse(corrupted).success).toBe(false);
   });
 });
 
@@ -224,9 +354,15 @@ describe("deriveExtractionStatus", () => {
   });
 
   it("an absent optional profileName alone (no warning at all) never becomes needs_review_incomplete", () => {
-    const draft = emptyDraft();
+    // Isolated from the required-field rule entirely: a fully-populated,
+    // zero-warning draft (every REQUIRED field non-null) with every
+    // OPTIONAL profileName left null is simply success.
+    const draft = fullyPopulatedDraft();
 
-    // profileName is optional -- null with zero warnings is simply success.
+    for (const seat of packageSeats as PackageSeat[]) {
+      draft.participants[seat].profileName = null;
+    }
+
     expect(packageExtractionSchema.safeParse(draft).success).toBe(true);
     expect(deriveExtractionStatus(draft.warnings)).toBe("success");
   });

@@ -180,7 +180,7 @@ const extractedParticipantsShape = Object.fromEntries(
   packageSeats.map((seat) => [seat, extractedParticipantSchema])
 ) as Record<PackageSeat, typeof extractedParticipantSchema>;
 
-export const packageExtractionSchema = z
+const packageExtractionShapeSchema = z
   .object({
     chargeSheet: extractedChargeSheetSchema,
     participants: z.object(extractedParticipantsShape).strict(),
@@ -188,7 +188,154 @@ export const packageExtractionSchema = z
   })
   .strict();
 
-export type PackageExtractionResult = z.infer<typeof packageExtractionSchema>;
+type PackageExtractionShape = z.infer<typeof packageExtractionShapeSchema>;
+
+// The three Charge Sheet fields plus every seat's `personality` are
+// REQUIRED (a null value always needs an explaining warning);
+// `profileName` is the one OPTIONAL field per seat (null needs no
+// warning, and MISSING_FIELD specifically must never be used for it --
+// Decision 6).
+const REQUIRED_FIELD_PATHS = new Set<ExtractionFieldPath>([
+  "chargeSheet.defendant",
+  "chargeSheet.act",
+  "chargeSheet.exactQuestion",
+  ...packageSeats.map((seat) => `participants.${seat}.personality` as ExtractionFieldPath)
+]);
+
+const OPTIONAL_FIELD_PATHS = new Set<ExtractionFieldPath>(
+  packageSeats.map((seat) => `participants.${seat}.profileName` as ExtractionFieldPath)
+);
+
+function resolveFieldValue(
+  data: PackageExtractionShape,
+  path: ExtractionFieldPath
+): string | null {
+  if (path === "chargeSheet.defendant") {
+    return data.chargeSheet.defendant;
+  }
+
+  if (path === "chargeSheet.act") {
+    return data.chargeSheet.act;
+  }
+
+  if (path === "chargeSheet.exactQuestion") {
+    return data.chargeSheet.exactQuestion;
+  }
+
+  const match = path.match(/^participants\.([A-Z0-9_]+)\.(profileName|personality)$/);
+
+  if (!match) {
+    return null;
+  }
+
+  const [, seat, subfield] = match;
+  const participant = data.participants[seat as PackageSeat];
+
+  return subfield === "profileName" ? participant.profileName : participant.personality;
+}
+
+// ---------------------------------------------------------------------
+// Server-authoritative relational/null semantic validation (ADR 0004
+// Decision 6), corrected this pass (independent pre-live audit, Section
+// 10): the Zod shape above enforces STRUCTURE (keys, enums, lengths,
+// strictness) but never enforced the semantic relationship between a
+// warning and the field it names -- e.g. nothing previously rejected a
+// MISSING_FIELD warning naming a NON-null field, or a warning naming
+// `profileName` with code MISSING_FIELD (profileName is optional and
+// can never be "missing" in that sense), or a required field left
+// `null` with no warning explaining why. The system prompt instructs
+// the model toward this contract, but the prompt is not itself a
+// validator -- a provider that returns structurally valid but
+// semantically inconsistent JSON must still be rejected here, both for
+// a fresh provider response AND on every re-validation of a persisted
+// `validated_result` (Decision 13/15), since both paths call this same
+// exported schema.
+// ---------------------------------------------------------------------
+export const packageExtractionSchema = packageExtractionShapeSchema.superRefine(
+  (data, ctx) => {
+    for (const [index, warning] of data.warnings.entries()) {
+      if (warning.code === "UNSUPPORTED_CONTENT_IGNORED") {
+        if (warning.field !== null) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["warnings", index, "field"],
+            message: "UNSUPPORTED_CONTENT_IGNORED must have field: null."
+          });
+        }
+
+        continue;
+      }
+
+      // Every other warning code is field-specific.
+      if (warning.field === null) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["warnings", index, "field"],
+          message: `${warning.code} must name a non-null field path.`
+        });
+        continue;
+      }
+
+      if (warning.code === "MISSING_FIELD" && OPTIONAL_FIELD_PATHS.has(warning.field)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["warnings", index, "code"],
+          message: "MISSING_FIELD must never be used for the optional profileName field."
+        });
+      }
+
+      if (
+        warning.code === "AMBIGUOUS_PARTICIPANT_MAPPING" &&
+        !warning.field.startsWith("participants.")
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["warnings", index, "field"],
+          message: "AMBIGUOUS_PARTICIPANT_MAPPING must point to a participant field."
+        });
+      }
+
+      if (resolveFieldValue(data, warning.field) !== null) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["warnings", index, "field"],
+          message: `${warning.code} names a field that is not null.`
+        });
+      }
+    }
+
+    const warningsByField = new Map<ExtractionFieldPath, ExtractionWarning[]>();
+
+    for (const warning of data.warnings) {
+      if (warning.field === null) {
+        continue;
+      }
+
+      const existing = warningsByField.get(warning.field) ?? [];
+
+      existing.push(warning);
+      warningsByField.set(warning.field, existing);
+    }
+
+    for (const path of REQUIRED_FIELD_PATHS) {
+      if (resolveFieldValue(data, path) === null && !warningsByField.has(path)) {
+        const [, containerKey, ...rest] = path.split(".");
+        const zodPath: (string | number)[] =
+          containerKey === "chargeSheet"
+            ? ["chargeSheet", rest[0]]
+            : ["participants", rest[0], rest[1]];
+
+        ctx.addIssue({
+          code: "custom",
+          path: zodPath,
+          message: `Required field ${path} is null but has no explaining warning.`
+        });
+      }
+    }
+  }
+);
+
+export type PackageExtractionResult = z.infer<typeof packageExtractionShapeSchema>;
 
 // ---------------------------------------------------------------------
 // Provider-facing JSON Schema, defined side by side with the Zod schema

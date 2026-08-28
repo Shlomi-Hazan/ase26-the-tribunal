@@ -19,8 +19,6 @@ import {
   profileNameLimit
 } from "./tribunalSetup";
 import {
-  extractionFieldPathSchema,
-  extractionWarningCodeSchema,
   MAX_EXTRACTION_WARNINGS,
   packageExtractionSchema,
   type PackageExtractionResult
@@ -33,14 +31,19 @@ import {
 // (supplementary-plane) character can cost per code unit.
 const WORST_CASE_CHAR = "漢";
 
+// Corrected this pass (independent pre-live audit, Section 10): every
+// warning now uses UNSUPPORTED_CONTENT_IGNORED (field: null) rather than
+// the longest field-path/code combination. The server-authoritative
+// relational validation added this pass requires any OTHER warning code
+// to reference a field whose actual value is null -- but the true
+// maximum-BYTES fixture wants every one of the 17 free-text fields
+// FILLED with worst-case text (non-null), which is only compatible with
+// a warning code that references no field at all.
+// UNSUPPORTED_CONTENT_IGNORED is exactly that: it does not reduce the
+// fixture's field-text bytes at all (nothing is forced null to
+// accommodate it), so this remains the genuine maximum, not an
+// approximation of it.
 function buildMaxFixture(): PackageExtractionResult {
-  const longestFieldPath = extractionFieldPathSchema.options.reduce((a, b) =>
-    a.length >= b.length ? a : b
-  );
-  const longestWarningCode = extractionWarningCodeSchema.options.reduce((a, b) =>
-    a.length >= b.length ? a : b
-  );
-
   return {
     chargeSheet: {
       defendant: WORST_CASE_CHAR.repeat(chargeSheetLimits.defendant),
@@ -57,8 +60,8 @@ function buildMaxFixture(): PackageExtractionResult {
       ])
     ) as PackageExtractionResult["participants"],
     warnings: Array.from({ length: MAX_EXTRACTION_WARNINGS }, () => ({
-      code: longestWarningCode,
-      field: longestFieldPath
+      code: "UNSUPPORTED_CONTENT_IGNORED" as const,
+      field: null
     }))
   };
 }
@@ -78,10 +81,17 @@ describe("canonical output-bound computation (Decision 11)", () => {
     const conservativeTokens = Math.ceil(bytes / 2);
     const EXTRACTION_OUTPUT_CAP_TOKENS = 65_000;
 
-    // Reported, not asserted against a hard-coded expectation -- this IS
-    // the computation the ADR's "111,884 bytes -> 55,942 tokens" planning
-    // reference describes; logged so a real discrepancy is visible in CI
-    // output rather than silently passing or silently failing.
+    // Reported, not asserted against a hard-coded expectation -- logged
+    // so a real discrepancy is visible in CI output rather than silently
+    // passing or silently failing. Corrected this pass (independent
+    // pre-live audit, Section 10/19): the fixture's warnings now use
+    // UNSUPPORTED_CONTENT_IGNORED (field: null) to stay compatible with
+    // the newly added relational validation while still maximizing every
+    // field's text bytes -- the real recomputed maximum is now
+    // 110,604 bytes -> 55,302 conservative tokens (previously reported
+    // as 111,884 -> 55,942 under a fixture that is no longer itself
+    // schema-valid); still comfortably under the unchanged 65,000 cap,
+    // so no approved contract value changes as a result.
     console.info(
       `[Decision 11 canonical output-bound] bytes=${bytes} conservativeTokens=${conservativeTokens} cap=${EXTRACTION_OUTPUT_CAP_TOKENS}`
     );
