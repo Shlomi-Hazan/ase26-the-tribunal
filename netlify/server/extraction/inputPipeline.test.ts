@@ -64,6 +64,39 @@ function pdfBase64(text: string): string {
   return buildMinimalPdf(text).toString("base64");
 }
 
+// A structurally valid single-page PDF whose content stream draws
+// nothing (no Tj text-showing operator at all) -- simulates an
+// image-only/scanned page: pdfjs can parse the document, but
+// getTextContent() legitimately returns zero text items.
+function buildImageOnlyPdf(): Buffer {
+  const content = ""; // No text-showing operators.
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> /MediaBox [0 0 200 200] /Contents 5 0 R >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`
+  ];
+
+  let pdf = "%PDF-1.4\n";
+  const offsets: number[] = [];
+
+  objects.forEach((body, index) => {
+    offsets.push(Buffer.byteLength(pdf, "latin1"));
+    pdf += `${index + 1} 0 obj\n${body}\nendobj\n`;
+  });
+
+  const xrefOffset = Buffer.byteLength(pdf, "latin1");
+
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const offset of offsets) {
+    pdf += `${String(offset).padStart(10, "0")} 00000 n \n`;
+  }
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+
+  return Buffer.from(pdf, "latin1");
+}
+
 describe("sanitizeDossierFilename", () => {
   it("accepts .txt, .md, .pdf", () => {
     expect(sanitizeDossierFilename("dossier.txt")).toBe("dossier.txt");
@@ -235,6 +268,17 @@ describe("resolveNormalizedDossier -- .pdf files (real pdfjs-dist text-layer ext
     ).rejects.toMatchObject({ code: "INPUT_PROCESSING_TIMEOUT" });
 
     expect(deadlineCalls).toBeGreaterThan(0);
+  });
+
+  it("rejects an image-only/no-text-layer PDF as PDF_TEXT_UNAVAILABLE, never OCR", async () => {
+    const imageOnlyBase64 = buildImageOnlyPdf().toString("base64");
+
+    await expect(
+      resolveNormalizedDossier(
+        { kind: "file", filename: "dossier.pdf", contentBase64: imageOnlyBase64 },
+        noopDeadline
+      )
+    ).rejects.toMatchObject({ code: "PDF_TEXT_UNAVAILABLE" });
   });
 
   it("real fixture file round-trip: writes and reads a temp PDF the same way the pipeline would receive it over HTTP", async () => {
