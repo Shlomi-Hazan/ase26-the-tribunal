@@ -1098,11 +1098,15 @@ The following require an approved architecture/specification change to violate:
 
 ---
 
-## 19. Future Smart Tribunal Package Extraction
+## 19. Smart Tribunal Package Extraction (Milestone 7A)
 
-`M7A - Smart Tribunal Package Extraction` is planned after OpenRouter infrastructure and before real Tribunal orchestration.
+`M7A - Smart Tribunal Package Extraction` is the current milestone,
+planned in full in `docs/adr/0004-smart-package-extraction.md`
+(structured-extraction schema, PDF extraction approach, economics,
+persistence, API/UI contracts, security). This section records the
+locked architectural shape; the ADR is authoritative for detail.
 
-Future flow:
+Flow:
 
 ```text
 Free-form document
@@ -1111,14 +1115,30 @@ Free-form document
   -> one setup-time structured extraction model call
   -> strict schema validation
   -> application normalization
-  -> Review
-  -> human correction/confirmation
+  -> Extraction Review (staged preview)
+  -> human correction/confirmation -> Apply
+  -> existing setup Review
   -> explicit Convene Tribunal
   -> 7 Tribunal participant logical calls
 ```
 
-The extraction call is a setup/import operation. It is not one of the seven Tribunal participant logical calls, does not create an eighth participant, and occurs before run creation.
+The extraction call is a setup/import operation, resolved and priced
+through the existing M7 OpenRouter provider boundary (exact endpoint
+resolution, unique pinnability, decimal economics, no silent fallback)
+under its own economics ceiling separate from the $5.00 Tribunal
+ceiling. It is not one of the seven Tribunal participant logical calls,
+does not create an eighth participant, and occurs before run creation.
+The resulting draft is staged for human review and is never
+automatically applied to the active setup or used to convene.
 
-This future path must share the same normalized Tribunal Setup Draft target as deterministic Milestone 5 imports. It must not hard-code any lecturer/course dossier, fictional character set, judicial profile set, or specific case as product configuration.
+This path shares the same normalized Tribunal Setup Draft target as
+deterministic Milestone 5 imports — the extraction model fills the
+existing fixed-seat keys (`PRO_1`/`PRO_2`/`CON_1`/`CON_2`/`JUDGE_1`/
+`JUDGE_2`/`JUDGE_3`) directly, mapped through the same
+`packageSeatToParticipantId` lookup M5's import already uses. It must
+not hard-code any lecturer/course dossier, fictional character set,
+judicial profile set, or specific case as product configuration.
 
-M7A may support text-extractable PDF. It must not add OCR unless separately approved.
+M7A supports text-extractable PDF via server-only, text-layer-only
+extraction (`docs/adr/0004-smart-package-extraction.md` Decision 4). It
+must not add OCR unless separately approved.
