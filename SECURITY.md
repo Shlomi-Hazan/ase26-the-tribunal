@@ -298,6 +298,13 @@ Decision 17):
 - PDF text extraction is server-only, text-layer-only (no rendering, no
   canvas, no embedded-JavaScript execution) — no OCR, no cloud document
   parser.
+- PDF extraction (and every other pre-provider processing step) obeys a
+  single enforced handler-wide soft deadline
+  (`PACKAGE_EXTRACTION_HANDLER_SOFT_DEADLINE_MS`, `docs/adr/
+  0004-smart-package-extraction.md` Decision 8) — no deterministic
+  pre-work step can consume the entire Function lifetime, and no
+  provider call (hence no spend) is ever attempted once that deadline
+  is exhausted.
 - Raw upload bytes and the normalized dossier text are both transient
   and are not retained after any extraction attempt (successful,
   failed, or between an initial attempt and a subsequent retry — a

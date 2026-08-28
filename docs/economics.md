@@ -699,16 +699,24 @@ see `docs/adr/0004-smart-package-extraction.md` for full detail):**
   the seven-participant Tribunal run and is never disguised by folding
   extraction into a fake seven-call count.
 - **Token/output bounds**: `EXTRACTION_OUTPUT_CAP_TOKENS = 65,000` — a
-  formally derived bound covering the actual maximum serialized
-  structured-output shape the schema can produce, resting on a
-  dedicated `safeExtractionText` character-class contract (excludes
-  raw control characters and unpaired Unicode surrogates on every
-  free-text field) that makes the underlying 3-UTF-8-byte-per-code-unit
-  assumption a true bound on JSON-serialized output, not merely
-  assumed; worst-case input bounded by `NORMALIZED_DOSSIER_TEXT_MAX_CHARS =
-  40,000` characters plus fixed prompt overhead, estimated with the
-  same conservative `ceil(UTF-8 bytes / 2)` proxy §7/§8 already use for
-  the seven-call Tribunal — no new estimation methodology.
+  bound covering the **canonical compact JSON serialization** of every
+  schema-valid semantic extraction object (an exact, computed
+  reference value of 55,942 conservative tokens for the maximum
+  fixture, not an estimate), resting on a dedicated `safeExtractionText`
+  character-class contract (excludes raw control characters other than
+  newline/tab, DEL, and unpaired Unicode surrogates on every free-text
+  field). This is a **semantic representability guarantee** — no valid
+  content is structurally impossible to express within the cap when
+  serialized without gratuitous escaping — not a claim that every
+  possible way a provider might lexically encode that content (e.g.
+  unnecessary `\uXXXX` escaping, which RFC 8259 permits) also fits; a
+  provider choosing an inflated encoding is ordinary provider-output
+  variance, handled by the existing `INVALID_STRUCTURED_OUTPUT` +
+  one-retry policy, not a schema defect. Worst-case input bounded by
+  `NORMALIZED_DOSSIER_TEXT_MAX_CHARS = 40,000` characters plus fixed
+  prompt overhead, estimated with the same conservative `ceil(UTF-8
+  bytes / 2)` proxy §7/§8 already use for the seven-call Tribunal — no
+  new estimation methodology.
 - **Model eligibility**: a dedicated, server-only-configured extraction
   model (`PACKAGE_EXTRACTION_MODEL_ID`, never chosen by dossier
   content), resolved through the existing M7 exact-endpoint/
@@ -723,25 +731,48 @@ see `docs/adr/0004-smart-package-extraction.md` for full detail):**
   authoritative.
 - **Retry/timeout**: at most 2 provider attempts per logical extraction
   call, reusing the existing `RETRYABLE_CATEGORIES` plus a schema-invalid
-  response; a **new, extraction-specific**
-  `PACKAGE_EXTRACTION_PROVIDER_TIMEOUT_MS = 45,000` (not M7's 60,000 ms
-  Tribunal constant) leaves the synchronous Function's reverified
-  60-second execution ceiling real headroom for the rest of its work.
-  A retry is a separate, explicit endpoint call (resending the same
-  dossier source, since nothing dossier-derived persists server-side)
-  whose eligibility the server alone determines from persisted attempt
-  state — never a client-declared attempt number — re-checked against
-  the remaining logical-call budget (actual attempt-#1 spend + a fresh
-  conservative attempt-#2 estimate) before it is permitted. No provider
-  call may begin before that specific attempt is atomically claimed in
-  the database (claim-then-spend, never spend-then-claim), so
-  concurrent duplicate requests can never both spend.
+  response or a stale-claim `UNKNOWN_OUTCOME` (below); a **new,
+  extraction-specific** `PACKAGE_EXTRACTION_PROVIDER_TIMEOUT_MS =
+  45,000` (not M7's 60,000 ms Tribunal constant), bounded further by a
+  **complete-Function soft deadline**
+  (`PACKAGE_EXTRACTION_HANDLER_SOFT_DEADLINE_MS = 55,000`, 5s of
+  margin below Netlify's reverified 60s hard limit) — the effective
+  provider timeout for a given request is
+  `min(PACKAGE_EXTRACTION_PROVIDER_TIMEOUT_MS, remainingMs)`, and no
+  provider call is ever started once that deadline is exhausted
+  (`INPUT_PROCESSING_TIMEOUT`, zero spend). A retry is a separate,
+  explicit endpoint call (resending the same dossier source, since
+  nothing dossier-derived persists server-side) whose eligibility the
+  server alone determines from persisted attempt state — never a
+  client-declared attempt number. No provider call may begin before
+  that specific attempt is atomically claimed in the database
+  (claim-then-spend, never spend-then-claim), so concurrent duplicate
+  requests can never both spend.
+- **Unknown-cost retry economics**: the retry-budget guard is
+  `(actual_cost_usd ?? conservative_max_cost_usd) +
+  fresh_attempt2_conservative_max_cost_usd <=
+  EXTRACTION_HARD_CEILING_USD` — attempt #1's real cost is used when
+  known (and preferred over the stored conservative maximum if it
+  turns out larger), but a `null` actual cost (e.g. after a timeout)
+  falls back to the claim-time `conservative_max_cost_usd`, **never**
+  `$0.00`. Guard failure → `BLOCKED_BUDGET`, zero attempt-#2 calls.
+- **Stale-claim handling**: a provider attempt claimed but never
+  finalized (e.g. a Function that died mid-attempt) is reconciled,
+  opportunistically and race-safely, from `CLAIMED` to a terminal
+  `UNKNOWN_OUTCOME` state after `STALE_EXTRACTION_CLAIM_AFTER_MS =
+  120,000` — telemetry stays `null` unless real evidence exists, that
+  attempt number never calls the provider again, and an
+  `UNKNOWN_OUTCOME` on attempt #1 may still permit one retry (using the
+  unknown-cost formula above); an `UNKNOWN_OUTCOME` on attempt #2 is
+  final — the user may start an entirely new, separately billable
+  logical extraction instead.
 - **Idempotency**: a server-computed semantic fingerprint over the
   normalized dossier content plus the fixed extraction configuration
-  (prompt version, configured model) proves a replayed/retried request
-  is the *same* logical extraction; a mismatch is rejected with zero
-  provider calls, never silently treated as a new attempt of something
-  else.
+  (prompt version, configured model — deliberately excluding
+  `source.kind`, which is audit metadata only) proves a replayed/retried
+  request is the *same* logical extraction; a mismatch is rejected with
+  zero provider calls, never silently treated as a new attempt of
+  something else.
 - **Telemetry**: actual `usage.cost` decoded once, Decimal throughout,
   unknown telemetry stays `null` — never a fabricated zero, matching §9
   exactly; recorded per provider attempt (a logical call's two attempts

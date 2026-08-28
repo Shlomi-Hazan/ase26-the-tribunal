@@ -20,29 +20,73 @@ output-cap/schema-maximum mismatch, a warning-path/uncertainty-policy
 gap, and an unspecified extraction-model configuration location. All
 nine were corrected (each marked "corrected this pass" at the time).
 
-**Second, deeper independent-review correction pass (this revision):**
-a further audit of the now-concrete retry/audit/API contract found four
-additional material consistency defects plus one minor
-current-dependency wording error — a retry-input contradiction (the
-retry endpoint required no body while retention policy forbids
-persisting the dossier server-side, making attempt #2 impossible to
-construct); a missing semantic fingerprint (nothing proved a
-replayed/retried request was the *same* logical extraction); an
-incomplete atomic pre-spend claim (the earlier `UNIQUE` constraint
-alone did not prevent two concurrent requests from both spending before
-racing on the insert); a mischaracterization of the attempt row as
-"immutable, insert-only" that conflicted with claiming it before spend;
-an incomplete output-cap "formal" bound (the 3-byte-per-code-unit
-assumption did not account for JSON control-character escaping, which
-can cost up to 6 bytes); and stale `pdfjs-dist` Node-version wording.
-All are corrected below (each marked "corrected this pass" for this
-second revision, distinguished from the first pass's own markers by
-context); a pre-spend read-only quote endpoint and an explicit
-Function-death/ambiguous-claim fail-closed policy were also added,
-closing two further gaps this deeper audit surfaced. Nothing from
-either prior version is silently erased. Full findings and corrections
-(this pass): Decisions 5, 9, 11, 13, 14, 15, 18, 19, 22, and the Open
-Decisions list.
+**Second, deeper independent-review correction pass:** a further audit
+of the now-concrete retry/audit/API contract found four additional
+material consistency defects plus one minor current-dependency wording
+error — a retry-input contradiction (the retry endpoint required no
+body while retention policy forbids persisting the dossier
+server-side, making attempt #2 impossible to construct); a missing
+semantic fingerprint (nothing proved a replayed/retried request was
+the *same* logical extraction); an incomplete atomic pre-spend claim
+(the earlier `UNIQUE` constraint alone did not prevent two concurrent
+requests from both spending before racing on the insert); a
+mischaracterization of the attempt row as "immutable, insert-only"
+that conflicted with claiming it before spend; an incomplete output-cap
+"formal" bound (the 3-byte-per-code-unit assumption did not account for
+JSON control-character escaping, which can cost up to 6 bytes); and
+stale `pdfjs-dist` Node-version wording. All were corrected (each
+marked "corrected this pass" at the time); a pre-spend read-only quote
+endpoint and an explicit Function-death/ambiguous-claim fail-closed
+policy were also added, closing two further gaps that pass surfaced.
+
+**Third, final independent-review correction pass (this revision):** a
+final audit found four remaining contract gaps, each corrected below
+(marked "corrected this pass"/"final independent review" for this
+third revision):
+
+1. The `65,000`-token output-cap "formal proof" was still conflating
+   two different claims — `safeExtractionText` bounds the *parsed,
+   semantic* value, not every possible *lexical* JSON encoding a
+   provider might choose (RFC 8259 permits arbitrary `\uXXXX` escaping
+   even when unnecessary, so no finite bound can cover every possible
+   provider-emitted encoding). Corrected to the actually-provable claim
+   — a **canonical compact-serialization** semantic-representability
+   guarantee — with an **exact**, computed (not estimated) byte count
+   for the reviewed maximum fixture (`111,884` bytes → `55,942`
+   conservative tokens, well under the unchanged `65,000` cap).
+2. Retry-budget accounting was undefined when attempt #1's
+   `actual_cost_usd` is unknown (e.g. after `TIMEOUT`/
+   `TRANSIENT_NETWORK`/`PROVIDER_5XX`). A new, claim-time-fixed
+   `conservative_max_cost_usd` field and an explicit
+   `actual_cost_usd ?? conservative_max_cost_usd` retry-debit formula
+   close the gap — unknown cost is never treated as `$0.00`.
+3. Stale-`CLAIMED`-attempt reconciliation was left as an open,
+   deferred decision while the ADR simultaneously claimed
+   implementation-readiness — an unresolved billing/attempt-lifecycle
+   gap cannot coexist with that claim. Resolved now: a locked
+   `STALE_EXTRACTION_CLAIM_AFTER_MS = 120_000` threshold, an atomic,
+   race-safe `CLAIMED -> UNKNOWN_OUTCOME` transition, and precise
+   `UNKNOWN_OUTCOME` semantics (terminal audit state, never fabricated
+   telemetry, exactly one further attempt permitted from attempt #1,
+   none from attempt #2).
+4. A fixed 45-second provider timeout did not, by itself, guarantee the
+   complete synchronous Function invocation stays under Netlify's
+   reverified 60-second hard limit — pre-provider work was unbounded.
+   Resolved with an enforced
+   `PACKAGE_EXTRACTION_HANDLER_SOFT_DEADLINE_MS = 55_000` total-request
+   budget, computed remaining-time-aware provider timeout, and a
+   structural rule that no provider call may start once the deadline is
+   exhausted (a new `INPUT_PROCESSING_TIMEOUT` code distinguishes this
+   from a genuine provider-call `TIMEOUT`).
+
+Also corrected this pass: `source.kind` locked **out** of the semantic
+fingerprint entirely (no longer an open question); a `\r`/tab
+inconsistency in `safeExtractionText`'s regex fixed (carriage return
+now excluded, matching the documented "control characters excluded
+except newline/tab" rule exactly); the no-spend-before-claim
+persistence policy clarified explicitly. Nothing from any prior version
+is silently erased. Full findings and corrections (this pass):
+Decisions 5, 8, 9, 11, 13, 14, 15, 16, and the Open Decisions list.
 
 ## Context
 
@@ -288,6 +332,23 @@ not a new heuristic.
 // can otherwise inflate a single JSON-serialized character beyond the
 // assumed 3-UTF-8-byte worst case (e.g. a raw control character with no
 // named JSON escape serializes as `\u00XX`, 6 ASCII bytes).
+//
+// Corrected again this pass (final independent review): the regex
+// previously still permitted \x0D (carriage return) while the prose
+// said "control characters excluded except newline/tab" -- an
+// inconsistency, not a deliberate third allowance. Resolved as option
+// A (reject \r too, tab remains allowed exactly as originally
+// documented): the application's own dossier/output normalization
+// already standardizes every line ending to a bare \n
+// (netlify/server/importParsers.ts's existing `.replace(/\r\n?/g,
+// "\n")` pattern, reused conceptually here) before this schema ever
+// sees the text, so a raw \x0D reaching this validator would already be
+// unexpected -- one normalized line-ending convention, not two
+// equivalent ones. This does not materially change the output-bound
+// computation (Decision 11) -- \r was never counted as a *legal*
+// worst-case character there either. The allowed C0 set is now exactly
+// {\x09 tab, \x0A newline} -- \x0B-\x1F (which now cleanly includes
+// \x0D) plus \x00-\x08 and \x7F are excluded.
 const safeExtractionText = (maxLength: number) =>
   z
     .string()
@@ -296,8 +357,8 @@ const safeExtractionText = (maxLength: number) =>
     .refine((value) => value.isWellFormed(), {
       message: "Text must not contain unpaired Unicode surrogates."
     })
-    .refine((value) => !/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(value), {
-      message: "Text must not contain control characters other than newline/tab."
+    .refine((value) => !/[\x00-\x08\x0B-\x1F\x7F]/.test(value), {
+      message: "Text must not contain control characters other than newline/tab, or a bare carriage return."
     });
 
 const chargeSheetExtractionSchema = z.object({
@@ -518,27 +579,61 @@ an eighth participant.
   the one retry (a second attempt is cheap and a transient malformed
   response is plausible); a second schema-invalid response is
   terminal.
-- **Provider attempt timeout — corrected this pass (independent
-  review)**: `PACKAGE_EXTRACTION_PROVIDER_TIMEOUT_MS = 45_000` ms, a
-  **new, extraction-specific** constant — not a reuse of M7's
-  `PROVIDER_ATTEMPT_TIMEOUT_MS` (60,000 ms). `AGENTS.md`'s "provider
-  attempt timeout <= 60 seconds" is a ceiling on the provider attempt
-  itself, not a promise that the surrounding synchronous Function
-  invocation has any time left over once the attempt returns. Netlify's
-  own synchronous Function execution limit is **also** 60 seconds,
-  non-configurable (reverified against current official documentation,
-  Decision 20) — a 60-second provider attempt would leave **zero**
-  headroom for input validation, PDF extraction, Supabase
-  audit/idempotency work, route/pricing resolution, budget preflight,
-  response parsing, and serialization, all of which happen in the same
-  Function invocation. 45 seconds leaves that other work a real,
-  bounded 15-second budget within the Function's 60-second hard
-  ceiling — the complete Function invocation still depends on
-  Netlify's 60-second limit; 45 seconds is the provider-attempt
-  ceiling *within* it, not a claim that everything else takes exactly
-  15 seconds. This is an M7A-specific policy; M7's own
-  `PROVIDER_ATTEMPT_TIMEOUT_MS` for future Tribunal execution is
-  unmodified.
+- **Provider attempt timeout**: `PACKAGE_EXTRACTION_PROVIDER_TIMEOUT_MS
+  = 45_000` ms, a **new, extraction-specific** constant — not a reuse
+  of M7's `PROVIDER_ATTEMPT_TIMEOUT_MS` (60,000 ms). `AGENTS.md`'s
+  "provider attempt timeout <= 60 seconds" is a ceiling on the provider
+  attempt itself, not a promise that the surrounding synchronous
+  Function invocation has any time left over once the attempt returns.
+  This is an M7A-specific policy; M7's own `PROVIDER_ATTEMPT_TIMEOUT_MS`
+  for future Tribunal execution is unmodified.
+- **Complete-Function time budget — corrected this pass (final
+  independent review): a fixed 45s provider timeout does not, by
+  itself, guarantee the whole synchronous Function invocation stays
+  under Netlify's reverified 60-second hard limit (Decision 20).**
+  Saying "45 seconds leaves 15 seconds for everything else" was an
+  unenforced assertion, not a guarantee — pre-provider work (request
+  decoding, PDF extraction, normalization, fingerprint computation,
+  Supabase state, metadata/route resolution, the retry-budget guard)
+  could itself consume more than 15 seconds in a slow case, at which
+  point a full 45-second provider attempt would push the total past
+  60s. Locked, enforced resolution:
+
+  ```ts
+  export const PACKAGE_EXTRACTION_HANDLER_SOFT_DEADLINE_MS = 55_000;
+  ```
+
+  5 seconds of deliberate margin below Netlify's 60-second hard
+  platform limit, reserved for uncontrolled/runtime tail overhead the
+  application cannot itself account for (cold start, network hops,
+  platform-level scheduling). The handler records a monotonic start
+  time at entry. **Before starting the provider call** (i.e. before the
+  atomic claim, Decision 15, is even attempted):
+
+  ```ts
+  const elapsedMs = monotonicNow() - handlerStartMs;
+  const remainingMs = PACKAGE_EXTRACTION_HANDLER_SOFT_DEADLINE_MS - elapsedMs;
+  const effectiveProviderTimeoutMs = Math.min(
+    PACKAGE_EXTRACTION_PROVIDER_TIMEOUT_MS,
+    remainingMs
+  );
+  ```
+
+  **No provider call may be started once the soft deadline is already
+  exhausted** (`remainingMs` at or below a sane minimum floor for a
+  provider call to be worth attempting at all) — the request fails
+  safely, *before* claiming/spending, with a new stable error code
+  (`INPUT_PROCESSING_TIMEOUT`, Decision 16) distinct from a genuine
+  provider-call `TIMEOUT`, so audit data can distinguish "the model
+  timed out" from "our own pre-work left no time to even try."
+  **PDF extraction is bound by this same soft deadline, not a separate,
+  unenforced budget** — if deterministic pre-work (including PDF
+  extraction) would exhaust the deadline, that failure must occur
+  *before* any claim/spend is attempted, never mid-provider-call. An
+  exact PDF-specific millisecond sub-budget or page-count tuning value
+  remains an implementation-time detail (Open Decisions, below) — it is
+  safe to choose *because* the overall soft-deadline invariant already
+  makes the architecture correct regardless of that exact number.
 - **Retry is NOT an automatic in-request loop.** The initial `POST
   /api/setup-extractions` request performs **exactly one** provider
   attempt. If that attempt fails with a retryable reason, the response
@@ -604,16 +699,21 @@ pass's correction):
   bytes/char + prompt/schema overhead ≈ 120,000+ bytes ÷ 2 (M7's
   `ceil(bytes/2)` conservative-token proxy) ≈ 60,000+ conservative
   input tokens.
-- Output cap (Decision 11, corrected this pass to a formally proven
-  bound): `65,000` tokens.
+- Output cap (Decision 11, resting on an exactly-computed canonical
+  compact-serialization bound, `55,942` tokens for the reviewed
+  reference fixture): `65,000` tokens (the enforced
+  `max_completion_tokens` — this worked estimate deliberately still
+  uses the full enforced cap, not the tighter computed value, since
+  actual spend is bounded by what the provider is *permitted* to
+  generate, not by this ADR's proof of representability).
 - At an illustrative example rate of $1/M prompt, $2/M completion
   (chosen only for this sanity check, never asserted as a tier
   boundary): `60,000 × $1e-6 + 65,000 × $2e-6 ≈ $0.19` per attempt.
 - ×2 attempts × 1.10 safety factor ≈ **$0.418** per logical extraction
   — inside the $0.50 ceiling, but with materially less margin than
   before the output-cap correction (Decision 11). This is disclosed
-  honestly rather than smoothed over: at the corrected, formally proven
-  output-cap size, only routes priced meaningfully below this
+  honestly rather than smoothed over: at the corrected output-cap size,
+  only routes priced meaningfully below this
   illustrative example rate have comfortable headroom under $0.50 —
   which is consistent with, not contrary to, `INTENT.md` §10's
   preference for free/very-low-cost extraction models, but means the
@@ -753,67 +853,96 @@ silently shrinking the schema's field limits below the existing
 downstream `TribunalSetupDraft` bounds.
 
 **Corrected again this pass (deeper independent review): the prior
-"formal" computation was still not actually formal.** `content chars x
-3 UTF-8 bytes` is not a valid bound on *serialized JSON* bytes on its
-own — `z.string().trim().max(N)` alone does not exclude control
-characters or unpaired Unicode surrogates, and JSON serialization can
-expand a single such code unit to more than 3 bytes (e.g. a raw C0
-control character with no named JSON escape serializes as `\u00XX`, 6
-ASCII bytes — double the assumed maximum). Resolved by making the
-**precondition** true rather than continuing to assert an unproven
-bound: Decision 5's `safeExtractionText` refinement now excludes, on
-every free-text field, exactly the code-unit classes that could exceed
-3 bytes once JSON-serialized (C0 control characters other than
-newline/tab, DEL, and unpaired surrogates via `.isWellFormed()`). Under
-that precondition, every remaining representable character either (a)
-needs no JSON escape and costs its raw UTF-8 byte count (at most 3
-bytes for any BMP code unit, including the CJK worst case; a
-surrogate-pair character costs 4 bytes for 2 code units = 2 bytes/unit,
-already under the bound), or (b) is one of the four characters JSON
-*does* require escaping — `"`, `\`, `\n`, `\t` — each of which escapes
-to exactly 2 ASCII bytes, still under 3. **With `safeExtractionText` in
-place, `3 bytes per code unit` is now a true, provable maximum of the
-serialized JSON output**, not an assumption.
+"formal" computation was still not actually formal, for a different
+reason than the first correction addressed.** `safeExtractionText`
+(Decision 5) validates the **parsed, semantic** string value — it
+excludes control characters and unpaired surrogates from what the
+value *means* after JSON parsing. It does **not**, and structurally
+cannot, bound how a provider **lexically chooses to serialize** that
+same semantic value as JSON text. RFC 8259 explicitly permits any JSON
+string character to be represented as a `\uXXXX` escape even when
+unnecessary — the semantically identical parsed string `"漢"` may
+legally appear in the wire text as either `"漢"` (3 UTF-8 bytes) or
+`"漢"` (6 ASCII bytes) — and JSON permits insignificant whitespace
+between structural tokens. **No finite constant can be a formal upper
+bound on every possible JSON text a provider might choose to emit for
+a given semantic payload** — a pathological (if unlikely) encoding
+choice could inflate any fixed-size semantic content arbitrarily.
+Continuing to describe `65,000` as covering "every possible
+provider-emitted JSON serialization" was therefore still wrong, even
+after the `safeExtractionText` fix.
 
-**Formal worst-case computation** (Decision 5's schema, all fields
-populated at their `safeExtractionText`-constrained maximum, matching
-M7's `worstCaseAdvocateInputTokens()` methodology exactly — also
-corrected this pass: the warnings-row byte count previously referenced
-the pre-correction 80-character free-text `field` maximum; `field` is
-now Decision 5's closed 17-entry enum, whose longest member,
-`"participants.JUDGE_1.profileName"` / `"...personality"`, is 32
-characters, not 80):
+**The correct, provable claim — locked this pass — is narrower and is
+what actually matters for schema design:**
+
+> `EXTRACTION_OUTPUT_CAP_TOKENS` covers the **canonical compact JSON
+> serialization** of every schema-valid semantic extraction object —
+> i.e. no `safeExtractionText`-legal, schema-legal semantic result is
+> *structurally impossible* to represent within the cap, when
+> serialized without gratuitous escaping or whitespace (native compact
+> `JSON.stringify`, the same canonical serializer the application
+> itself uses when it later re-serializes/compares values).
+
+This is a **semantic representability guarantee**, not a claim about
+provider lexical behavior. A provider that chooses unnecessary
+`\uXXXX` escaping or extra whitespace for its own output is a
+**provider/model behavior question, not a schema-validity
+contradiction** — if that choice causes the response to be truncated
+or otherwise malformed, it is handled exactly like any other malformed
+provider response: `INVALID_STRUCTURED_OUTPUT` plus the existing
+one-retry policy (Decision 8). This ADR does not invent a new failure
+category for it, and does not claim the cap protects against an
+adversarially verbose encoding — only that the cap never forbids valid
+content that the model expresses reasonably.
+
+**Exact computation (this pass) — not an estimate.** The maximum
+`safeExtractionText`-legal, schema-legal fixture (every field at its
+maximum length, populated with the 3-byte-UTF-8 worst-case character
+`漢`; `warnings` at its 40-entry maximum using the longest `code`
+enum value, `"AMBIGUOUS_PARTICIPANT_MAPPING"` (30 chars), and the
+longest `field` enum value, `"participants.JUDGE_1.profileName"` /
+`"...personality"` (32 chars, corrected this pass — the prior pass's
+`59,280` estimate itself still used an informal `~3,000`-byte
+structural-overhead placeholder rather than an exact count) was built
+as a real JS object and serialized with native compact
+`JSON.stringify` (no indentation — the canonical minimal form),
+exactly per Decision 6/22's testing requirement:
 
 ```text
-content chars =
-    chargeSheet          (200 + 6000 + 1000)                =  7,200
-  + participants (x7)    (120 + 4000) x 7                   = 28,840
-  + warnings (x40)       (30 [longest code] + 32 [longest field path]) x40 = 2,480
-                                                              --------
-  total content chars                                        = 38,520
+byteLength = Buffer.byteLength(JSON.stringify(maxFixture), "utf8")
+           = 111,884 bytes   (computed exactly this pass, not estimated)
 
-content bytes  = 38,520 x 3 (3-byte UTF-8 worst case, now a
-                 true bound under safeExtractionText)         = 115,560
-structural JSON overhead (keys/braces/quotes/commas, ASCII,
-                 application-controlled, not model output)   ~=   3,000
-                                                              --------
-total worst-case bytes                                       ~= 118,560
-
-conservative tokens = ceil(bytes / 2)  (M7's proxy)           ~=  59,280
+conservative tokens = ceil(byteLength / 2)   (M7's proxy)
+                     = 55,942
 ```
 
 ```ts
 export const EXTRACTION_OUTPUT_CAP_TOKENS = 65_000;
 ```
 
-`65,000` remains the locked cap — unchanged in value, now resting on a
-genuinely formal bound (`59,280`, tighter than the prior pass's
-`62,160` once the field-path correction is applied) with slightly more
-margin than before, not less. It is a real, provider-enforced
-`max_completion_tokens` ceiling — **not** "unbounded" — never the
-schema's field bounds themselves being narrowed. It is a new,
-extraction-specific constant, never
+`65,000` remains the locked cap — unchanged in value, now resting on
+an **exactly computed** canonical-serialization bound (`55,942`,
+tighter than the prior pass's informal `~59,280` estimate) with more
+margin than either prior pass claimed, not less. It is a real,
+provider-enforced `max_completion_tokens` ceiling — **not**
+"unbounded" — never the schema's field bounds themselves being
+narrowed. It is a new, extraction-specific constant, never
 `ADVOCATE_OUTPUT_CAP_TOKENS`/`JUDGE_OUTPUT_CAP_TOKENS`.
+
+**Implementation requirement, not optional:** the implementation-time
+regression test (Decision 22) must **compute** this exact byte length
+from a real fixture object via `Buffer.byteLength(JSON.stringify(...),
+"utf8")` at test time — this pass's `111,884`/`55,942` are a reviewed
+reference point from the current schema shape, not a constant the
+implementation may hardcode and skip recomputing; if the schema's
+field bounds or the warning enums ever change, the test recomputes and
+must still prove `< 65_000`, or the cap itself needs a new, separately
+reviewed correction. A **best-effort** prompt instruction requesting
+compact JSON with no unnecessary `\uXXXX` escaping or whitespace may be
+added if compatible with the structured-output/`response_format`
+mode in use — but it is never treated as the safety proof; the
+semantic-representability guarantee above is what actually bounds the
+design, independent of whether the model follows that instruction.
 
 **Disclosed tradeoff, per this pass's explicit review instruction not
 to smooth this over:** a 65,000-token output requirement is
@@ -898,20 +1027,24 @@ retry/concurrency safety without weakening this:
 **Persisted: two tables, not one** (unchanged from the prior pass's
 correction — still needed, since a logical extraction can have two
 distinct provider attempts with materially different, independently
-auditable outcomes). **Corrected this pass (deeper independent
-review):** the attempt row's lifecycle and `setup_extractions`' own
-shape both needed further correction — see the annotations inline
-below.
+auditable outcomes). **Corrected this pass (final independent
+review):** the attempt row's lifecycle, cost-authorization field, and
+stale-claim handling all needed further, final correction — see the
+annotations inline below.
 
 ```text
 setup_extractions                       -- ONE row per logical call
   id                    = extractionRequestId
   case_id               nullable (see below)
-  source_type
-  request_fingerprint    -- NEW this pass, see Decision 15
+  source_type            -- audit/UI metadata only; NOT part of the
+                           -- semantic fingerprint (Decision 15 -- locked
+                           -- this pass, no longer an open question)
+  request_fingerprint
   prompt_version         ('package-extraction-v1')
   configured_model_id
-  final_status           (one of Decision 16's outcomes, once terminal)
+  final_status           (one of Decision 16's outcomes once terminal --
+                           -- see "No-spend block persistence" below for
+                           -- the pre-claim-block case)
   created_at
   completed_at           nullable until terminal
 
@@ -919,19 +1052,28 @@ setup_extraction_attempts                -- ONE row per provider-attempt SLOT, c
   id
   extraction_request_id  FK -> setup_extractions.id
   attempt_number          1 | 2
-  status                  -- CLAIMED (see Decision 15) as its FIRST value,
+  status                  -- CLAIMED (Decision 15) as its FIRST value,
                            -- then transitions EXACTLY ONCE to one terminal
-                           -- value (a Decision 16 code, or success/
-                           -- incomplete/ambiguous) -- never "immutable
-                           -- from insertion", see below
+                           -- value: a Decision 16 code, success/
+                           -- incomplete/ambiguous, OR `UNKNOWN_OUTCOME`
+                           -- (NEW this pass -- see below)
   canonical_model_id      -- fixed at claim time, before the provider call
   provider_endpoint_tag   -- fixed at claim time
-  estimated_cost_usd      -- fixed at claim time (that attempt's preflight)
+  conservative_max_cost_usd  -- RENAMED this pass from `estimated_cost_usd`
+                           -- for precision: this is the reviewed
+                           -- per-attempt CONSERVATIVE MAXIMUM used to
+                           -- authorize the claim (worst-case-input +
+                           -- full-output-cap x pricing x 1.10 safety
+                           -- factor), fixed at claim time, never rewritten --
+                           -- see "Unknown-cost retry economics" below for
+                           -- why this field's precise name/semantics matter
   actual_input_tokens     nullable -- see Decision 14: recorded whenever
                            -- the provider supplies it, not only on
                            -- application-level success
   actual_output_tokens    nullable
-  actual_cost_usd         nullable
+  actual_cost_usd         nullable -- see "Unknown-cost retry economics"
+                           -- below: null here NEVER means zero for
+                           -- budget-accounting purposes
   latency_ms              nullable
   provider_request_id     nullable
   error_code              nullable
@@ -941,40 +1083,176 @@ setup_extraction_attempts                -- ONE row per provider-attempt SLOT, c
   UNIQUE (extraction_request_id, attempt_number)
 ```
 
-**Corrected this pass: "immutable, insert-only" was the wrong
-description of the attempt lifecycle, and conflicted with the atomic
-pre-spend claim this pass introduces (Decision 15).** An attempt row
-cannot be inserted *after* a successful provider call and also be
-"claimed before spend" — claiming necessarily means the row exists
-(in a non-terminal state) before the provider is ever called. The
-corrected, precise contract:
+**Attempt lifecycle (corrected, final form this pass):**
 
 - **Identity/authorization fields are fixed at claim time and never
   rewritten**: `attempt_number`, `canonical_model_id`,
-  `provider_endpoint_tag`, `estimated_cost_usd` (the exact route/pricing
-  snapshot that authorized this attempt to proceed) are written once,
-  at claim, and read-only thereafter.
-- **`status` starts at `CLAIMED` and transitions exactly once**, to
-  exactly one terminal value, when the provider call (or its absence —
-  e.g. a preflight-stage failure that never reached the provider)
-  resolves.
-- **Once terminal, the row is immutable** — this is where "immutable"
-  correctly applies: after the one status transition, nothing about
-  that attempt's row is ever rewritten again.
+  `provider_endpoint_tag`, `conservative_max_cost_usd` (the exact
+  route/pricing snapshot and safety-factored maximum that authorized
+  this attempt to proceed) are written once, at claim, and read-only
+  thereafter.
+- **`status` starts at `CLAIMED`.** From `CLAIMED`, it transitions
+  **exactly once** to exactly one terminal value — a normal
+  provider-resolved outcome (Decision 16 code, or
+  success/incomplete/ambiguous), **or** `UNKNOWN_OUTCOME` (new this
+  pass, see below) if the claiming request never returns to finalize
+  it and stale-claim reconciliation intervenes instead.
+- **Once terminal, the row is immutable** — after that one status
+  transition, nothing about the row is ever rewritten again, by
+  anyone, including a late-returning original request (see "Stale
+  claim reconciliation" below for the race-safety guarantee).
 - **Attempt #2 is a different row, never an overwrite of attempt #1's
-  row** — this part of the prior pass's correction is unchanged and
-  still exactly right.
+  row.**
 
 The `UNIQUE(extraction_request_id, attempt_number)` constraint remains
-the server-authoritative mechanism preventing a duplicate attempt row —
-but this pass corrects *when* it must be enforced: the constraint must
-back the **claim insert itself** (Decision 15), not merely a
-"who gets recorded" bookkeeping step. The attempt's relationship to a
-`cases` row is an open implementation detail (Open Decisions, below) —
-extraction typically happens *before* a case exists, so
-`setup_extractions.case_id` may need to stand alone (nullable,
-possibly back-filled later) rather than requiring a case to already
-exist.
+the server-authoritative mechanism preventing a duplicate attempt row,
+enforced at the **claim insert itself** (Decision 15). The attempt's
+relationship to a `cases` row is an open implementation detail (Open
+Decisions, below) — extraction typically happens *before* a case
+exists, so `setup_extractions.case_id` may need to stand alone
+(nullable, possibly back-filled later) rather than requiring a case to
+already exist.
+
+### Unknown-cost retry economics — new this pass (final independent review)
+
+**Corrected this pass: retry-budget accounting was undefined when
+attempt #1's `actual_cost_usd` is unknown** (e.g. attempt #1 ended in
+`TIMEOUT`/`TRANSIENT_NETWORK`/`PROVIDER_5XX` — all retryable per
+Decision 8 — where the provider may or may not have actually billed).
+`actual_cost_usd = null` must never make the retry-budget guard
+undefined, and must **never** be silently treated as `$0.00` — that
+would understate real risk and could let a retry push cumulative spend
+over `EXTRACTION_HARD_CEILING_USD` without the guard ever noticing.
+
+This is exactly why `conservative_max_cost_usd` (above) is retained as
+its own fixed, claim-time field, not discarded once `actual_cost_usd`
+is known. Locked retry-budget formula:
+
+```text
+attempt1_budget_debit =
+    actual_cost_usd ?? conservative_max_cost_usd
+    -- i.e. use the real value if known; if the real value is KNOWN
+    -- and is LARGER than the stored conservative maximum (should not
+    -- normally happen, but never assumed impossible), use the actual,
+    -- larger value -- never the smaller, already-superseded estimate.
+
+require:
+  attempt1_budget_debit + fresh_attempt2_conservative_max_cost_usd
+    <= EXTRACTION_HARD_CEILING_USD
+```
+
+`fresh_attempt2_conservative_max_cost_usd` is computed fresh (Decision
+9's retry preflight, using freshly re-checked route/pricing metadata),
+never reused from the original claim's number. If the guard fails:
+`BLOCKED_BUDGET`, and **zero** attempt-#2 provider calls occur —
+attempt #1's already-incurred spend (real or conservatively assumed)
+is never lost, discarded, or silently treated as safe to ignore.
+
+### Stale claim reconciliation and `UNKNOWN_OUTCOME` — new this pass, resolved now, not deferred
+
+**Corrected this pass: the prior version left stale-`CLAIMED`
+reconciliation as an open, deferred decision while simultaneously
+claiming the plan was implementation-ready — an unresolved
+attempt-lifecycle/billing-state-machine gap cannot coexist with an
+implementation-readiness claim.** Resolved now with a minimal, locked
+V1 policy:
+
+```ts
+export const STALE_EXTRACTION_CLAIM_AFTER_MS = 120_000;
+```
+
+Chosen with explicit headroom: the provider attempt ceiling is 45s
+(Decision 8), Netlify's synchronous Function hard maximum is 60s
+(Decision 20) — `120,000` ms is safely beyond any valid live Function
+lifetime for this handler, so it never misclassifies an ordinarily
+slow (but still legitimately in-flight, within a single Function
+invocation) request as stale.
+
+**Reconciliation mechanism**: a server-authoritative, race-safe
+operation (the same atomic-transaction discipline as the claim itself,
+Decision 15) may transition a specific attempt row `CLAIMED ->
+UNKNOWN_OUTCOME` **only if, atomically**: the row is still `CLAIMED`
+(a conditional/compare-and-swap-style update on `status = 'CLAIMED'`,
+not a blind write) **and** its age (`now() - created_at`) is `>=
+STALE_EXTRACTION_CLAIM_AFTER_MS`. `UNKNOWN_OUTCOME` is a **terminal**
+audit state and, once written, is subject to the same immutability
+guarantee as any other terminal status.
+
+**`UNKNOWN_OUTCOME` means precisely**: the application cannot prove
+whether the upstream provider ultimately completed or billed for this
+attempt. `actual_input_tokens`/`actual_output_tokens`/`actual_cost_usd`/
+`provider_request_id` remain `null` unless genuine evidence exists (no
+fabrication, per Decision 14's discipline, applies identically here).
+That specific attempt number may **never** call the provider again —
+`UNKNOWN_OUTCOME` is terminal exactly like any other resolved status.
+
+**Retry after `UNKNOWN_OUTCOME`:**
+
+- **Attempt #1 → `UNKNOWN_OUTCOME`**: counts as a terminal, retryable
+  outcome — a retry may proceed to claim attempt #2, but because
+  attempt #1's actual cost is by definition unknown, the "unknown-cost
+  retry economics" formula above applies using
+  `conservative_max_cost_usd` (never `actual_cost_usd`, which is
+  `null`): `attempt1.conservative_max_cost_usd +
+  fresh_attempt2_conservative_max_cost_usd <=
+  EXTRACTION_HARD_CEILING_USD`, or `BLOCKED_BUDGET`.
+- **Attempt #2 → `UNKNOWN_OUTCOME`**: the logical extraction terminates
+  with an unknown/failed outcome. **There is no attempt #3** — the
+  existing "maximum 2 provider attempts" structural limit (Decision 15)
+  is unchanged. The user may deliberately start an entirely **new**
+  logical extraction (a fresh `extractionRequestId`), which is
+  separately billable and must go through the read-only preflight quote
+  and explicit confirmation again from the beginning (Decision 9/19) —
+  never silently chained onto the exhausted logical call.
+
+**Reconciliation trigger — no background worker required for V1.** The
+stale-claim check runs **opportunistically** inside any later
+server-authoritative request that loads the logical extraction's state
+— an idempotent replay of the initial `POST`, a retry request, or a
+future status-retrieval endpoint if one is introduced — never requiring
+a scheduled job to exist for this plan to be complete. The check and
+transition happen inside the same atomic operation that request was
+already making, not a separate step.
+
+**Race safety, explicit:** if the *original* claiming Function
+invocation somehow attempts to finalize an attempt (writing its real
+terminal outcome) **after** a concurrent reconciliation has already
+transitioned that row to `UNKNOWN_OUTCOME`, the late finalization
+**must not overwrite** the already-terminal row — the finalizing
+update is itself conditioned on `status = 'CLAIMED'` (the same
+compare-and-swap discipline), so it silently no-ops (or reports "already
+resolved") rather than clobbering `UNKNOWN_OUTCOME` with a
+late-arriving result. If that late result happens to carry genuine,
+recoverable provider evidence (e.g. a real `provider_request_id` that
+could in principle be reconciled after the fact), capturing it is
+**explicitly out of scope for this pass** — a separately reviewed
+future reconciliation design, not invented here (Open Decisions,
+below).
+
+### No-spend block persistence — new this pass, clarified
+
+Three distinct cases, deliberately different persistence outcomes:
+
+- **Read-only preflight/quote** (`POST /api/setup-extractions/preflight`,
+  Decision 9/19): creates **no** `setup_extractions` row, **no**
+  `setup_extraction_attempts` row, zero inference — unchanged, restated
+  here for contrast.
+- **Billable initial/retry endpoint, the authoritative guard fails
+  *before* any claim is attempted** (e.g. `BLOCKED_BUDGET` on the
+  initial preflight check, `MODEL_NOT_ELIGIBLE`, input-validation
+  failure): the logical `setup_extractions` row is created/updated with
+  its `request_fingerprint` and a **terminal blocked `final_status`**
+  (e.g. `BLOCKED_BUDGET`) — but **zero** `setup_extraction_attempts`
+  rows are created, since no provider attempt was ever claimed and
+  there is nothing attempt-shaped to audit. A repeated request with the
+  same `extractionRequestId` and matching fingerprint returns the same
+  blocked logical result idempotently (the existing fingerprint-replay
+  rule, Decision 15); a different fingerprint still gets
+  `IDEMPOTENCY_CONFLICT`. **No fake provider-attempt row is ever
+  created for work that never reached a provider attempt.**
+- **Claim succeeds, provider call is made**: the normal
+  `setup_extraction_attempts` claim-then-terminal lifecycle above
+  applies.
 
 ## Decision 14 — Telemetry / audit fields
 
@@ -1005,6 +1283,14 @@ the application-level extraction result is `success`,
 call itself never returned a usable response (timeout, network
 failure, a non-2xx before any body was parseable) — never "null until
 success."
+
+**Addendum, new this pass (final independent review):** `null` actual
+telemetry — including for an attempt that reconciles to
+`UNKNOWN_OUTCOME` (Decision 13) — must **never** be treated as `$0.00`
+for budget-accounting purposes. This is why `conservative_max_cost_usd`
+(Decision 13) exists as a distinct, always-known, claim-time field: it
+is the value budget arithmetic falls back to whenever `actual_cost_usd`
+is `null`, never zero.
 
 ## Decision 15 — Idempotency, retry input, semantic fingerprint, and atomic pre-spend claim
 
@@ -1054,21 +1340,34 @@ must be rejected, not silently treated as one.
 server-side using the repository's existing idempotency-fingerprint
 discipline (`netlify/server/runs.ts`'s `computeRequestFingerprint`
 pattern — a SHA-256 hex digest over canonical, deterministically
-normalized fields, never raw arbitrary content) over, at minimum:
+normalized fields, never raw arbitrary content) over exactly:
 
 - the deterministically normalized dossier text (hashed, not stored —
   Decision 13's no-retention policy is unaffected: only the fingerprint
   persists, never the content it was computed from);
-- `source.kind` where semantically relevant (a `.pdf` and a `.txt`
-  that happen to normalize to identical text are still the same
-  logical request once normalized — `kind` is included only if a
-  future implementation decision finds it materially changes
-  extraction semantics; the normalized text is the dominant input
-  either way);
 - `PACKAGE_EXTRACTION_PROMPT_VERSION`;
 - the configured extraction model identity (`PACKAGE_EXTRACTION_MODEL_ID`
   or whatever application-owned extraction configuration changes call
   semantics).
+
+**`source.kind` locked out of the fingerprint — final decision this
+pass, no longer left open.** Decision 7's prompt contract gives the
+extraction model **only** the deterministically normalized dossier
+text as its input — nothing in the locked system-prompt contract passes
+`source.kind` or the original filename into the model as context that
+could change extraction semantics; by the time content reaches the
+model, a `.pdf`, a `.txt`, and pasted text that normalize to identical
+text are indistinguishable to it. Therefore `source.kind` **must not**
+be part of the semantic fingerprint — two requests that normalize to
+the same text are the same logical extraction regardless of how the
+dossier was originally supplied. `source_type` (Decision 13) is
+persisted **separately**, on `setup_extractions`, purely as audit/UI
+metadata (what the user originally uploaded), never as part of what
+"same logical request" means. If a future revision of the prompt
+contract ever changes the model's input to include source-kind-derived
+context, the fingerprint formula would need its own separately
+reviewed update at that time — not something this ADR needs to
+anticipate now.
 
 **Privacy implication, stated honestly:** the fingerprint is a
 one-way hash of normalized content plus small fixed application
@@ -1120,7 +1419,8 @@ check-then-insert):
 1. The caller (the initial-endpoint handler for `attempt_number = 1`,
    or the retry-endpoint handler for `attempt_number = 2`) resolves the
    route/pricing snapshot it intends to use (Decision 10) and computes
-   that attempt's `estimated_cost_usd` **before** attempting the claim.
+   that attempt's `conservative_max_cost_usd` **before** attempting the
+   claim.
 2. The claim operation, atomically:
    - for `attempt_number = 1`: creates `setup_extractions` (with
      `request_fingerprint`) if it does not already exist for this
@@ -1216,6 +1516,10 @@ BLOCKED_BUDGET
 PROVIDER_UNAVAILABLE
 TIMEOUT
 INVALID_STRUCTURED_OUTPUT
+IDEMPOTENCY_CONFLICT           -- new this pass, Decision 15: fingerprint mismatch, zero provider calls
+INPUT_PROCESSING_TIMEOUT       -- new this pass, Decision 8: the handler's own soft deadline was
+                                -- exhausted by pre-provider work before any claim/spend was
+                                -- attempted -- distinct from TIMEOUT (a real provider-call timeout)
 ```
 
 Successful-but-needs-review outcomes (a draft **is** produced; these
@@ -1227,6 +1531,27 @@ EXTRACTION_AMBIGUOUS    -- >=1 AMBIGUOUS_FIELD / AMBIGUOUS_PARTICIPANT_MAPPING w
 ```
 
 A clean extraction (no warnings) is simply `success`.
+
+**Audit-only terminal state — new this pass, distinct from both lists
+above:**
+
+```text
+UNKNOWN_OUTCOME   -- Decision 13: the application lost authoritative
+                  -- knowledge of a specific provider attempt after
+                  -- claiming it (stale-claim reconciliation)
+```
+
+`UNKNOWN_OUTCOME` is **not** equivalent to `TIMEOUT` (a definite,
+directly-observed timeout on a specific attempt), `PROVIDER_UNAVAILABLE`
+(a definite connectivity/config failure), or `success` — it means
+precisely "the application cannot prove whether the provider ultimately
+completed or billed for this attempt," never any of those more
+specific, directly-observed outcomes. UI treatment: for attempt #1,
+`UNKNOWN_OUTCOME` may still expose a "Retry" affordance if the
+unknown-cost retry-budget guard (Decision 13) passes; for attempt #2,
+no Retry is ever offered — the logical extraction is terminal, and the
+UI's message must say so plainly rather than implying the failure is
+retryable like an ordinary `TIMEOUT`.
 
 ## Decision 17 — Security
 
@@ -1569,11 +1894,67 @@ the real network" discipline exactly):
   that succeeds at the HTTP/usage level but fails schema validation
   (`INVALID_STRUCTURED_OUTPUT`) still records non-null actual
   tokens/cost/provider-request-id on that attempt's row.
+- **Unknown-cost retry economics — new this pass (final independent
+  review, Decision 13)**: an attempt #1 that terminates with
+  `actual_cost_usd = null` (e.g. `TIMEOUT`) uses its stored
+  `conservative_max_cost_usd`, never `$0.00`, in the retry-budget
+  guard; a known `actual_cost_usd` larger than the stored conservative
+  maximum is used in preference to the (now-superseded, smaller)
+  conservative value; a retry whose combined debit would exceed
+  `EXTRACTION_HARD_CEILING_USD` is blocked with `BLOCKED_BUDGET` and
+  makes zero attempt-#2 provider calls.
+- **Stale-claim reconciliation / `UNKNOWN_OUTCOME` — new this pass
+  (final independent review, Decision 13)**: an attempt younger than
+  `STALE_EXTRACTION_CLAIM_AFTER_MS` is never reconciled (still
+  `CLAIMED`, blocks retry); one at or beyond that age transitions to
+  `UNKNOWN_OUTCOME` exactly once; two simulated concurrent
+  reconciliation attempts against the same stale attempt produce
+  exactly one transition (race-safe, `UNIQUE`/conditional-update
+  enforced); a simulated late finalization arriving *after*
+  reconciliation already set `UNKNOWN_OUTCOME` does not overwrite it;
+  an `UNKNOWN_OUTCOME` attempt #1 can produce at most one further
+  claimed attempt (`attempt_number = 2`); an `UNKNOWN_OUTCOME` attempt
+  #2 can never produce `attempt_number = 3` (no such attempt number is
+  structurally valid).
+- **Complete-Function time budget — new this pass (final independent
+  review, Decision 8)**: a fixture simulating pre-provider work that
+  has already consumed the full
+  `PACKAGE_EXTRACTION_HANDLER_SOFT_DEADLINE_MS` budget results in
+  `INPUT_PROCESSING_TIMEOUT` with **zero** provider calls and **zero**
+  attempt claims — the claim/provider-call path is never reached; a
+  fixture with ample remaining time computes an effective provider
+  timeout `<= PACKAGE_EXTRACTION_PROVIDER_TIMEOUT_MS` via the
+  `min(providerTimeout, remainingMs)` formula.
+- **Canonical output-bound computation — new this pass (final
+  independent review, Decision 11)**: the exact maximum
+  `safeExtractionText`-legal fixture, serialized via native compact
+  `JSON.stringify`, computes a `Buffer.byteLength(..., "utf8")` that
+  `ceil(bytes/2)` maps to a value `< EXTRACTION_OUTPUT_CAP_TOKENS`; a
+  companion test asserts that a semantically-identical value
+  re-encoded with unnecessary `\uXXXX` escaping is explicitly **not**
+  claimed to fit any bound — the test suite proves the canonical-form
+  representability guarantee only, never a universal
+  provider-lexical-behavior guarantee.
+- **No-spend block persistence — new this pass (final independent
+  review, Decision 13)**: an authoritative guard failure *before* any
+  claim is attempted (e.g. `BLOCKED_BUDGET` on the initial preflight
+  check) creates/updates the `setup_extractions` row with a terminal
+  blocked status but creates **zero** `setup_extraction_attempts` rows.
+- **Fingerprint / `source.kind` — new this pass (final independent
+  review, Decision 15)**: two requests with different `source.kind`
+  values that normalize to identical text compute the *same*
+  fingerprint (proving `source.kind` is correctly excluded); `source_type`
+  is still independently recorded on `setup_extractions` for audit/UI.
+- **Safe-text carriage-return boundary — new this pass (final
+  independent review, Decision 5)**: a value containing a bare `\r` is
+  rejected by `safeExtractionText`, matching the corrected regex; tab
+  and newline remain accepted.
 
 New test files/locations (planned, not created): `netlify/server/
 extraction/` mirroring `netlify/server/openrouter/`'s existing
 per-concern file layout (schema, pdf extraction, economics,
-idempotency, atomic-claim/concurrency, the API handlers).
+idempotency, atomic-claim/concurrency, stale-claim reconciliation, the
+handler time-budget, the API handlers).
 
 ## Decision 23 — Live gate policy: timed to the future implementation PR, not this planning PR
 
@@ -1676,29 +2057,35 @@ not unresolved design questions.
    at the model level — but exact live eligibility remains this
    implementation/live-metadata gate, not something this planning-only
    task independently reverified.)
-6. **New this pass (deferred, Decision 15): stale-`CLAIMED`-attempt
-   reconciliation.** If a Function invocation dies after claiming a
-   provider attempt but before writing its terminal result, that
-   attempt row remains `CLAIMED`/`RUNNING` indefinitely under this
-   plan's fail-closed design — it correctly blocks further action
-   (never licenses another provider call, never counts as "terminal and
-   retryable" for a subsequent retry) but nothing in this ADR yet
-   reconciles it back to a stable terminal state so the user isn't
-   permanently stuck. A future, separately reviewed mechanism (e.g. a
-   provider-request-id status check, or a bounded staleness timeout
-   that reclassifies an old `CLAIMED` row to a stable `TIMEOUT`-like
-   terminal state) is needed before this is production-complete. Fail
-   closed is the correct interim behavior, not a placeholder for
-   "solved" — this item is genuinely open, not merely deferred detail.
-7. **New this pass:** whether `source.kind` should be included in the
-   semantic fingerprint (Decision 15) at all, given the normalized text
-   is the dominant, already-included input and two different source
-   kinds could legitimately normalize to identical text — an
-   implementation-time judgment call within the fingerprint design
-   Decision 15 already locks, not a decision this ADR needs to force
-   now.
+6. A separately reviewed future mechanism to **recover** genuinely
+   real provider evidence for an attempt that reconciled to
+   `UNKNOWN_OUTCOME` (Decision 13) — e.g. a provider-side
+   request-id status check performed after the fact. Explicitly **not**
+   the same question as *whether* stale claims are reconciled at all
+   (that policy — `STALE_EXTRACTION_CLAIM_AFTER_MS`, the atomic
+   `CLAIMED -> UNKNOWN_OUTCOME` transition, its race-safety guarantee,
+   and the resulting retry/no-attempt-3 rules — is now fully locked,
+   Decision 13, and is no longer open). This remaining item is narrower:
+   an optional future *enhancement* to reduce how often
+   `UNKNOWN_OUTCOME` is the final answer, not a gap in the current
+   correctness contract.
 
-**Resolved this pass (previously open, now grounded in reverified
+**Resolved this pass (previously open, now fully locked):**
+
+- Stale-`CLAIMED`-attempt reconciliation *policy* (only the narrower
+  future-evidence-recovery item above remains open) — see Decision 13.
+- `source.kind`'s semantic-fingerprint inclusion — locked out entirely,
+  see Decision 15.
+
+**Resolved in the prior pass (previously open, grounded in reverified
 current evidence):** the exact Netlify Function synchronous-execution
 (60s) and buffered-payload (6 MB / ≈4.5 MB effective binary) limits —
 see Decision 20.
+
+No unresolved billing, idempotency, or provider-attempt state-machine
+decision remains after this pass — every item still listed above is a
+narrow implementation-time tuning/verification detail (migration
+column shape, exact millisecond constants, dependency-version
+verification, live-metadata observation, or an optional future
+enhancement), never a gap in what a future implementation agent would
+need to invent a rule to fill.

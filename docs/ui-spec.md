@@ -180,6 +180,16 @@ whether Retry is available. The UI resends the same dossier content
 the user already provided when Retry is pressed -- the user is never
 asked to re-upload/re-paste.
 
+`UNKNOWN_OUTCOME` (Decision 13/16 -- the application lost authoritative
+knowledge of whether a claimed provider attempt actually completed) is
+a distinct message from an ordinary timeout: it must say plainly that
+the outcome could not be confirmed, not imply a normal retryable
+failure. A Retry action may still be offered after an `UNKNOWN_OUTCOME`
+on the *first* attempt; after the *second*, no Retry is offered -- the
+UI instead offers to start a fresh extraction (a new, separately
+billable attempt, going through the read-only quote and confirmation
+again).
+
 The same privacy notice shown before Charge Sheet entry (below) must
 also be shown before dossier upload/paste — free-form dossier text is
 at least as likely to carry incidental personal information.
