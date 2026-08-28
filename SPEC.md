@@ -417,6 +417,11 @@ The system may expose only models that meet the capabilities needed for the curr
 
 No silent paid-model fallback is permitted when the selected model/provider fails.
 
+Milestone 7 is the milestone that becomes authoritative for resolving a
+configured `model_id` against live provider metadata (see `MODEL`
+acceptance criteria above and `docs/adr/0003-openrouter-infrastructure.md`).
+It performs no Tribunal execution itself.
+
 ---
 
 ## 9. Deliberation Orchestration
@@ -1005,6 +1010,114 @@ These are target criteria, not claims that implementation already exists.
   accepted/frozen configuration, not execution-eligible.
 - **CONFIG-013** — A successful Milestone 6 Convene never navigates to, or
   displays content from, a mock/fabricated deliberation or result state.
+
+### MODEL (Milestone 7)
+
+- **MODEL-001** — A configured `model_id` (frozen unchanged by Milestone 6)
+  is resolved to an exact, **uniquely pinnable** provider endpoint —
+  never a model-level average, and never an endpoint whose routing `tag`
+  cannot be proven to identify exactly one endpoint under OpenRouter's
+  documented provider-slug matching semantics (a base provider slug is
+  not, by itself, proof of a unique endpoint) — that must exist, support
+  the required structured-output request, support the current
+  (non-deprecated) bounded-output parameter, have pricing metadata
+  representable by the approved conservative estimator (including no
+  unrepresentable conditional `pricing.overrides`), and satisfy required
+  context-length support. See `docs/adr/0003-openrouter-infrastructure.md`
+  Decisions 2, 4, and 4A for the exact `ResolvedModelRoute` contract,
+  eligibility checklist, and unique-pinnability rule.
+- **MODEL-002** — A model/endpoint that fails any `MODEL-001` check is
+  blocked explicitly with a reason code; there is no silent substitution
+  to a different model or endpoint and no silent fallback to another paid
+  route.
+- **MODEL-003** — Shared-Model Mode resolves one route/price applied to
+  all seven participants; Separate-Model Mode independently resolves up
+  to seven distinct routes/prices with no cross-participant substitution.
+- **MODEL-004** — A route whose pricing cannot be reliably established is
+  blocked; a route's zero price is accepted only when OpenRouter metadata
+  authoritatively reports the **undiscounted, cache-write-inclusive**
+  rate as free for that exact endpoint, never assumed, fabricated, or
+  inferred from a `pricing.discount` value alone. A route with a
+  non-empty conditional `pricing.overrides` array, or a `pricing.discount`
+  outside its documented `[0, 1]` range (negative, `>1`, or non-finite),
+  is blocked (`PRICING_UNREPRESENTABLE`) regardless of its top-level
+  default-conditions price. See
+  `docs/adr/0003-openrouter-infrastructure.md` Decision 7A.
+- **MODEL-005** — Preflight computes a conservative worst-case cost for
+  the resolved configuration (bounded input estimate using the
+  cache-aware effective input price — `MODEL-014` — output caps, the full
+  permitted retry exposure computed with that same effective input price,
+  never a discounted/cache-hit-assumed one, and the approved safety
+  margin) using exact decimal arithmetic — never binary floating point
+  for an authoritative comparison — and reports eligible/blocked with
+  reason codes, performing zero Tribunal model calls.
+- **MODEL-006** — A run whose `prompt_version` is the pre-Milestone-7
+  placeholder (`unassigned-pre-m7`) is never reported execution-eligible
+  by any Milestone 7 check, regardless of model/pricing eligibility.
+  Once Milestone 7 prompts exist, newly-frozen runs receive role-specific
+  versions (`ADVOCATE_PROMPT_VERSION`/`JUDGE_PROMPT_VERSION`); historical
+  Milestone 6 runs are never mutated to backfill one.
+- **MODEL-007** — No automated test suite run makes a real network request
+  to OpenRouter; every model/pricing/preflight code path is exercised
+  through an injectable fake provider. Exactly one manual, cost-free,
+  metadata-only live integration check is required once before Milestone
+  7 merges (not part of the automated suite).
+- **MODEL-008** — A configured model that is OpenRouter's dynamic Auto
+  Router (`openrouter/auto`) or a `~`-prefixed "latest"-style alias whose
+  exact executed model cannot be fixed and priced before execution is
+  blocked explicitly (`DYNAMIC_MODEL_UNSUPPORTED` /
+  `MODEL_ALIAS_NOT_PINNED`), never silently resolved to whatever it
+  currently happens to mean.
+- **MODEL-009** — The provider endpoint priced by preflight is the exact
+  endpoint a later execution attempt is restricted to, using
+  `provider.order: [tag]` (the primary pin, matching OpenRouter's own
+  documented exact-endpoint-pin mechanism) with `provider.only: [tag]` as
+  an additional restriction and `allow_fallbacks: false`; a bare
+  `provider.only` restriction is never treated as sufficient proof of an
+  exact pin on its own. The pinned `tag` must already have been proven
+  uniquely pinnable by Milestone 7 preflight (`MODEL-001`). If that exact
+  endpoint is unavailable at execution time, the attempt fails/blocks —
+  it never silently moves to a different endpoint or model. (Execution
+  itself is Milestone 8 scope; this criterion binds the *contract*
+  Milestone 7 defines.) See
+  `docs/adr/0003-openrouter-infrastructure.md` Decision 6.
+- **MODEL-012** — An endpoint whose routing `tag` cannot be proven, from
+  the current candidate endpoint set, to identify exactly one endpoint is
+  never eligible, regardless of price; it is blocked with
+  `ENDPOINT_NOT_PINNABLE`. Deterministic selection (`MODEL-010`) never
+  considers such an endpoint's price, even if it would otherwise be
+  cheapest.
+- **MODEL-013** — A realized `usage.cost` (a JSON number) is converted to
+  the authoritative decimal representation exactly once, on receipt, and
+  is never re-derived through further floating-point arithmetic; this
+  preserves the value OpenRouter reported without claiming to reconstruct
+  a more precise "true" mathematical price than the protocol supplied.
+  Authoritative preflight pricing is unaffected — it always uses the
+  provider's string rate fields parsed directly into decimal.
+- **MODEL-014** — A candidate endpoint's provider-reported cache pricing
+  is never assumed to only reduce spend. The conservative estimator's
+  input price is `effectiveInputPricePerToken = MAX(promptPricePerToken,
+  cacheReadPricePerToken, cacheWritePricePerToken)` (exact decimal
+  arithmetic); a non-zero automatically-applicable `input_cache_write`
+  rate — even when it exceeds the prompt rate — is represented in this
+  bound, never ignored. `input_cache_write_1h` is excluded only because
+  the Tribunal request contract never sends the explicit 1-hour
+  cache-control field that rate requires — documented as "impossible to
+  invoke," not "safe to ignore." A cache-related pricing field that
+  cannot be classified this way blocks the route
+  (`PRICING_UNREPRESENTABLE`). A route with a zero prompt rate but a
+  non-zero automatically-applicable cache-write rate is never classified
+  `FREE`. See `docs/adr/0003-openrouter-infrastructure.md` Decision 7B.
+- **MODEL-010** — Each eligible resolved route is assigned a discovery
+  price tier (`FREE`/`BUDGET`/`PREMIUM`/`ABOVE_PREMIUM`) computed from its
+  own conservative complete-Tribunal cost estimate; a tier label is
+  informational only and never itself grants or bypasses budget
+  eligibility — the exact `$5.00` decimal comparison remains sole
+  authority.
+- **MODEL-011** — Decimal budget comparisons at the `$0.50`, `$2.00`, and
+  `$5.00` tier/hard-ceiling boundaries are exact; a configuration
+  fractionally under a boundary is never misclassified by floating-point
+  rounding.
 
 ### OUTPUT
 

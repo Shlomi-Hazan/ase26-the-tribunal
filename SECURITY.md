@@ -97,6 +97,62 @@ OpenRouter calls must use:
 
 The model receives no privileged tools, arbitrary backend actions, database credentials, or deployment capabilities in V1.
 
+Milestone 7 introduces the one server-side `OpenRouterProvider`
+abstraction and its fakeable boundary; normal automated tests inject a
+deterministic fake and never reach the real OpenRouter network — see
+`docs/adr/0003-openrouter-infrastructure.md`.
+
+The price authoritative preflight accepts must correspond to the exact
+model and provider endpoint a later execution attempt is restricted to —
+`provider.order` pinned to that endpoint's real routing tag (the
+primary mechanism, matching OpenRouter's own documented exact-endpoint-
+pin example), `provider.only` set to the same tag as an additional
+restriction, `allow_fallbacks: false` — never a different, cheaper, or
+otherwise unverified endpoint. A bare `provider.only` restriction is
+**not** by itself sufficient proof of an exact pin: OpenRouter provider
+routing slugs have base-slug-matches-multiple-variants semantics, so a
+candidate endpoint's routing tag must first be proven to identify
+exactly one endpoint (`isUniquelyPinnable`,
+`docs/adr/0003-openrouter-infrastructure.md` Decision 4A) before
+preflight ever accepts it — an endpoint that cannot be proven uniquely
+pinnable is never eligible, regardless of price. A configured model that
+OpenRouter documents as a dynamic/non-deterministic construct (its Auto
+Router, or a "latest"-style alias whose executed model can move over
+time) is blocked explicitly, never silently substituted or treated as a
+fixed auditable model. Model catalog/endpoint metadata past its
+authoritative freshness window is treated as unavailable, never used to
+authorize spend. Endpoint pricing carrying a non-empty conditional
+`pricing.overrides` array is treated as unrepresentable and blocks
+eligibility (Decision 7A) — the top-level price alone is not trusted as
+an upper bound when a condition could select a different price at
+request time; a `pricing.discount` is never relied upon to justify a
+cheaper tier or FREE classification, since preflight always prices the
+undiscounted base rate, and a malformed `discount` (negative, `>1`, or
+non-finite) blocks eligibility rather than being silently treated as
+`0`.
+
+Preflight's input-cost bound is **cache-write aware** (Decision 7B): a
+prior planning pass assumed provider prompt-caching behavior could only
+ever reduce realized spend — this was false and is retracted. OpenRouter
+endpoint pricing exposes a genuine cache-**write** rate
+(`input_cache_write`) that provider documentation confirms can cost
+*more* than ordinary input (e.g. Anthropic's 1.25x/2x TTL multipliers,
+OpenAI's 1.25x for its GPT-5.6+ family, triggerable with no request-side
+opt-in). Preflight therefore computes `effectiveInputPricePerToken =
+MAX(promptPricePerToken, cacheReadPricePerToken,
+cacheWritePricePerToken)` and uses it — never the raw prompt rate
+alone — everywhere input cost is estimated, including the retry reserve,
+which never assumes a warm cache or a cache discount. Only the
+separately-priced `input_cache_write_1h` is excluded, and only because
+the Tribunal request contract provably cannot trigger it (it never sends
+the explicit 1-hour cache-control field that rate requires).
+
+The one mandatory live OpenRouter integration check required before
+Milestone 7 merges (`docs/adr/0003-openrouter-infrastructure.md`
+Decision 19) is metadata-only: it performs zero model inference, sends no
+Charge Sheet/personality/case content, and its evidence record contains
+no secret value.
+
 ---
 
 ## 6. Prompt Injection and Instruction Hierarchy
@@ -452,6 +508,52 @@ Before relevant milestones merge, verify as applicable:
 - [ ] safe failure categories do not leak secrets
 - [ ] logs avoid unnecessary full case/prompt content
 - [ ] public-history privacy warning is visible
+- [ ] (Milestone 7) `OPENROUTER_API_KEY` absent from client bundle
+      (`scripts/verify-client-bundle.mjs`, already includes this
+      identifier — confirmed, not a new check)
+- [ ] (Milestone 7) no automated test makes a real OpenRouter network
+      request; every model/pricing/preflight path is exercised through an
+      injectable fake provider
+- [ ] (Milestone 7) an ineligible/unresolvable model blocks explicitly
+      with a reason code — no silent substitution, no silent paid fallback
+- [ ] (Milestone 7) a stale (past-TTL) or unavailable model catalog cache
+      never authorizes preflight eligibility — treated as unavailable, not
+      silently served
+- [ ] (Milestone 7) a run frozen with the pre-Milestone-7 `prompt_version`
+      placeholder (`unassigned-pre-m7`) is never reported execution-eligible
+- [ ] (Milestone 7) preflight prices the exact provider endpoint a future
+      execution attempt would be pinned to, never a model-level average
+      or a different endpoint
+- [ ] (Milestone 7) an endpoint whose routing tag cannot be proven to
+      identify exactly one endpoint (a base provider slug matching
+      multiple variants) is blocked (`ENDPOINT_NOT_PINNABLE`), never
+      treated as pinned just because `provider.only` names it
+- [ ] (Milestone 7) a candidate endpoint with a non-empty conditional
+      `pricing.overrides` array blocks eligibility
+      (`PRICING_UNREPRESENTABLE`) rather than being priced from its
+      top-level default-conditions price alone
+- [ ] (Milestone 7) `pricing.discount` is never relied upon to justify a
+      cheaper tier or a `FREE` classification; tier/eligibility always
+      use the undiscounted base rate; a malformed `discount` (negative,
+      `>1`, non-finite) blocks eligibility rather than being treated as `0`
+- [ ] (Milestone 7) preflight's input-cost bound is cache-write aware:
+      `effectiveInputPricePerToken = MAX(promptPricePerToken,
+      cacheReadPricePerToken, cacheWritePricePerToken)`; a non-zero
+      automatically-applicable `input_cache_write` rate is never assumed
+      to only lower spend, including in the retry reserve
+- [ ] (Milestone 7) `input_cache_write_1h` is excluded from the bound only
+      because the request contract provably cannot invoke it — never
+      documented as "cache pricing can only reduce spend"
+- [ ] (Milestone 7) a route with a zero prompt rate but a non-zero
+      automatically-applicable cache-write rate is never classified `FREE`
+- [ ] (Milestone 7) a dynamic/non-deterministic model construct (Auto
+      Router, "latest"-style alias) blocks explicitly rather than being
+      silently resolved or substituted
+- [ ] (Milestone 7) no authoritative budget/tier comparison uses
+      `Number(...)` or native binary floating-point arithmetic
+- [ ] (Milestone 7) the one mandatory live metadata integration check
+      required before merge performed zero model inference, sent no
+      case/prompt content, and recorded no secret
 
 ---
 

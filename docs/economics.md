@@ -89,6 +89,133 @@ Store enough information to audit at least:
 
 V1 should exclude models whose pricing model cannot be conservatively represented by the approved estimator without additional specification.
 
+Pricing belongs to the exact resolved provider endpoint, never a model
+family or model-level average — one OpenRouter model may be served by
+several endpoints with different rates
+(`docs/adr/0003-openrouter-infrastructure.md` Decisions 2, 4–5). The
+"model ID" recorded in the audit trail above is the configured M6
+`model_id` together with the resolved endpoint's provider-routing
+identity, not the model ID alone.
+
+### 5.1 Raw units and decimal-safe normalization
+
+OpenRouter's catalog/endpoint pricing rate fields (prompt/completion/
+request/etc.) are returned as **decimal strings**, specifically to avoid
+floating-point precision loss — parse them directly into a decimal type,
+never through a JS `Number()` round-trip. Authoritative preflight
+pricing, tier classification, and the `$5.00` ceiling always use these
+string rate fields, never a discounted or override-adjusted figure (see
+§5.2 below).
+
+A completed request's *actual* `usage.cost`, by contrast, is returned as
+a JSON **number**, not a string. **Corrected wording (Milestone 7
+planning, second correction pass):** the application converts this value
+to the same decimal type exactly once, at receipt, and performs no
+further authoritative binary-floating-point arithmetic on it afterward —
+every subsequent comparison/aggregation uses only the converted decimal
+value. This preserves *the provider-reported value as received*; it is
+**not** a claim that the true underlying mathematical price is
+reconstructed more exactly than OpenRouter's own protocol supplied it.
+`usage.cost` is authoritative *audit/telemetry* of what was actually
+charged; it never retroactively revises a preflight decision already made
+from the string rate fields. All authoritative comparisons (including the
+`$5.00` ceiling and the tier boundaries in §14 below) use the decimal
+type — never `Number(...)` or ordinary binary floating point. See
+`docs/adr/0003-openrouter-infrastructure.md` Decisions 9–10 for the exact
+`PricingSnapshot` shape and the locked implementation choice (a small,
+reviewed decimal-arithmetic dependency).
+
+### 5.2 Billable dimensions actually representable by V1
+
+V1 Tribunal requests are text-only, send no image/audio content, enable
+no web-search plugin, and send no explicit cache-control request field
+of any kind. Every pricing dimension and modifier is classified into
+exactly one of three buckets — nothing current or future may pass
+eligibility unclassified:
+
+1. **Impossible for the request to invoke**: `image`, `image_output`,
+   `image_token`, `audio`, `audio_output`, `input_audio_cache`,
+   `web_search` — excluded because no such plugin/content is ever sent.
+2. **Can only ever reduce realized spend, never increase it, so it is
+   safely ignored for the conservative bound**: a non-zero
+   `pricing.discount` within its documented `[0, 1]` range (which by its
+   own definition multiplies price by `(1 − discount)`, so it can only
+   lower or hold equal the effective price — never raise it). **Cache
+   pricing is explicitly not in this bucket** (corrected — see §5.2.1).
+3. **Can increase or alter the effective price and is not representable
+   by V1's estimator, so it blocks eligibility**
+   (`PRICING_UNREPRESENTABLE`): a non-zero `internal_reasoning` rate
+   (reasoning-token count is not bounded by V1's request contract); a
+   non-empty conditional `pricing.overrides` array — OpenRouter's
+   top-level pricing fields "reflect the price that applies under default
+   conditions" only, so a non-empty `overrides` means the true request
+   price could differ from the default price the estimator would
+   otherwise use, so V1 blocks rather than mispricing it; and a malformed
+   `pricing.discount` (negative, greater than `1`, or non-finite) — never
+   silently treated as `0`.
+
+Concretely: the conservative bound always includes prompt/completion
+token cost, computed using the **effective input price** (§5.2.1) rather
+than the raw prompt rate alone; includes a non-zero flat request fee once
+per attempt (reserved twice per logical call, since the retry attempt
+incurs it again); excludes image/audio/web-search pricing dimensions
+(bucket 1); ignores a validated in-range `pricing.discount` (bucket 2 —
+safe, since it can only make the actual cost lower than the bound, never
+higher); and blocks any route with a non-zero `internal_reasoning` rate,
+a non-empty `pricing.overrides`, or a malformed `discount` (bucket 3). A
+route's `FREE` classification (§14.1) is always based on the
+**undiscounted, cache-write-inclusive** economics — a route that is
+merely discounted toward zero, or that has a zero prompt rate but a
+non-zero automatically-applicable cache-write rate, is never classified
+`FREE`. See `docs/adr/0003-openrouter-infrastructure.md` Decisions 7,
+7A, and 7B.
+
+#### 5.2.1 Cache economics: effective input price (corrected this pass)
+
+**Corrected claim:** a prior pass of this document assumed provider
+implicit/prompt caching "can only reduce spend." **That is false and is
+retracted.** OpenRouter's endpoint pricing metadata exposes a genuine
+**cache-write** rate (`input_cache_write`, and a separately-priced
+extended-TTL `input_cache_write_1h`) in addition to the cheaper
+cache-*read* rate (`input_cache_read`). Provider documentation confirms
+cache writes are billed at a **premium** over ordinary input — for
+example, Anthropic's documented 1.25x (default 5-minute TTL) or 2x
+(1-hour TTL) multipliers, and OpenAI's documented 1.25x multiplier for
+its GPT-5.6+ family, triggerable "even with automatic caching — no
+opt-in required." A cache write is therefore a dimension that **can**
+increase cost above the raw prompt rate, not one that can only reduce
+it.
+
+**V1 policy — conservative effective input price:** for every resolved
+route, the estimator computes
+
+```text
+effectiveInputPricePerToken = MAX(
+  promptPricePerToken,
+  cacheReadPricePerToken,     -- input_cache_read, when present
+  cacheWritePricePerToken     -- input_cache_write (default/5-minute-
+)                                equivalent rate), when present
+```
+
+using exact decimal arithmetic, and uses this value — never the raw
+`promptPricePerToken` alone — everywhere input-token cost is estimated,
+including the retry reserve (§10.4): the retry reserve never assumes a
+warm cache, a cache-read discount, or any other reduced cost for the
+retry attempt. This is deliberately an upper bound: overestimating is
+acceptable (a real request may cache only a prefix, or hit no cache at
+all); underestimating, because a cache write turned out to cost more
+than ordinary input, is not.
+
+`input_cache_write_1h` is excluded from this calculation — documented
+precisely as **"impossible for the current request contract to
+invoke"** (V1 never sends the explicit 1-hour cache-control request
+field this rate requires), never as "cache pricing can only reduce
+spend." A future, unclassifiable cache-related pricing field blocks the
+endpoint (`PRICING_UNREPRESENTABLE`) rather than being assumed safe. See
+`docs/adr/0003-openrouter-infrastructure.md` Decision 7B for the full
+rule, including the pinnability-style "no silent assumption" reasoning
+and the schema citations.
+
 ---
 
 ## 6. Successful Actual Usage — Source Precedence
@@ -157,6 +284,12 @@ output_cost = output_tokens / 1,000,000 × output_price_per_million
 base_token_cost = input_cost + output_cost
 ```
 
+**`input_price_per_million` is the cache-aware `effectiveInputPricePerToken`
+(§5.2.1) expressed per million tokens, not the raw prompt rate alone** —
+this is where the cache-write-safety correction actually takes effect;
+every conservative bound computed by this formula automatically inherits
+it.
+
 Then add any V1-supported request-level/billable dimension represented by the pricing snapshot.
 
 All money calculations use decimal-safe arithmetic. Do not use ordinary binary floating-point arithmetic for authoritative budget comparisons.
@@ -168,6 +301,14 @@ All money calculations use decimal-safe arithmetic. Do not use ordinary binary f
 Preflight decides whether a configuration is allowed to expose the project to spend.
 
 It is intentionally conservative; it is not intended to predict exact final cost.
+
+Milestone 7 builds the real preflight service implementing this section's
+formulas, as a standalone read-only computation over a frozen run — see
+`docs/adr/0003-openrouter-infrastructure.md`. It performs zero Tribunal
+model calls itself. **Locked:** Milestone 7 does not wire this into `POST
+/api/runs`'s write path and does not persist `BLOCKED_BUDGET` — that
+execution-time integration is Milestone 8's, once real execution exists
+to gate (ADR Decision 14).
 
 ### 10.1 Input estimate
 
@@ -228,6 +369,14 @@ worst_case_run_bound
 
 This is stricter than assuming retries are rare, but it guarantees the configured retry policy fits inside the same economic blast radius.
 
+The retry reserve uses the same cache-aware `effectiveInputPricePerToken`
+(§5.2.1) for both the initial attempt and its one permitted retry — a
+retry is never assumed to land on a warm cache, receive a cache-read
+discount, or otherwise cost less than the initial attempt's worst case.
+The retry attempt may in reality happen after the cache expired, on a
+cold cache, or without any usable cache hit at all; no cache discount
+ever reduces the required reserve.
+
 ### 10.5 Safety factor
 
 After the deterministic bound, apply a safety margin:
@@ -280,12 +429,20 @@ For example, before the judge phase starts, ensure all three required judge logi
 
 Where supported and useful, OpenRouter provider preferences should reinforce the application's economic policy:
 
+- `order: [providerEndpointTag]` — the primary mechanism for pinning
+  execution to the exact endpoint preflight priced, matching
+  OpenRouter's own documented exact-endpoint-pin example; `only` may be
+  set to the same value as an additional restriction, but a bare
+  `provider.only` restriction is not by itself proof of an exact pin (an
+  endpoint's routing tag can be a base provider slug matching several
+  variants — see `docs/adr/0003-openrouter-infrastructure.md`
+  Decision 4A)
 - `require_parameters: true`
 - `allow_fallbacks: false`
 - price-oriented provider sorting
 - `max_price` bound consistent with the accepted pricing snapshot
 
-These are defense in depth. They do not replace application preflight/runtime accounting.
+These are defense in depth. They do not replace application preflight/runtime accounting. The pinned tag itself must already have been proven **uniquely pinnable** by preflight (Decision 4A) before it is ever used for execution routing.
 
 ---
 
@@ -303,6 +460,45 @@ Therefore a free model is still validated through the same current metadata and 
 
 A free model does not remove the need for token/latency audit evidence.
 
+### 14.1 Model price tiers (discovery metadata, not budget authority)
+
+The product must expose meaningful cost choice, not merely "the cheapest
+model." Each eligible resolved route (§5.1, never a model-level average)
+is assigned a discovery tier from its own conservative complete-Tribunal
+cost estimate:
+
+```text
+FREE           == $0.00 exactly, authoritative provider metadata only --
+                   never inferred from name/marketing/history, computed
+                   from the UNDISCOUNTED base rate (a route discounted
+                   toward zero is never FREE) AND from the cache-write-
+                   inclusive effectiveInputPricePerToken (a route with a
+                   zero prompt rate but a non-zero automatically-
+                   applicable cache-write rate is never FREE, see §5.2/
+                   §5.2.1)
+BUDGET         >  $0.00  and <= $0.50
+PREMIUM        >  $0.50  and <= $2.00
+ABOVE_PREMIUM  >  $2.00  and <= $5.00
+HARD_BLOCK     >  $5.00   -- ineligible
+```
+
+`$5.00` is the architectural safety ceiling (§2), not the normal target
+price; `PREMIUM` must remain materially below it. `ABOVE_PREMIUM`
+technically satisfies the hard budget but must not automatically appear
+as a normal recommended V1 choice — surfacing it requires a separate
+later product decision. **A tier label is discovery/display metadata
+only and never replaces or bypasses the exact `$5.00` preflight
+decision** — two provider endpoints for the same model can land in
+different tiers because pricing belongs to the resolved route, not the
+model family.
+
+Shared Mode later lets a user compare FREE/BUDGET/PREMIUM options for the
+one model applied to all seven participants. Separate Mode allows
+independent per-participant tier choices; the final authoritative
+preflight always evaluates the exact combined seven-participant
+configuration — tier labels never independently grant eligibility. See
+`docs/adr/0003-openrouter-infrastructure.md` Decision 12.
+
 ---
 
 ## 15. Model Eligibility for Economics
@@ -312,7 +508,11 @@ V1 execution should reject/exclude a model if any of these are true:
 - required structured output cannot be enforced
 - required max output parameter cannot be enforced
 - context capacity is insufficient
-- pricing cannot be represented conservatively
+- pricing cannot be represented conservatively, including a non-empty
+  conditional `pricing.overrides`, a malformed `pricing.discount`, or an
+  unclassifiable cache-related pricing field (§5.2/§5.2.1)
+- the candidate endpoint is not uniquely pinnable (`ENDPOINT_NOT_PINNABLE`,
+  `docs/adr/0003-openrouter-infrastructure.md` Decision 4A)
 - successful usage/cost telemetry cannot be relied on for the required audit contract
 
 This avoids a UI that offers configurations the backend must later treat as unauditable.

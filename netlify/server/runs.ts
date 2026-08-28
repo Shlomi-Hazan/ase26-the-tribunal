@@ -17,14 +17,20 @@ import {
   type PersistedCase
 } from "./cases";
 import { createServerSupabaseClient } from "./supabase";
+import {
+  ADVOCATE_PROMPT_VERSION,
+  JUDGE_PROMPT_VERSION
+} from "../../src/prompts/versions";
 
 export { IdempotencyConflictError };
 
-// Milestone 6: no real prompts exist before Milestone 7
-// (ARCHITECTURE.md Sec 6, src/prompts/versions.ts is not implemented
-// yet). This is written by the freeze function itself, never accepted
-// from a caller. A run frozen with this value is a configuration-stage
-// record only, not execution-eligible (ADR 0002 Decision 12).
+// Historical M6 placeholder. The already-applied M6 freeze function
+// literally writes this value for every row; Milestone 7's forward
+// migration (supabase/migrations/20260826173253_prompt_version_bridge.sql,
+// not yet applied) replaces that literal with the role-specific
+// ADVOCATE_PROMPT_VERSION/JUDGE_PROMPT_VERSION below once it ships. Still
+// used to recognize an already-frozen M6 run as forever execution-
+// ineligible (SPEC.md MODEL-006) -- never written by any code path here.
 export const PROMPT_VERSION_PLACEHOLDER = "unassigned-pre-m7";
 
 const EXECUTION_MODE_TO_DB = {
@@ -293,11 +299,23 @@ export function toParticipantFingerprintInputs(
   }));
 }
 
+// Correction (independent review, pre-live gate): `prompt_version` is
+// per-participant and role-specific (ADR 0003 Decision 16) -- a single
+// singular `promptVersion: string` field did not represent that, and
+// hardcoding the M6 placeholder here meant the fingerprint no longer
+// matched what the M7 bridge migration will actually freeze for a new
+// run (advocate-v1 for advocates, judge-v1 for judges). The application-
+// owned, never-caller-controlled current values live in
+// src/prompts/versions.ts; acceptRun (below) supplies them here, exactly
+// as it already supplies the application-owned executionMode. Changing
+// either current role version changes the fingerprint for otherwise-
+// identical future requests -- intentional: it IS a materially different
+// semantic configuration once frozen.
 export function computeRequestFingerprint(input: {
   caseInput: CaseFingerprintInput;
   executionMode: "SHARED" | "SEPARATE";
   participants: ParticipantFingerprintInput[];
-  promptVersion: string;
+  promptVersions: { advocate: string; judge: string };
 }): string {
   const byParticipantId = new Map(
     input.participants.map((entry) => [entry.participantId, entry])
@@ -324,7 +342,13 @@ export function computeRequestFingerprint(input: {
     case: input.caseInput,
     executionMode: input.executionMode,
     participants: canonicalParticipants,
-    promptVersion: input.promptVersion
+    // Deterministic, role-specific -- never depends on object key
+    // insertion order (canonicalStringify below sorts keys anyway, but
+    // this literal is already written in a fixed, reviewed order).
+    promptVersions: {
+      advocate: input.promptVersions.advocate,
+      judge: input.promptVersions.judge
+    }
   };
 
   return createHash("sha256")
@@ -628,7 +652,17 @@ export async function acceptRun(
     caseInput: toCaseFingerprintInput(input.case),
     executionMode: executionModeDb,
     participants: participantFingerprintInputs,
-    promptVersion: PROMPT_VERSION_PLACEHOLDER
+    // Correction (independent review, pre-live gate): the M7
+    // prompt-version bridge migration freezes role-specific current
+    // versions (advocate-v1 / judge-v1), not the M6 placeholder -- the
+    // fingerprint must represent what a new run will actually contain.
+    // Application-owned, never caller-controlled (the strict participant
+    // schema above already rejects any caller-supplied promptVersion
+    // key entirely).
+    promptVersions: {
+      advocate: ADVOCATE_PROMPT_VERSION,
+      judge: JUDGE_PROMPT_VERSION
+    }
   });
 
   // E: optional, non-authoritative pre-check. Never trusted as the race

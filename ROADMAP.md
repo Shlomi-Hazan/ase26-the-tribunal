@@ -42,8 +42,8 @@ Do not begin later milestones by destabilizing incomplete earlier work.
 | 3 | Application Skeleton | ✅ Complete |
 | 4 | UI Shell with Mock Data | ✅ Complete |
 | 5 | Case Persistence & Import | ✅ Complete |
-| 6 | Participant Configuration | 🟡 Current |
-| 7 | OpenRouter Infrastructure | ⬜ Planned |
+| 6 | Participant Configuration | ✅ Complete |
+| 7 | OpenRouter Infrastructure | 🟡 Current |
 | 7A | Smart Tribunal Package Extraction | ⬜ Planned |
 | 8 | Shared-Model Tribunal | ⬜ Planned |
 | 9 | Separate-Model Tribunal | ⬜ Planned |
@@ -320,23 +320,58 @@ The system has a complete, validated, immutable run configuration ready for an e
 
 # M7 — OpenRouter Infrastructure
 
+Planning contract: Issue
+[#11](https://github.com/Shlomi-Hazan/ase26-the-tribunal/issues/11),
+`docs/adr/0003-openrouter-infrastructure.md`, `SPEC.md` `MODEL` acceptance
+criteria.
+
 ## Goal
 
 Build and verify the model gateway safely before orchestrating seven calls.
+M7 executes zero advocates, zero judges, zero logical Tribunal calls.
 
 ## Scope
 
-- server-side OpenRouter service
-- eligible model catalog/filter
-- strict JSON Schema structured output
-- `require_parameters`
-- fallback policy
-- price metadata retrieval
-- per-attempt timeout
-- normalized errors
-- usage/cost extraction
-- fake/mock service boundary
-- one controlled real smoke call only when explicitly authorized
+- server-side OpenRouter service behind one fakeable provider interface
+  (model catalog + per-model endpoint discovery + chat completion)
+- exact provider-endpoint resolution (`ResolvedModelRoute`) — pricing is
+  bound to the specific endpoint a later execution attempt would be
+  pinned to, never a model-level average; the endpoint's routing tag
+  must be proven **uniquely pinnable** (never a base provider slug
+  matching multiple variants) before it is eligible
+- deterministic endpoint eligibility + cheapest-*eligible*-endpoint
+  selection; dynamic/alias models (Auto Router, "latest" aliases) blocked;
+  a candidate endpoint with a non-empty conditional `pricing.overrides`
+  or a malformed `pricing.discount` is blocked as unrepresentable, and a
+  valid `pricing.discount` is never relied upon for tier/eligibility
+- cache-write-aware conservative input pricing (`effectiveInputPricePerToken`)
+  — provider prompt-caching **writes** can cost more than ordinary input
+  (not only less, as caching **reads** can); a non-zero
+  automatically-applicable cache-write rate is bounded into every
+  estimate and retry reserve, never assumed away as a pure discount
+- bounded in-process cache with a locked 5-minute authoritative TTL (no
+  new infrastructure); stale/unavailable metadata never authorizes
+- strict JSON Schema structured output; `require_parameters`;
+  `allow_fallbacks: false`
+- decimal-safe pricing normalization (a small reviewed dependency, never
+  binary floating point for an authoritative comparison) and FREE/BUDGET/
+  PREMIUM/ABOVE_PREMIUM/HARD_BLOCK discovery tiers, computed per resolved
+  route
+- standalone, read-only `POST /api/preflight` per `docs/economics.md` —
+  does not modify `POST /api/runs`; execution-time integration is M8's
+- per-attempt timeout; normalized provider-error taxonomy
+- usage/cost telemetry schema only — `model_call_attempts` is not created
+  until a later milestone has a real write path
+- role-specific prompt-version bridge (`ADVOCATE_PROMPT_VERSION`/
+  `JUDGE_PROMPT_VERSION`): new runs frozen after M7 exists receive a real
+  version-controlled prompt version per role; M6 placeholder runs are
+  never mutated and never become execution-eligible
+- fake/mock service boundary — normal tests never reach the real network
+- **one mandatory, manual, metadata-only live OpenRouter integration
+  check is required before this milestone merges** (zero model
+  inference, no case/prompt data, no secret recorded — see the Issue);
+  a further optional real-completion smoke remains separately,
+  explicitly, human-authorized and is never part of the automated gate
 
 ## Verification
 
@@ -345,8 +380,14 @@ Build and verify the model gateway safely before orchestrating seven calls.
 - timeout
 - provider error
 - missing usage/cost behaviour
-- pricing/model metadata parsing
-- controlled live call records usage/cost if authorized
+- pricing/model-endpoint metadata parsing; exact route/price binding
+- cache-write pricing never underestimated: a non-zero automatically-
+  applicable `input_cache_write` rate raises `effectiveInputPricePerToken`
+  above the raw prompt rate when higher, and the retry reserve never
+  assumes a cheaper cache hit
+- decimal budget correctness at the `$0.50`/`$2.00`/`$5.00` boundaries
+- no real OpenRouter network call anywhere in the automated test suite
+- the one mandatory live metadata smoke passes before merge
 
 ## Exit condition
 
