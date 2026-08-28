@@ -680,32 +680,51 @@ successful Tribunal run still has:
 The extraction call occurs before run creation and is
 displayed/accounted separately from the seven-call Tribunal run cost.
 
-**Locked extraction economics policy:**
+**Locked extraction economics policy (corrected by independent review —
+see `docs/adr/0004-smart-package-extraction.md` for full detail):**
 
 - **Maximum spend**: `EXTRACTION_HARD_CEILING_USD = "0.50"` per
-  extraction attempt — a deliberate reuse of the existing `BUDGET` tier
-  upper bound (§14/`TIER_THRESHOLDS_USD`), not a newly invented number.
-  This restricts extraction to `FREE`- or `BUDGET`-tier routes only.
-  The existing `$5.00` ceiling remains the hard intentional model-spend
-  policy for the seven-participant Tribunal run and is never disguised
-  by folding extraction into a fake seven-call count.
-- **Token/output bounds**: `EXTRACTION_OUTPUT_CAP_TOKENS = 12,000`;
+  **logical extraction call, including both permitted provider
+  attempts combined** — not per attempt. $0.50 happens to equal the
+  existing `BUDGET` tier's upper bound (§14/`TIER_THRESHOLDS_USD`),
+  reused only as a familiar number for product simplicity. **Extraction
+  eligibility is never inferred from a route's Tribunal tier label** —
+  the `FREE`/`BUDGET`/`PREMIUM` tiers are computed from
+  complete-Tribunal (4 advocate + 3 judge) economics, a structurally
+  different workload from one extraction call; a `PREMIUM`-Tribunal-tier
+  route may still be extraction-eligible, and a `BUDGET`-Tribunal-tier
+  route may still be extraction-ineligible. An extraction-specific
+  conservative Decimal preflight is the sole authority. The existing
+  `$5.00` ceiling remains the hard intentional model-spend policy for
+  the seven-participant Tribunal run and is never disguised by folding
+  extraction into a fake seven-call count.
+- **Token/output bounds**: `EXTRACTION_OUTPUT_CAP_TOKENS = 65,000` — a
+  formally derived bound (not a "realistic" guess) covering the actual
+  maximum serialized structured-output shape the schema can produce;
   worst-case input bounded by `NORMALIZED_DOSSIER_TEXT_MAX_CHARS =
   40,000` characters plus fixed prompt overhead, estimated with the
   same conservative `ceil(UTF-8 bytes / 2)` proxy §7/§8 already use for
   the seven-call Tribunal — no new estimation methodology.
-- **Model eligibility**: a dedicated, application-configured extraction
-  model (never chosen by dossier content), resolved through the
-  existing M7 exact-endpoint/unique-pinnability/no-fallback contract
-  with an extraction-specific bounded-output check substituted for the
-  advocate/judge output caps.
-- **Retry/timeout**: at most one retry per logical extraction call,
-  reusing the existing `RETRYABLE_CATEGORIES`/60-second provider
-  attempt ceiling; the retry is a separate explicit client request, not
-  an in-request loop (ADR 0004 Decision 8/20).
+- **Model eligibility**: a dedicated, server-only-configured extraction
+  model (`PACKAGE_EXTRACTION_MODEL_ID`, never chosen by dossier
+  content), resolved through the existing M7 exact-endpoint/
+  unique-pinnability/no-fallback contract with an extraction-specific
+  bounded-output check substituted for the advocate/judge output caps.
+- **Retry/timeout**: at most 2 provider attempts per logical extraction
+  call, reusing the existing `RETRYABLE_CATEGORIES` plus a schema-invalid
+  response; a **new, extraction-specific**
+  `PACKAGE_EXTRACTION_PROVIDER_TIMEOUT_MS = 45,000` (not M7's 60,000 ms
+  Tribunal constant) leaves the synchronous Function's reverified
+  60-second execution ceiling real headroom for the rest of its work.
+  A retry is a separate, explicit endpoint call whose eligibility the
+  server alone determines from persisted attempt state — never a
+  client-declared attempt number — re-checked against the remaining
+  logical-call budget (actual attempt-#1 spend + a fresh conservative
+  attempt-#2 estimate) before it is permitted.
 - **Telemetry**: actual `usage.cost` decoded once, Decimal throughout,
   unknown telemetry stays `null` — never a fabricated zero, matching §9
-  exactly.
+  exactly; recorded per provider attempt (a logical call's two attempts
+  remain independently auditable, never overwriting each other).
 - **Display**: an estimated (pre-attempt) and an actual (post-attempt)
   extraction cost are both shown, visually and textually distinct from
   the Tribunal run's own cost figures — never summed into or mistaken

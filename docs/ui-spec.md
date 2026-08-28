@@ -155,8 +155,11 @@ New Case
        - source filename/type visible
        - extraction model/version visible at a secondary, collapsible
          audit-detail level
-       - estimated cost (pre-attempt) and actual cost (post-attempt),
-         both clearly separate from the Tribunal run's own cost
+       - estimated cost (pre-attempt) and actual cost (post-attempt) --
+         if a Retry occurs, the running total across both attempts is
+         shown against the $0.50 extraction ceiling, not a per-attempt
+         figure in isolation -- both always clearly separate from the
+         Tribunal run's own cost
        - "Apply extracted draft" / "Cancel" (Cancel preserves whatever
          draft existed before Smart Import was opened)
   -> existing setup Review (same screen imported/manual drafts already use)
@@ -166,7 +169,10 @@ New Case
 Failure states use the exact reason codes
 `docs/adr/0004-smart-package-extraction.md` Decision 16 defines,
 surfaced in plain language, with a "Retry" action when the failure is
-retryable and an "edit and try again" path otherwise.
+retryable and an "edit and try again" path otherwise. At most one
+Retry is ever offered per extraction attempt (2 provider attempts
+total per logical extraction) -- the server, not the client, decides
+whether Retry is available.
 
 The same privacy notice shown before Charge Sheet entry (below) must
 also be shown before dossier upload/paste — free-form dossier text is

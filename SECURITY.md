@@ -243,6 +243,26 @@ V1 accepts only text-based imports.
 - fixed participant seats only
 - no model/provider/execution/prompt/pricing/budget fields
 
+### Smart Import Dossier (Milestone 7A)
+
+Full contract: `docs/adr/0004-smart-package-extraction.md`.
+
+- `.txt`, `.md` — max 256 KiB raw
+- `.pdf` — max 4 MiB raw (`SMART_EXTRACTION_PDF_MAX_RAW_BYTES`),
+  text-layer extraction only, no OCR
+- normalized text max 40,000 characters after decode/extraction
+  (`NORMALIZED_DOSSIER_TEXT_MAX_CHARS`), regardless of source
+- UTF-8
+- free-form prose — no marker/section structure required, unlike the
+  Full Tribunal Package above
+- fixed participant seats only; no model/provider/execution/prompt/
+  pricing/budget fields (identical rule to the Full Tribunal Package,
+  enforced by the extraction schema's closed shape rather than a
+  deterministic parser)
+- the base64-encoded request body (raw file + JSON envelope) stays
+  under Netlify's documented 6 MB buffered-payload limit with real
+  headroom
+
 Validate server-side:
 
 - extension / intended content type
