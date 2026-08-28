@@ -16,3 +16,15 @@ export const JUDGE_PROMPT_VERSION = "judge-v1";
 // only for the anti-drift/eligibility checks that need to recognize it --
 // never written by any Milestone 7 code path.
 export const PROMPT_VERSION_PLACEHOLDER = "unassigned-pre-m7";
+
+// Milestone 7A -- the setup-time package-extraction call's own version
+// identifier (ADR 0004 Decision 7). Deliberately never `advocate-v1` or
+// `judge-v1`: this is not one of the seven Tribunal logical calls. The
+// exact historical prompt text for this version lives in
+// src/prompts/package-extraction/v1.ts, resolved only through
+// src/prompts/package-extraction/registry.ts -- this constant identifies
+// the CURRENT version for new logical extractions only; an existing
+// logical extraction's own stored `prompt_version` (frozen at first
+// acceptance) governs its own replay/retry, never this current value
+// (ADR Decision 15's "Frozen logical-call semantic identity").
+export const PACKAGE_EXTRACTION_PROMPT_VERSION = "package-extraction-v1";
