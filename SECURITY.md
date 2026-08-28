@@ -260,7 +260,36 @@ Raw file bytes are transient and should not be stored in V1 after successful nor
 
 Strict Tribunal Package import is atomic. Invalid package content must not leave the browser setup partially overwritten.
 
-Future M7A Smart Tribunal Package Extraction may use one setup-time model call only after OpenRouter infrastructure exists. That call is not a Tribunal participant, receives no privileged tools, must use strict structured output, and must never automatically convene the Tribunal.
+Milestone 7A Smart Tribunal Package Extraction uses exactly one
+setup-time model call, planned in `docs/adr/0004-smart-package-extraction.md`.
+That call is not a Tribunal participant, receives no privileged tools
+(the provider request shape has no `tools` field at all), must use
+strict structured output validated server-side before trust, and must
+never automatically convene the Tribunal — its output only ever
+populates a staged review preview.
+
+Additional M7A-specific security requirements (full detail in the ADR,
+Decision 17):
+
+- The uploaded dossier is untrusted prompt content: it is delimited and
+  labeled as data, any instruction-like text inside it is explicitly
+  ignored by the extraction prompt, and no code path executes or
+  evaluates extracted text.
+- PDF text extraction is server-only, text-layer-only (no rendering, no
+  canvas, no embedded-JavaScript execution) — no OCR, no cloud document
+  parser.
+- Raw upload bytes and the normalized dossier text are both transient
+  and are not retained after a successful (or failed) extraction
+  attempt; only bounded structured audit telemetry persists.
+- Dossier content (raw or normalized) must never appear in server logs.
+- The existing public-demo-data privacy notice (do not submit
+  sensitive/private information) must also be shown before dossier
+  upload/paste, not only before Charge Sheet entry.
+- No malware/antivirus content scanning exists for uploaded files in
+  V1; file safety relies solely on type/size/structural validation.
+- Human review is part of the security boundary: extraction output
+  cannot itself trigger persistence of a real case, a run, or any
+  further model call.
 
 ---
 

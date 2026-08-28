@@ -661,11 +661,15 @@ It does not count OpenRouter credit-purchase fees as per-run inference cost; the
 
 ---
 
-## 22. Future Smart Extraction Economics
+## 22. Smart Extraction Economics (Milestone 7A)
 
-`M7A - Smart Tribunal Package Extraction` may add one setup-time structured extraction model call for free-form full-document import after OpenRouter infrastructure exists.
+`M7A - Smart Tribunal Package Extraction` adds exactly one setup-time
+structured extraction model call for free-form full-document import,
+planned in full in `docs/adr/0004-smart-package-extraction.md`
+(Decisions 9–11).
 
-That extraction call is not a Tribunal participant logical call. A successful Tribunal run still has:
+That extraction call is not a Tribunal participant logical call. A
+successful Tribunal run still has:
 
 ```text
 4 advocate logical calls
@@ -673,15 +677,38 @@ That extraction call is not a Tribunal participant logical call. A successful Tr
 = 7 Tribunal logical calls
 ```
 
-The extraction call occurs before run creation and must be displayed/accounted separately from the seven-call Tribunal run cost.
+The extraction call occurs before run creation and is
+displayed/accounted separately from the seven-call Tribunal run cost.
 
-Before M7A can be implemented, this document must define:
+**Locked extraction economics policy:**
 
-- explicit maximum spend policy for document extraction
-- token and output bounds
-- model eligibility requirements
-- usage/cost telemetry requirements
-- failure and retry policy
-- display treatment for extraction cost versus Tribunal-run cost
+- **Maximum spend**: `EXTRACTION_HARD_CEILING_USD = "0.50"` per
+  extraction attempt — a deliberate reuse of the existing `BUDGET` tier
+  upper bound (§14/`TIER_THRESHOLDS_USD`), not a newly invented number.
+  This restricts extraction to `FREE`- or `BUDGET`-tier routes only.
+  The existing `$5.00` ceiling remains the hard intentional model-spend
+  policy for the seven-participant Tribunal run and is never disguised
+  by folding extraction into a fake seven-call count.
+- **Token/output bounds**: `EXTRACTION_OUTPUT_CAP_TOKENS = 12,000`;
+  worst-case input bounded by `NORMALIZED_DOSSIER_TEXT_MAX_CHARS =
+  40,000` characters plus fixed prompt overhead, estimated with the
+  same conservative `ceil(UTF-8 bytes / 2)` proxy §7/§8 already use for
+  the seven-call Tribunal — no new estimation methodology.
+- **Model eligibility**: a dedicated, application-configured extraction
+  model (never chosen by dossier content), resolved through the
+  existing M7 exact-endpoint/unique-pinnability/no-fallback contract
+  with an extraction-specific bounded-output check substituted for the
+  advocate/judge output caps.
+- **Retry/timeout**: at most one retry per logical extraction call,
+  reusing the existing `RETRYABLE_CATEGORIES`/60-second provider
+  attempt ceiling; the retry is a separate explicit client request, not
+  an in-request loop (ADR 0004 Decision 8/20).
+- **Telemetry**: actual `usage.cost` decoded once, Decimal throughout,
+  unknown telemetry stays `null` — never a fabricated zero, matching §9
+  exactly.
+- **Display**: an estimated (pre-attempt) and an actual (post-attempt)
+  extraction cost are both shown, visually and textually distinct from
+  the Tribunal run's own cost figures — never summed into or mistaken
+  for the $5.00 ceiling.
 
-No unbounded extraction call is permitted. The existing `$5.00` ceiling remains the hard intentional model-spend policy for the seven-participant Tribunal run and must not be disguised by folding extraction into a fake seven-call count.
+No unbounded extraction call is permitted.

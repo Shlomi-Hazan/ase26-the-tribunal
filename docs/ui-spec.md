@@ -128,12 +128,53 @@ Allow either:
 - manual text entry
 - supported `.txt` / `.md` import
 - strict structured Full Tribunal Package import
+- Smart Import (Milestone 7A — free-form dossier extraction, below)
 
 Import is a convenience, not a separate case type. After successful import, the normalized three fields become visible/editable before continuing.
 
 Charge Sheet import fills only the three case fields. Full Tribunal Package import fills the case plus all seven participant profile names/personalities, preserves application-owned execution/model configuration, and navigates to Review.
 
 Full Tribunal Package import must never automatically convene the Tribunal.
+
+### Smart Import (Milestone 7A)
+
+A third import method, for a free-form dossier that isn't structured
+with `[SECTION]`/`FIELD:` markers. Full contract:
+`docs/adr/0004-smart-package-extraction.md`.
+
+```text
+New Case
+  -> Smart Import
+  -> Upload / Paste dossier
+  -> [client-side type/size check] -> Extract (shows estimated cost, requires confirmation)
+  -> Extracting
+  -> Extraction Review (staged preview -- does not touch the active draft)
+       - unresolved/ambiguous fields visibly highlighted
+       - all fields editable
+       - warning summary visible
+       - source filename/type visible
+       - extraction model/version visible at a secondary, collapsible
+         audit-detail level
+       - estimated cost (pre-attempt) and actual cost (post-attempt),
+         both clearly separate from the Tribunal run's own cost
+       - "Apply extracted draft" / "Cancel" (Cancel preserves whatever
+         draft existed before Smart Import was opened)
+  -> existing setup Review (same screen imported/manual drafts already use)
+  -> explicit Convene Tribunal (unchanged; never automatic)
+```
+
+Failure states use the exact reason codes
+`docs/adr/0004-smart-package-extraction.md` Decision 16 defines,
+surfaced in plain language, with a "Retry" action when the failure is
+retryable and an "edit and try again" path otherwise.
+
+The same privacy notice shown before Charge Sheet entry (below) must
+also be shown before dossier upload/paste — free-form dossier text is
+at least as likely to carry incidental personal information.
+
+Smart Import must never automatically convene the Tribunal, and must
+never silently overwrite a draft already in progress before the user
+explicitly presses "Apply extracted draft."
 
 ### File error states
 
@@ -311,6 +352,11 @@ This notice should not be buried in a footer.
 After a successful Full Tribunal Package import, Review should clearly state:
 
 > Imported Tribunal package — review all extracted fields before convening.
+
+After a successful Smart Import extraction is applied (Milestone 7A),
+Review should clearly state:
+
+> Extracted from your dossier — review all fields, especially any marked as unresolved, before convening.
 
 Review should show all fixed seats, optional profile names, personalities, and model/execution configuration. The user must be able to return and edit imported fields before explicit convening.
 
