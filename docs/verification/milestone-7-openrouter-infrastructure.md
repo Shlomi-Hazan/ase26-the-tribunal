@@ -824,20 +824,168 @@ fail-closed fix, so item 3's wording could no longer be read as implying
 the worst-case bound was already fully complete. Issue #11 remains
 **OPEN**, not closed.
 
+## Live integration gate
+
+A fourth pass, authorized specifically to (1) apply the reviewed M7
+migration to the linked development Supabase project and (2) perform
+real, authenticated OpenRouter metadata requests. No model-completion
+request was authorized or made. This section is **additive** — nothing
+above is retracted.
+
+### Supabase track — complete
+
+- **Pre-push state** (`supabase migration list --linked`): `20260825000000`
+  / `20260825204419` / `20260825214212` local == remote; `20260826173253`
+  local-only, remote blank.
+- **Dry run** (`supabase db push --linked --dry-run`): proposed exactly
+  one migration, `20260826173253_prompt_version_bridge.sql` — no M5/M6
+  migration, no destructive reset, no unrelated schema change.
+- **Applied** (`supabase db push --linked`): succeeded, one migration
+  applied.
+- **Post-push state**: all four migrations local == remote; no
+  additional/unexpected migration appeared remotely.
+- **Remote freeze-function verification** (read-only `supabase db query
+  --linked` against `pg_proc`/`information_schema.routine_privileges`):
+  `pg_get_functiondef()` output for `public.freeze_participant_configuration`
+  matches the reviewed migration source byte-for-byte, including its
+  comments; `prosecdef = true` (SECURITY DEFINER preserved);
+  `proconfig = {"search_path=\"\""}` (safe empty search_path preserved);
+  signature unchanged; execute privileges are exactly `postgres` (owner)
+  and `service_role` — `public`/`anon`/`authenticated` are not granted
+  execute, matching the migration's explicit `revoke`/`grant` block.
+- **Historical row immutability**: before the live freeze test,
+  `participant_configs` contained exactly 42 rows, all
+  `prompt_version = 'unassigned-pre-m7'` (6 pre-existing M6 runs × 7
+  participants), `created_at` spanning 2026-08-26 13:28–13:37. After the
+  live freeze test below, the same 42 rows are still present, still
+  `unassigned-pre-m7`, unchanged — only 7 new rows were added, none of
+  the 42 historical rows was touched (the migration contains no
+  `UPDATE`, only `CREATE OR REPLACE FUNCTION`).
+- **Live freeze/RPC test** through the real application contract
+  (`POST /api/runs` against the running dev server, Shared mode, a
+  synthetic non-sensitive case and 7 synthetic participant personalities,
+  model id `test/m7-live-gate-synthetic-model` used purely for structural
+  validation — no completion is ever attempted against it): HTTP 201;
+  exactly one run (`status: READY`, `executionMode: shared`); exactly
+  seven participant configs; the four `advocate-*` entries all carry
+  `promptVersion: "advocate-v1"`; the three `judge-*` entries all carry
+  `promptVersion: "judge-v1"`; roles/sides correct
+  (`advocate-pro-*`→PRO, `advocate-con-*`→CON, `judge-*`→null); no model
+  execution occurred.
+- **Idempotency regression** (Section 10 of the live-gate task), all via
+  the real `POST /api/runs` endpoint:
+  - **A** — replaying the byte-identical request (same
+    `clientRequestId`, same semantic content) returned HTTP 201 with the
+    **same** run id as the original — reused, not duplicated.
+  - **B** — the same `clientRequestId` with a materially changed
+    `exactQuestion` (different semantic fingerprint) returned **HTTP 409
+    `idempotency_conflict`**.
+  - **C** — a request body adding a caller-supplied `promptVersion` field
+    on a participant entry was rejected outright: **HTTP 400
+    `invalid_run`**, `"Unrecognized key: \"promptVersion\""` —
+    `z.strictObject` enforcement confirmed live, not just in unit tests.
+  - **D** — a direct read-only count of `participant_configs` for the
+    frozen run after the Test-A replay returned exactly **7** rows, never
+    14 — no duplicate participant-config set was created by the replay.
+
+### OpenRouter track — blocked (not a code defect)
+
+- **Real authentication smoke**: `GET /api/models` against the real
+  running application returned **HTTP 502 `provider_unavailable`** in
+  53 ms — too fast to be a real network round trip, and confirmed by a
+  narrow, throwaway diagnostic (written, run, and deleted before any
+  commit — never part of the repository) to be a `ServerConfigError`
+  thrown by `readOpenRouterServerConfig()`: `OPENROUTER_API_KEY` is
+  present as a key in this environment's `.env` file but its **value is
+  empty** (`OPENROUTER_API_KEY=`, zero characters). This is exactly the
+  fail-closed behavior `env.ts` is designed to produce for a missing
+  key — the application-level contract is working correctly; there is
+  simply no real credential configured in this environment for it to
+  use.
+- **Independent connectivity check** (outside the application, to
+  distinguish "no real key configured" from "network/DNS/OpenRouter
+  outage"): a direct unauthenticated `curl` to the public
+  `GET https://openrouter.ai/api/v1/models` endpoint returned **HTTP
+  200** with 387 models — OpenRouter's model-catalog endpoint does not
+  require authentication, so this only proves network reachability, not
+  that a real key exists; it does **not** substitute for the
+  application's own authenticated path, since `env.ts` intentionally
+  requires a non-empty `OPENROUTER_API_KEY` regardless of whether the
+  specific OpenRouter endpoint itself would accept an anonymous request.
+- Because of the above, **no part of Sections 13–24 of the live-gate
+  task could be performed against the real application**: real model
+  catalog parsing, real endpoint metadata parsing, live
+  eligibility/pinnability resolution against real endpoints, the real
+  `GET /api/models` smoke, live test-model selection, the real
+  M7-frozen-run-against-a-real-model step, the real `POST /api/preflight`
+  smoke, preflight read-only verification, and the cache live smoke are
+  all **not performed** — not because the M7 implementation failed, but
+  because no working `OPENROUTER_API_KEY` value exists in this
+  environment for the application to use.
+- **Failure-boundary substitute**: since `POST /api/preflight`'s handler
+  constructs the OpenRouter provider (and therefore requires the real
+  key) before `runPreflight()`'s own `PROMPT_VERSION_UNASSIGNED` check
+  ever runs, the historical-run failure-boundary example from Section 24
+  of the live-gate task could not be exercised through preflight either
+  (it also returns `provider_unavailable`, for the same missing-key
+  reason — not a new defect). A different, key-independent failure
+  boundary was exercised instead, live, against `POST /api/runs`: a
+  malformed body (`{"bad":"payload"}`) returned a stable `HTTP 400
+  invalid_run` with a field-level error list and no stack trace; a
+  request naming a nonexistent case id similarly returned a stable
+  `HTTP 400` (participant-shape validation fired first, before any
+  database lookup) — both confirm the safe-4xx-error-boundary contract
+  live, without needing OpenRouter.
+- **Zero completion / zero spend**: `createChatCompletion` was not
+  invoked by any code path in this task — every attempted application
+  call to an OpenRouter-backed endpoint failed at synchronous config
+  construction, before any network request left the process. The one
+  real network request made anywhere in this task (the independent
+  connectivity check above) was an unauthenticated `GET` to a public
+  metadata endpoint. No inference/model-completion request was made by
+  this live gate; inference spend attributable to this gate is `$0.00`.
+
+### Regression after the live gate
+
+- `npm run verify` (lint + typecheck + `vitest run` + build +
+  client-bundle check): green, no code was changed by this pass.
+- Exact test count: **337 tests passed, 27 files, 0 failed** — unchanged
+  from the third static pass, since no test or implementation file was
+  modified.
+- `npm audit --omit=dev --audit-level=high`: 0 vulnerabilities.
+- `git diff --check origin/main...HEAD`: clean.
+
+### Verdict
+
+**M7 LIVE GATE BLOCKED** — the Supabase track (migration application,
+remote freeze-function verification, historical-row immutability, live
+freeze/RPC test, full idempotency regression) is complete and passed
+every check. The OpenRouter metadata track could not be exercised
+because this environment has no real, non-empty `OPENROUTER_API_KEY`
+configured — an external prerequisite gap, not an M7 implementation
+defect. No code was changed to work around this. Re-running Sections
+11–24 of the live-gate task only requires a real OpenRouter API key to
+be placed in this environment's own `.env` (or equivalent local secret
+store) by the project owner — never pasted through chat — after which
+the OpenRouter track can be completed without any further code change.
+
 ## Not yet live-verified
 
-The following are explicitly **not** performed by this implementation
-task, per ADR Decision 19/20 and the M7 implementation contract:
+The following are explicitly **not** performed as of this document:
 
-- **M7 Supabase migration** — `20260826173253_prompt_version_bridge.sql`
-  exists on disk, reviewed, but is **not applied** to the remote/linked
-  Supabase database.
 - **Real OpenRouter metadata integration** — the one mandatory, manual,
-  metadata-only live smoke (ADR Decision 19) has **not** been run. Zero
-  real `GET /models` / `GET /models/{author}/{slug}/endpoints` requests
-  have been made in this task.
+  metadata-only live smoke (ADR Decision 19) has **not** been completed;
+  blocked on a missing real `OPENROUTER_API_KEY` value in this
+  environment (see "Live integration gate" → "OpenRouter track" above).
+  Zero real authenticated `GET /models` / `GET
+  /models/{author}/{slug}/endpoints` requests have been made from
+  application code in this task.
 - **Optional real completion smoke** (ADR Decision 20) — not authorized,
   not performed.
+
+The M7 Supabase migration is **no longer** in this list — it was applied
+to the linked development database during the live integration gate
+above.
 
 No secret value appears anywhere in this document, the test suite, or
 the implementation.
