@@ -1203,28 +1203,107 @@ seconds on every call, cold or warm, and can force spurious re-fetches
 inside `POST /api/preflight` too — reported for independent review, not
 fixed.
 
+## Live integration gate — discovery-scale correction and completed metadata gate
+
+The cache-capacity/cold-latency defect above is fixed (commit `cbe8526`):
+a deterministic bounded-concurrency worker pool
+(`MODEL_DISCOVERY_ENDPOINT_CONCURRENCY = 8`, reverified against the
+current OpenRouter OpenAPI immediately before locking — no documented
+numeric rate limit conflicts with it) replaces the fully-sequential
+per-model endpoint sweep, and a separate, explicit
+`ENDPOINT_METADATA_CACHE_MAX_ENTRIES = 1024` (applied only to
+`sharedEndpointCache`, more than 2x the observed real catalog size, still
+an explicit fixed in-process bound) replaces the too-small 200-entry
+default that caused mid-sweep eviction/thrashing. 344 → 352 tests
+(27 → 28 files) — a new `modelDiscoveryScale.test.ts` proves bounded
+concurrency (≤8, >1, genuinely concurrent), all 387 synthetic candidates
+processed, deterministic result ordering under shuffled completion
+order, one endpoint failure skipping only that model, a full 387-model
+sweep surviving a second call inside the TTL with zero additional
+fetches (with an explicit companion test proving the *old* 200-entry
+default still fails this same scenario), TTL boundary semantics
+preserved at scale, and a discovery-to-preflight cache-handoff test. No
+safety/eligibility/pricing policy changed. CI green on the fix HEAD (run
+`33167518600`).
+
+### Correcting the earlier diagnosis
+
+The earlier evidence in this document described the `netlify dev` 30s
+timeout as a Lambda-sandbox/OpenRouter-fetch tooling limitation. That
+diagnosis is now understood to have been **incomplete**: it was an
+observed *symptom* of the real application's catalog-scale latency, not
+a proven sandbox transport defect. Direct production-code invocation
+(bypassing the sandbox) always executed the real logic correctly and
+quickly for a *small* catalog/participant set — the sandbox only ever
+failed when the underlying call itself genuinely took close to or beyond
+30 real seconds. With discovery latency now fixed, the real `netlify dev`
+HTTP path was retested directly and **succeeds**:
+
+- **Cold** `GET /api/models` (fresh caches): HTTP 200, **6,008 ms**
+  (previously ~45.7s / ~30s sandbox timeout), 33 eligible models.
+- **Warm** `GET /api/models` (same warm caches, moments later): HTTP
+  200, **97 ms** (previously ~47.1s), identical eligible model count,
+  `pricingObservedAt` unchanged for a sampled model — a genuine cache
+  hit, not a refetch.
+- Direct production-code timing (same measurement, outside the sandbox,
+  for cross-check): cold **7,685 ms**, warm **67 ms** — consistent with
+  the HTTP-path numbers above, both comfortably under the 15-second
+  target and far under the known 30-second local Function deadline.
+
+**Conclusion: the `netlify dev` sandbox transport itself was never
+broken.** The correct diagnosis, confirmed by this retest, is
+catalog-scale application latency alone — now fixed.
+
+### Real frozen run and preflight, via the now-working HTTP path
+
+A new Shared-mode synthetic run was created via the real `POST /api/runs`
+HTTP endpoint using a real eligible model (`tencent/hy4-preview`, BUDGET
+tier, selected FREE > BUDGET > PREMIUM preference order — no FREE model
+was eligible in this catalog snapshot): `status: READY`, 7 participant
+configs, all advocates `advocate-v1`, all judges `judge-v1`. The real
+`POST /api/preflight` HTTP endpoint for that run returned in 726ms:
+`eligible: true`, `hardBudgetUsd: "5"`, `conservativeMaxCostUsd:
+"0.0759843656"`, `remainingBudgetUsd: "4.9240156344"` (arithmetically
+consistent: `5 − 0.0759843656 = 4.9240156344`), `blockedReasonCodes: []`,
+all seven participants eligible with the resolved endpoint
+`tencent/fp8`, BUDGET tier, real `observedAt`. No persistence mutation:
+`participant_configs` prompt-version counts before and after (42
+`unassigned-pre-m7` unchanged; +4 `advocate-v1` / +3 `judge-v1` for
+exactly this one new run, no duplication).
+
+### Historical placeholder / failure boundary / zero completion (final reverification)
+
+All via the real HTTP path: the historical `unassigned-pre-m7` run still
+returns `blockedReasonCodes: ["PROMPT_VERSION_UNASSIGNED"]` (HTTP 200);
+malformed `runId` → `400 invalid_preflight_request`; unknown `runId` →
+`404 run_not_found`. Server logs contain no `/chat/completions` request
+anywhere in this pass; `createChatCompletion` was not invoked.
+**No inference/model-completion request was made by this gate.**
+Inference spend attributable to this gate: **$0.00**.
+
+### Verdict (final)
+
+**All conditions for live-gate readiness are now met**: cold discovery
+completes safely below the 30-second deadline (6.0s HTTP / 7.7s direct,
+both under the 15s target); warm discovery genuinely reuses fresh
+endpoint metadata (97ms / 67ms, unchanged `pricingObservedAt`, zero
+additional fetches); the real `netlify dev` `GET /api/models` HTTP path
+was retested and succeeds, with the prior timeout correctly attributed
+to application latency rather than a persistent tooling defect; real
+`POST /api/preflight` succeeds end to end for a real eligible model; and
+zero completion calls occurred anywhere in this gate.
+
 ## Not yet live-verified
 
-The following are explicitly **not** performed as of this document:
-
-- **The local `netlify dev` HTTP path for OpenRouter-bound requests**
-  (`GET /api/models`, `POST /api/preflight` for a prompt-version-assigned
-  run) — not verified working; it times out in the local Lambda sandbox
-  for reasons now understood (see "A third real defect found" above) to
-  be a genuine latency/cache-capacity issue in the real implementation,
-  not a sandbox-only artifact. The underlying application code was
-  verified correct via direct production-code invocation instead.
-- **The cache-capacity defect itself** — not fixed; needs an independent
-  decision on how `MODEL_METADATA_CACHE_MAX_ENTRIES` (or the discovery
-  sweep's caching strategy) should be sized/scoped for a full real
-  catalog rather than a single run's participant set.
 - **Optional real completion smoke** (ADR Decision 20) — not authorized,
-  not performed.
+  not performed. This remains the only intentionally-out-of-scope item;
+  it is never part of any M7 live-gate pass.
 
-The M7 Supabase migration, the missing-`OPENROUTER_API_KEY`-value
-blocker, and the `utc_days` schema defect are **no longer** in this list
-— all three were resolved in earlier sections of this live integration
-gate.
+Every other item previously listed in this section — the M7 Supabase
+migration, the missing-`OPENROUTER_API_KEY`-value blocker, the
+`utc_days` schema defect, the `netlify dev` HTTP path, and the
+cache-capacity/cold-latency defect — has been resolved and verified live
+in the sections above.
 
 No secret value appears anywhere in this document, the test suite, or
 the implementation.
