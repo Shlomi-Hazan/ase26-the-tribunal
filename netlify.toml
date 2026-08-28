@@ -60,6 +60,21 @@
   status = 200
 
 [[redirects]]
+  from = "/api/setup-extractions/preflight"
+  to = "/.netlify/functions/setup-extractions-preflight"
+  status = 200
+
+[[redirects]]
+  from = "/api/setup-extractions/:id/retry"
+  to = "/.netlify/functions/setup-extractions-retry?id=:id"
+  status = 200
+
+[[redirects]]
+  from = "/api/setup-extractions"
+  to = "/.netlify/functions/setup-extractions"
+  status = 200
+
+[[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200
