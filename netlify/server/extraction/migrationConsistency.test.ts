@@ -69,7 +69,11 @@ describe("setup_extractions migration anti-drift check", () => {
     const migration = readMigration();
     const grantStatements = migration.match(/grant execute on function[\s\S]*?;/g) ?? [];
 
-    expect(grantStatements.length).toBe(4);
+    // claim_setup_extraction_attempt_one, claim_setup_extraction_attempt_two,
+    // terminalize_setup_extraction_attempt, block_setup_extraction,
+    // reconcile_setup_extraction_attempts (Section 9), and
+    // check_and_record_admission (Section 4) -- six RPCs total.
+    expect(grantStatements.length).toBe(6);
 
     for (const statement of grantStatements) {
       expect(statement).toContain("to service_role");

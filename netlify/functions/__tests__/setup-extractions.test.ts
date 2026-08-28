@@ -24,11 +24,21 @@ function fakeEvent(overrides: Partial<HandlerEvent>): HandlerEvent {
   } as HandlerEvent;
 }
 
+// A fully-populated, zero-warning fixture -- a clean "success" outcome.
+// Every required field has a real value, satisfying the server-side
+// semantic validation (Section 10) with no warnings needed at all.
 function goodExtractionJson() {
   return JSON.stringify({
-    chargeSheet: { defendant: "The Accused", act: null, exactQuestion: null },
+    chargeSheet: {
+      defendant: "The Accused",
+      act: "Did the thing.",
+      exactQuestion: "Did they do the thing?"
+    },
     participants: Object.fromEntries(
-      packageSeats.map((seat) => [seat, { profileName: null, personality: null }])
+      packageSeats.map((seat) => [
+        seat,
+        { profileName: null, personality: `${seat} personality.` }
+      ])
     ),
     warnings: []
   });

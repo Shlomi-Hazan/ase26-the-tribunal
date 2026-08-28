@@ -41,13 +41,53 @@ function goodEndpoint(overrides: Partial<RawOpenRouterEndpoint> = {}): RawOpenRo
   };
 }
 
-function emptyExtractionJson(warnings: Array<{ code: string; field: string | null }> = []) {
+// Every REQUIRED field left null (act, exactQuestion, each seat's
+// personality) must carry an explaining warning under the server-side
+// semantic validation (Section 10) -- auto-generates a MISSING_FIELD
+// warning for each null required field the caller didn't already cover
+// with its own `extraWarnings` entry, so every fixture this helper
+// produces is schema-valid by construction.
+function emptyExtractionJson(
+  extraWarnings: Array<{ code: string; field: string | null }> = []
+) {
+  const requiredNullFields = [
+    "chargeSheet.act",
+    "chargeSheet.exactQuestion",
+    ...packageSeats.map((seat) => `participants.${seat}.personality`)
+  ];
+  const coveredFields = new Set(extraWarnings.map((warning) => warning.field));
+  const autoWarnings = requiredNullFields
+    .filter((field) => !coveredFields.has(field))
+    .map((field) => ({ code: "MISSING_FIELD", field }));
+
   return JSON.stringify({
     chargeSheet: { defendant: "The Accused", act: null, exactQuestion: null },
     participants: Object.fromEntries(
       packageSeats.map((seat) => [seat, { profileName: null, personality: null }])
     ),
-    warnings
+    warnings: [...autoWarnings, ...extraWarnings]
+  });
+}
+
+// A fully-populated, zero-warning fixture -- every required field has a
+// real value, so deriveExtractionStatus is genuinely "success" (used as
+// the default happy-path provider response; tests that want
+// needs_review override createChatCompletionResult explicitly with
+// emptyExtractionJson() above).
+function fullExtractionJson() {
+  return JSON.stringify({
+    chargeSheet: {
+      defendant: "The Accused",
+      act: "Did the thing.",
+      exactQuestion: "Did they do the thing?"
+    },
+    participants: Object.fromEntries(
+      packageSeats.map((seat) => [
+        seat,
+        { profileName: null, personality: `${seat} personality.` }
+      ])
+    ),
+    warnings: []
   });
 }
 
@@ -61,7 +101,7 @@ function makeDeps(overrides: Partial<ExtractionSourceDeps> = {}): {
   provider.listModelsResult = [goodModel()];
   provider.listEndpointsResult = { [CONFIGURED_MODEL_ID]: [goodEndpoint()] };
   provider.createChatCompletionResult = fakeChatCompletionResult({
-    contentJson: emptyExtractionJson(),
+    contentJson: fullExtractionJson(),
     usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150, cost: 0.001 }
   });
 
@@ -242,7 +282,7 @@ describe("idempotent replay (Decision 15's four-row table)", () => {
       configuredModelId: deps.configuredModelId,
       canonicalModelId: CANONICAL_MODEL_ID,
       providerEndpointTag: "tag",
-      conservativeMaxCostUsd: "0.01"
+      perAttemptConservativeMaxCostUsd: "0.01"
     });
 
     const beforeCallCount = provider.createChatCompletionCallCount;
@@ -536,12 +576,14 @@ describe("deadline handling (Decision 8, via the service layer)", () => {
     let callCount = 0;
     const clock = () => {
       callCount += 1;
-      // Calls 1-3 (constructor, the input-pipeline deadline check, and
-      // the pre-claim check) return an early time so the pre-claim check
-      // passes; call 4 onward (the post-claim check, immediately after
-      // the atomic claim) jumps forward past the deadline -- simulating
-      // the claim operation itself consuming real time.
-      return callCount <= 3 ? 0 : 999_999_999;
+      // Calls 1-5 (constructor, the input-pipeline deadline check, the
+      // two metadata-fetch deadline checks inside eligibility [Section
+      // 6], and the pre-claim check) return an early time so every
+      // pre-claim check passes; call 6 onward (the post-claim check,
+      // immediately after the atomic claim) jumps forward past the
+      // deadline -- simulating the claim operation itself consuming
+      // real time.
+      return callCount <= 5 ? 0 : 999_999_999;
     };
 
     const { provider, repository, deps } = makeDeps({ deadlineClock: clock });
@@ -578,7 +620,7 @@ describe("stale-claim reconciliation (Decision 13), via the service layer", () =
       configuredModelId: deps.configuredModelId,
       canonicalModelId: CANONICAL_MODEL_ID,
       providerEndpointTag: "tag",
-      conservativeMaxCostUsd: "0.01"
+      perAttemptConservativeMaxCostUsd: "0.01"
     });
 
     const retryResult = await submitExtractionRetry(id, source, deps);
@@ -609,7 +651,7 @@ describe("stale-claim reconciliation (Decision 13), via the service layer", () =
       configuredModelId: deps.configuredModelId,
       canonicalModelId: CANONICAL_MODEL_ID,
       providerEndpointTag: "tag",
-      conservativeMaxCostUsd: "0.01"
+      perAttemptConservativeMaxCostUsd: "0.01"
     });
 
     now = 130_000; // >= STALE_EXTRACTION_CLAIM_AFTER_MS (120_000)
