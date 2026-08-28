@@ -969,23 +969,123 @@ be placed in this environment's own `.env` (or equivalent local secret
 store) by the project owner — never pasted through chat — after which
 the OpenRouter track can be completed without any further code change.
 
+## Live integration gate — OpenRouter track resumed
+
+The project owner configured a real, non-empty `OPENROUTER_API_KEY`
+directly in this environment's `.env` (never pasted through chat). This
+section resumes ONLY the OpenRouter metadata track; the Supabase track
+above remains complete and was not re-run (no migration re-applied).
+
+### Missing-key blocker resolved, but a real defect was found underneath it
+
+With the real key in place, `POST /api/runs`-backed and `GET
+/api/models`-backed traffic through the real running application no
+longer fails at config construction — `readOpenRouterServerConfig()`
+succeeds, confirmed via a narrow, throwaway diagnostic edit to
+`netlify/functions/models.ts` (one `console.log` line, added, exercised,
+then reverted with `git checkout --` before anything was committed —
+never part of any commit). The application now genuinely reaches the
+real OpenRouter network and gets a real HTTP response.
+
+That real response, however, **fails Zod schema validation** in
+`RealOpenRouterProvider.listModels()` (`ProviderError: Provider response
+failed schema validation`, mapped by the existing error handling to
+`502 provider_unavailable` — the identical status code the missing-key
+case also produced, which is why the two situations look alike from the
+HTTP layer alone; they are not the same defect). Isolated via a second
+throwaway diagnostic (fetching the real payload directly and inspecting
+`ZodError.issues`, never dumping the payload; also deleted before any
+commit):
+
+- **Exact mismatch**: `pricing.overrides[].utc_days` is declared in
+  `netlify/server/openrouter/schemas.ts`'s `pricingOverrideSchema` as
+  `z.array(z.number()).optional()`, but the real, live OpenRouter
+  `GET /models` response contains **string** elements in that array for
+  at least some models' conditional-pricing override entries.
+- **Scope** (safe aggregate only, no payload content recorded): of 387
+  models in the real catalog at the time of this test, exactly **2**
+  contain the mismatched shape — but because the top-level schema is a
+  strict `z.array(rawOpenRouterModelSchema)` (not a per-item
+  catch/skip), Zod fails the **entire** parse when any single element is
+  invalid. Two non-conforming models therefore make **all 387** models
+  unparseable, not just the two affected ones.
+- **Blast radius**: every code path that depends on `listModels()` —
+  `GET /api/models`, and `POST /api/preflight` for any run whose prompt
+  version is already assigned (i.e. every real M7 run, not historical
+  M6 placeholder runs) — is unavailable while this shape appears
+  anywhere in the live catalog. This is a genuine, real-data-only defect
+  the fake/mocked provider used by the automated test suite cannot
+  surface, since the fake always returns clean numeric `utc_days`.
+- **No code was changed to fix or route around this.** Per this task's
+  explicit instruction, the defect is reported here for independent
+  review rather than patched in this pass.
+
+### What was verified before hitting the defect
+
+- **Real authenticated request succeeds**: with the real key, the
+  application constructs its OpenRouter config successfully and issues
+  a real network request (no longer failing at synchronous config
+  construction) — confirmed via the reverted diagnostic above.
+- **Historical M6 run correctly short-circuits before ever needing
+  `listModels()`**: `POST /api/preflight` for a pre-existing
+  `unassigned-pre-m7` run returns **HTTP 200** (not 502) with
+  `eligible: false`, `blockedReasonCodes: ["PROMPT_VERSION_UNASSIGNED"]`,
+  `conservativeMaxCostUsd: "0"`, and all seven participants individually
+  blocked with the same reason code — proving the prompt-version gate
+  runs, and correctly rejects, before any route resolution is attempted.
+  `participant_configs` counts (42 `unassigned-pre-m7` / 4 `advocate-v1`
+  / 3 `judge-v1`) were confirmed unchanged before and after this call —
+  preflight remains read-only.
+- **Failure boundary, live**: a malformed `runId` (`"not-a-uuid"`)
+  returns `400 invalid_preflight_request`; a well-formed but unknown
+  `runId` returns `404 run_not_found` — both stable, no stack trace, no
+  secret.
+- **Zero completions**: no code path in this task ever reached
+  `createChatCompletion` or `POST /chat/completions` — every real
+  OpenRouter network call made was a metadata `GET /models` request
+  (either through the diagnostics above or the direct connectivity
+  check from the previous pass). Inference spend attributable to this
+  gate: `$0.00`.
+
+### Sections not reachable this pass
+
+Because `listModels()` fails against the live catalog, the following
+Sections of the live-gate task could not be performed: real endpoint
+metadata parsing, live route resolution against real endpoints, the
+real `GET /api/models` smoke, live test-model selection, a real-model
+frozen run, `POST /api/preflight` against a real-model run, and the
+cache live smoke. All remain outstanding pending the schema fix below
+being independently reviewed and applied in a future, separate pass.
+
+### Verdict (OpenRouter track, this pass)
+
+**M7 LIVE GATE BLOCKED** — reason: a real schema/live-data mismatch in
+`pricingOverrideSchema.utc_days` (`z.number()` vs. the real API's
+`string` elements) causes `RealOpenRouterProvider.listModels()` to fail
+for the entire model catalog whenever any model's conditional-pricing
+override uses this shape, which the real catalog does today (2 of 387
+models). This is a genuine M7 implementation defect against real data,
+not an environment/credential issue, and not fixed in this pass per
+explicit instruction to stop and report rather than patch.
+
 ## Not yet live-verified
 
 The following are explicitly **not** performed as of this document:
 
-- **Real OpenRouter metadata integration** — the one mandatory, manual,
-  metadata-only live smoke (ADR Decision 19) has **not** been completed;
-  blocked on a missing real `OPENROUTER_API_KEY` value in this
-  environment (see "Live integration gate" → "OpenRouter track" above).
-  Zero real authenticated `GET /models` / `GET
-  /models/{author}/{slug}/endpoints` requests have been made from
-  application code in this task.
+- **Real OpenRouter metadata integration beyond the authenticated
+  connection itself** — `GET /models` authenticates and reaches
+  OpenRouter successfully, but the response cannot be parsed due to the
+  `pricing.overrides[].utc_days` schema defect above. Real endpoint
+  metadata parsing, live route resolution, the real `/api/models` and
+  `/api/preflight` smokes against a real model, and the cache live
+  smoke remain **not performed**, blocked on that defect (not on
+  credentials — those are now configured and working).
 - **Optional real completion smoke** (ADR Decision 20) — not authorized,
   not performed.
 
-The M7 Supabase migration is **no longer** in this list — it was applied
-to the linked development database during the live integration gate
-above.
+The M7 Supabase migration and the missing-`OPENROUTER_API_KEY`-value
+blocker are **no longer** in this list — the migration was applied and
+the key was configured during the live integration gate passes above.
 
 No secret value appears anywhere in this document, the test suite, or
 the implementation.
