@@ -39,9 +39,9 @@ marked "corrected this pass" at the time); a pre-spend read-only quote
 endpoint and an explicit Function-death/ambiguous-claim fail-closed
 policy were also added, closing two further gaps that pass surfaced.
 
-**Third, final independent-review correction pass (this revision):** a
-final audit found four remaining contract gaps, each corrected below
-(marked "corrected this pass"/"final independent review" for this
+**Third independent-review correction pass:** a
+further audit found four remaining contract gaps, each corrected below
+(marked "corrected this pass"/"final independent review" for that
 third revision):
 
 1. The `65,000`-token output-cap "formal proof" was still conflating
@@ -79,14 +79,69 @@ third revision):
    exhausted (a new `INPUT_PROCESSING_TIMEOUT` code distinguishes this
    from a genuine provider-call `TIMEOUT`).
 
-Also corrected this pass: `source.kind` locked **out** of the semantic
+Also corrected in that pass: `source.kind` locked **out** of the semantic
 fingerprint entirely (no longer an open question); a `\r`/tab
 inconsistency in `safeExtractionText`'s regex fixed (carriage return
 now excluded, matching the documented "control characters excluded
 except newline/tab" rule exactly); the no-spend-before-claim
 persistence policy clarified explicitly. Nothing from any prior version
-is silently erased. Full findings and corrections (this pass):
+is silently erased. Full findings and corrections (third pass):
 Decisions 5, 8, 9, 11, 13, 14, 15, 16, and the Open Decisions list.
+
+**Fourth, final merge-readiness correction pass (this revision):** a
+final pre-merge independent audit found five remaining defects, each
+corrected below (marked "corrected this pass"/"final merge-readiness
+review"/"final independent review" for this fourth revision):
+
+1. Decision 15's "Ambiguous claim / Function failure" subsection still
+   described stale-`CLAIMED` reconciliation as "explicitly deferred, not
+   solved... needed before production-complete" — directly contradicting
+   Decision 13's own fully-specified 120-second atomic
+   `CLAIMED -> UNKNOWN_OUTCOME` reconciliation policy, locked two
+   revisions earlier. Removed; replaced with a cross-reference to
+   Decision 13 and an explicit historical note distinguishing the
+   superseded interim policy from the current, final one.
+2. Idempotent replay was promised with "zero provider calls" on a
+   fingerprint match, but no extraction *result* was ever persisted —
+   a successful extraction whose HTTP response never reached the
+   caller (a dropped connection, a client crash) could not actually be
+   recovered by a replay, only re-confirmed as "succeeded" with no way
+   to reconstruct the draft. Closed by persisting the
+   post-validation, schema-shaped extraction result — never the
+   provider's raw response — as a new nullable `validated_result` JSONB
+   column on the successful `setup_extraction_attempts` row,
+   re-validated against `packageExtractionSchema` on every read.
+3. Idempotent-replay semantics were described narratively but never as
+   an exact table. Locked as a four-row table (no attempt yet; existing
+   `CLAIMED`; existing terminal failure/block; existing terminal
+   success/needs-review) plus the mismatched-fingerprint case, each with
+   its exact response shape and provider-call count (always zero for
+   the four existing-state rows).
+4. The pre-claim remaining-time computation (Decision 8) can go stale
+   by the time the atomic claim itself (Decision 15) finishes and the
+   provider call is about to start, since the claim operation consumes
+   real time. Locked a second, post-claim deadline recheck immediately
+   before the provider fetch, using freshly recomputed monotonic
+   elapsed/remaining time; the effective provider timeout is now always
+   computed from the **post-claim** value.
+5. The "sane minimum floor" for whether a provider call is worth
+   starting at all was named but never given a value. Locked
+   `PACKAGE_EXTRACTION_MIN_PROVIDER_WINDOW_MS = 5_000` with exact
+   pre-claim vs. post-claim branching: pre-claim insufficient time fails
+   before any claim (zero attempt rows, unchanged shape); post-claim
+   insufficient time (after a successful claim) makes zero provider
+   calls but terminalizes the already-claimed row to
+   `INPUT_PROCESSING_TIMEOUT` rather than leaving it stuck `CLAIMED` or
+   fabricating a success — a new no-spend-persistence case, distinct
+   from the pre-claim one.
+
+Also corrected this pass: `AMBIGUOUS_PARTICIPANT_MAPPING` was misstated
+as 30 characters in Decision 11's prose; it is 29 (verified via direct
+computation) — the exact byte/token proof itself was unaffected, since
+it used the literal string value, not a length placeholder. Nothing
+from any prior version is silently erased. Full findings and
+corrections (fourth pass): Decisions 8, 11, 13, 15, 22, and
+`SECURITY.md`/`docs/economics.md`/`docs/ui-spec.md`.
 
 ## Context
 
@@ -601,39 +656,100 @@ an eighth participant.
 
   ```ts
   export const PACKAGE_EXTRACTION_HANDLER_SOFT_DEADLINE_MS = 55_000;
+  export const PACKAGE_EXTRACTION_MIN_PROVIDER_WINDOW_MS = 5_000;
   ```
 
   5 seconds of deliberate margin below Netlify's 60-second hard
   platform limit, reserved for uncontrolled/runtime tail overhead the
   application cannot itself account for (cold start, network hops,
-  platform-level scheduling). The handler records a monotonic start
-  time at entry. **Before starting the provider call** (i.e. before the
-  atomic claim, Decision 15, is even attempted):
+  platform-level scheduling). `PACKAGE_EXTRACTION_MIN_PROVIDER_WINDOW_MS`
+  (new, corrected this pass — see below) is the concrete floor below
+  which a provider call is never worth starting.
+
+  **Corrected this pass (final independent review): a single pre-claim
+  deadline check is not sufficient — the atomic claim operation itself
+  (Decision 15) takes real time, so a `remainingMs` computed before the
+  claim can be stale by the time the provider call is actually about to
+  start.** Two checks, not one, both against a freshly recomputed
+  monotonic elapsed time — never a reused earlier value:
 
   ```ts
-  const elapsedMs = monotonicNow() - handlerStartMs;
-  const remainingMs = PACKAGE_EXTRACTION_HANDLER_SOFT_DEADLINE_MS - elapsedMs;
+  // Check 1 -- PRE-CLAIM, before even attempting the atomic claim:
+  const preClaimElapsedMs = monotonicNow() - handlerStartMs;
+  const preClaimRemainingMs =
+    PACKAGE_EXTRACTION_HANDLER_SOFT_DEADLINE_MS - preClaimElapsedMs;
+
+  if (preClaimRemainingMs < PACKAGE_EXTRACTION_MIN_PROVIDER_WINDOW_MS) {
+    // fail BEFORE claiming -- zero attempt rows created (Decision 13's
+    // no-spend-before-claim policy)
+    throw new InputProcessingTimeoutError();
+  }
+
+  // ... attempt the atomic claim (Decision 15) ...
+
+  // Check 2 -- POST-CLAIM, immediately before the provider fetch,
+  // recomputed fresh -- NEVER reuses preClaimRemainingMs:
+  const postClaimElapsedMs = monotonicNow() - handlerStartMs;
+  const postClaimRemainingMs =
+    PACKAGE_EXTRACTION_HANDLER_SOFT_DEADLINE_MS - postClaimElapsedMs;
+
+  if (postClaimRemainingMs < PACKAGE_EXTRACTION_MIN_PROVIDER_WINDOW_MS) {
+    // the claim already succeeded -- this attempt row already exists.
+    // No provider call is made. Terminalize the ALREADY-CLAIMED row as
+    // INPUT_PROCESSING_TIMEOUT (never leave it stuck CLAIMED, never
+    // fabricate a provider-success row).
+    return terminalizeAsInputProcessingTimeout(attemptId);
+  }
+
   const effectiveProviderTimeoutMs = Math.min(
     PACKAGE_EXTRACTION_PROVIDER_TIMEOUT_MS,
-    remainingMs
+    postClaimRemainingMs
   );
+  // Only now, with a freshly verified real window, call the provider.
   ```
 
-  **No provider call may be started once the soft deadline is already
-  exhausted** (`remainingMs` at or below a sane minimum floor for a
-  provider call to be worth attempting at all) — the request fails
-  safely, *before* claiming/spending, with a new stable error code
-  (`INPUT_PROCESSING_TIMEOUT`, Decision 16) distinct from a genuine
-  provider-call `TIMEOUT`, so audit data can distinguish "the model
-  timed out" from "our own pre-work left no time to even try."
+  **Locked rules, precisely:**
+
+  - **Pre-claim**: if `preClaimRemainingMs <
+    PACKAGE_EXTRACTION_MIN_PROVIDER_WINDOW_MS`, fail with
+    `INPUT_PROCESSING_TIMEOUT` **before** attempting the claim — **zero**
+    `setup_extraction_attempts` rows are created (this is the same
+    "no-spend block persistence" pre-claim case Decision 13 already
+    describes; this deadline check is simply one more reason that path
+    can be reached).
+  - **Post-claim**: if the claim succeeds but
+    `postClaimRemainingMs < PACKAGE_EXTRACTION_MIN_PROVIDER_WINDOW_MS`,
+    **no provider call is made** — but an attempt row **already,
+    legitimately exists**, because the atomic claim already succeeded.
+    That specific claimed row is **terminalized** to
+    `INPUT_PROCESSING_TIMEOUT` (the one permitted `CLAIMED -> terminal`
+    transition, Decision 13) — actual provider telemetry
+    (`actual_input_tokens`/`actual_output_tokens`/`actual_cost_usd`/
+    `provider_request_id`) remains `null`, since no call was ever made
+    and nothing was ever spent; the row is never left stuck `CLAIMED`,
+    and it is never fabricated as a provider success.
+  - **Otherwise** (`remainingMs >=
+    PACKAGE_EXTRACTION_MIN_PROVIDER_WINDOW_MS` at both checks):
+    `effectiveProviderTimeoutMs = min(PACKAGE_EXTRACTION_PROVIDER_TIMEOUT_MS,
+    postClaimRemainingMs)`, computed from the **post-claim** value —
+    never the pre-claim one, which may already be stale by the time
+    this line runs.
+
+  This distinction — pre-claim block (zero attempt rows) vs. post-claim
+  exhaustion (one already-claimed row, terminalized in place) — mirrors
+  and extends Decision 13's existing "No-spend block persistence"
+  policy exactly; it does not introduce a second, competing persistence
+  rule.
+
   **PDF extraction is bound by this same soft deadline, not a separate,
   unenforced budget** — if deterministic pre-work (including PDF
-  extraction) would exhaust the deadline, that failure must occur
-  *before* any claim/spend is attempted, never mid-provider-call. An
-  exact PDF-specific millisecond sub-budget or page-count tuning value
-  remains an implementation-time detail (Open Decisions, below) — it is
-  safe to choose *because* the overall soft-deadline invariant already
-  makes the architecture correct regardless of that exact number.
+  extraction) would exhaust the deadline, that failure must occur at
+  the **pre-claim** check, before any claim/spend is attempted, never
+  mid-provider-call. An exact PDF-specific millisecond sub-budget or
+  page-count tuning value remains an implementation-time detail (Open
+  Decisions, below) — it is safe to choose *because* the overall
+  soft-deadline invariant already makes the architecture correct
+  regardless of that exact number.
 - **Retry is NOT an automatic in-request loop.** The initial `POST
   /api/setup-extractions` request performs **exactly one** provider
   attempt. If that attempt fails with a retryable reason, the response
@@ -899,7 +1015,10 @@ content that the model expresses reasonably.
 `safeExtractionText`-legal, schema-legal fixture (every field at its
 maximum length, populated with the 3-byte-UTF-8 worst-case character
 `漢`; `warnings` at its 40-entry maximum using the longest `code`
-enum value, `"AMBIGUOUS_PARTICIPANT_MAPPING"` (30 chars), and the
+enum value, `"AMBIGUOUS_PARTICIPANT_MAPPING"` (29 chars — corrected
+this pass, independent review; the exact computed byte result below is
+unaffected, since it was computed from the actual string value, not a
+length-derived placeholder), and the
 longest `field` enum value, `"participants.JUDGE_1.profileName"` /
 `"...personality"` (32 chars, corrected this pass — the prior pass's
 `59,280` estimate itself still used an informal `~3,000`-byte
@@ -1008,21 +1127,31 @@ the UI treats as a draft at all.
 
 **Not persisted** (deliberately, to minimize retained
 untrusted/incidental-personal content beyond what the product already
-needs) — **unchanged by this pass's corrections below**, which resolve
-retry/concurrency safety without weakening this:
+needs) — **unchanged by this pass's corrections below**, including the
+lost-response fix (see "Idempotent replay must survive a lost HTTP
+response," Decision 15), which resolves recoverability without
+weakening this:
 
 - Raw uploaded file bytes — already project policy (`SECURITY.md`),
   unchanged.
-- The normalized dossier text itself (post-decode/PDF-extraction,
-  pre-model) — no product/audit need for it once the structured result
-  exists; retaining it would increase exposure of content the user may
-  not have intended to expose as prominently as a Charge Sheet field.
-- The raw model extraction JSON, independent of the audit fields below
-  — once reviewed/edited by the human, its accepted content is
-  indistinguishable from, and persists via, the **existing** M5/M6 case
-  + participant-config persistence path when the user eventually
-  creates the run. No new "draft" persistence mechanism is needed for
-  the draft's *content*.
+- The normalized dossier *source* text (post-decode/PDF-extraction,
+  pre-model — what the model *read*) — no product/audit need for it
+  once the structured result exists; retaining it would increase
+  exposure of content the user may not have intended to expose as
+  prominently as a Charge Sheet field.
+- The provider's raw, unvalidated response JSON — distinct from the
+  **validated** result (below), which is a bounded, schema-checked
+  subset the application itself produced by parsing that response, not
+  the response body itself.
+
+**Corrected this pass (final independent review): the previously
+"never persisted" extraction *result* created a lost-response gap** —
+see Decision 15's "Idempotent replay must survive a lost HTTP response"
+for the full defect and fix. The **validated, post-schema-check**
+structured result **is** now persisted (per attempt, below) — this is
+the one addition this pass makes to the persistence surface, and it is
+deliberately narrow: the bounded output shape, never the source text or
+the provider's raw response.
 
 **Persisted: two tables, not one** (unchanged from the prior pass's
 correction — still needed, since a logical extraction can have two
@@ -1077,6 +1206,14 @@ setup_extraction_attempts                -- ONE row per provider-attempt SLOT, c
   latency_ms              nullable
   provider_request_id     nullable
   error_code              nullable
+  validated_result        JSONB, nullable -- NEW this pass: populated ONLY
+                           -- when this attempt reaches success/
+                           -- EXTRACTION_INCOMPLETE/EXTRACTION_AMBIGUOUS;
+                           -- shaped exactly like packageExtractionSchema's
+                           -- output (Decision 5); never the provider's
+                           -- raw response; re-validated on every read
+                           -- (Decision 15's "Idempotent replay must
+                           -- survive a lost HTTP response")
   created_at              -- claim time
   completed_at            nullable until terminal
 
@@ -1229,20 +1366,29 @@ could in principle be reconciled after the fact), capturing it is
 future reconciliation design, not invented here (Open Decisions,
 below).
 
-### No-spend block persistence — new this pass, clarified
+### No-spend block persistence — clarified this pass, now covering pre-claim and post-claim separately
 
-Three distinct cases, deliberately different persistence outcomes:
+Four distinct cases, deliberately different persistence outcomes.
+**Corrected this pass (final independent review): the deadline-exhaustion
+case is not one case — it splits into a pre-claim variant (identical in
+shape to the existing guard-failure case) and a genuinely new post-claim
+variant (an attempt row already exists and must be finalized, not
+dropped).** Both are listed explicitly below so the distinction cannot
+be missed:
 
 - **Read-only preflight/quote** (`POST /api/setup-extractions/preflight`,
   Decision 9/19): creates **no** `setup_extractions` row, **no**
   `setup_extraction_attempts` row, zero inference — unchanged, restated
   here for contrast.
 - **Billable initial/retry endpoint, the authoritative guard fails
-  *before* any claim is attempted** (e.g. `BLOCKED_BUDGET` on the
-  initial preflight check, `MODEL_NOT_ELIGIBLE`, input-validation
-  failure): the logical `setup_extractions` row is created/updated with
-  its `request_fingerprint` and a **terminal blocked `final_status`**
-  (e.g. `BLOCKED_BUDGET`) — but **zero** `setup_extraction_attempts`
+  *before* any claim is attempted** — this now includes both ordinary
+  guard failures (e.g. `BLOCKED_BUDGET` on the initial preflight check,
+  `MODEL_NOT_ELIGIBLE`, input-validation failure) **and** the pre-claim
+  deadline check of Decision 8 (`preClaimRemainingMs <
+  PACKAGE_EXTRACTION_MIN_PROVIDER_WINDOW_MS`, yielding
+  `INPUT_PROCESSING_TIMEOUT`): the logical `setup_extractions` row is
+  created/updated with its `request_fingerprint` and a **terminal
+  blocked `final_status`** — but **zero** `setup_extraction_attempts`
   rows are created, since no provider attempt was ever claimed and
   there is nothing attempt-shaped to audit. A repeated request with the
   same `extractionRequestId` and matching fingerprint returns the same
@@ -1250,6 +1396,26 @@ Three distinct cases, deliberately different persistence outcomes:
   rule, Decision 15); a different fingerprint still gets
   `IDEMPOTENCY_CONFLICT`. **No fake provider-attempt row is ever
   created for work that never reached a provider attempt.**
+- **New this pass: the claim succeeds, but the post-claim deadline
+  check (Decision 8) finds `postClaimRemainingMs <
+  PACKAGE_EXTRACTION_MIN_PROVIDER_WINDOW_MS` immediately before the
+  provider fetch.** This is *not* the same as the pre-claim case above
+  — the atomic claim already committed a real
+  `setup_extraction_attempts` row with `status = 'CLAIMED'`. That row
+  is **not** left `CLAIMED` (it would otherwise sit indistinguishable
+  from a genuinely in-flight or crashed call until the 120-second
+  `STALE_EXTRACTION_CLAIM_AFTER_MS` reconciliation swept it into
+  `UNKNOWN_OUTCOME` — an avoidable ambiguity when the true cause is
+  already known deterministically at request time) and it is **not**
+  fabricated as a provider success. Instead the same caller
+  immediately performs the one permitted `CLAIMED -> terminal`
+  transition, setting `status = 'INPUT_PROCESSING_TIMEOUT'` with
+  `actual_input_tokens`/`actual_output_tokens`/`actual_cost_usd`/
+  `provider_request_id`/`validated_result` all `null` — no provider
+  call was ever made, so there is no telemetry to record and nothing
+  was spent. The logical `setup_extractions` row's `final_status`
+  reflects the same outcome once all attempts for that logical call are
+  exhausted (Decision 13's attempt-to-logical-status rules, unchanged).
 - **Claim succeeds, provider call is made**: the normal
   `setup_extraction_attempts` claim-then-terminal lifecycle above
   applies.
@@ -1449,18 +1615,22 @@ check-then-insert):
    the same caller that won the claim — identified by owning that
    specific attempt row — writes the **one** permitted status
    transition from `CLAIMED` to a terminal value, plus whatever
-   telemetry the provider supplied (Decision 14). This is an `UPDATE`
-   of a row this request alone owns (via the claim it already won),
-   not a new insert — no further race is possible for that attempt
-   number, since the `UNIQUE` constraint already guarantees only one
-   claim could ever have succeeded.
+   telemetry the provider supplied (Decision 14), **plus the validated
+   `validated_result`** (new this pass) if and only if the
+   application-level outcome is `success`/`EXTRACTION_INCOMPLETE`/
+   `EXTRACTION_AMBIGUOUS` — never for a hard failure. This is an
+   `UPDATE` of a row this request alone owns (via the claim it already
+   won), not a new insert — no further race is possible for that
+   attempt number, since the `UNIQUE` constraint already guarantees
+   only one claim could ever have succeeded, and this is still the same
+   single permitted status transition, not a second write.
 
-### Ambiguous claim / Function failure — new this pass (independent review)
+### Ambiguous claim / Function failure — final policy, Decision 13
 
 If a Function invocation dies after successfully claiming an attempt
 (step 2 above) but before writing its terminal result (step 4), that
-attempt row is left in `CLAIMED`/`RUNNING` indefinitely. Locked minimum
-safe behavior, **fail closed rather than silently retrying**:
+attempt row is left in `CLAIMED`/`RUNNING` until reconciled. Locked
+minimum safe behavior, **fail closed rather than silently retrying**:
 
 - A duplicate request for the same attempt (a client retry of its own
   in-flight call, or a concurrent request) that observes a
@@ -1469,20 +1639,120 @@ safe behavior, **fail closed rather than silently retrying**:
 - **Retry eligibility (Decision 8) requires attempt #1 to be
   *terminally* classified** — a `CLAIMED`/`RUNNING` row, however old,
   does **not** count as "terminal and retryable." A stuck `RUNNING`
-  attempt #1 therefore blocks the retry endpoint entirely until it is
+  attempt #1 therefore blocks the retry endpoint until it is
   reconciled — this is intentional fail-closed behavior, not a defect.
-- **Stale-claim reconciliation is explicitly deferred, not solved in
-  this planning pass.** A future, separately reviewed mechanism (e.g. a
-  reconciliation job that checks the provider's own request-id status,
-  or a bounded staleness timeout after which a `CLAIMED` row is
-  reclassified to a stable terminal `TIMEOUT`-like state) is needed
-  before this can be considered production-complete — recorded as an
-  Open Decision below, not silently assumed solved.
-- Unknown billing telemetry from an unresolved `CLAIMED` attempt
-  remains `null` — never fabricated as zero, never assumed successful
-  or failed without evidence.
+- **Stale-claim reconciliation is locked and resolved — see Decision
+  13's "Stale claim reconciliation and `UNKNOWN_OUTCOME`" subsection**
+  for the full current policy: `STALE_EXTRACTION_CLAIM_AFTER_MS =
+  120_000`, the atomic, race-safe `CLAIMED -> UNKNOWN_OUTCOME`
+  transition, and the exact retry/no-attempt-3 rules that follow.
+  *Historical note: an earlier revision of this ADR intentionally
+  failed closed and left stale-claim reconciliation explicitly
+  deferred, pending a future, separately reviewed mechanism, before
+  this could be considered production-complete. The final planning
+  revision (this document) replaces that temporary policy with
+  Decision 13's fully specified 120-second atomic `UNKNOWN_OUTCOME`
+  reconciliation — reconciliation policy is no longer deferred or
+  open.*
+- Unknown billing telemetry from an unresolved `CLAIMED`/`UNKNOWN_OUTCOME`
+  attempt remains `null` — never fabricated as zero, never assumed
+  successful or failed without evidence.
 
-### Idempotency summary
+### Idempotent replay must survive a lost HTTP response — corrected this pass (final independent review)
+
+**Corrected this pass: a material gap in the idempotency promise
+itself.** Decision 15 already promised "same `extractionRequestId` +
+same fingerprint → idempotent replay, zero additional provider calls,"
+but the prior revision of Decision 13 persisted no normalized
+extraction result at all. Consider: the provider call succeeds, the
+application validates the structured output, the attempt is finalized
+`success` in the database — and then the HTTP response back to the
+browser is lost (a network drop, a client crash, a proxy timeout). A
+replay of the same request can now correctly recognize "this logical
+extraction already succeeded" and correctly make **zero** further
+provider calls — but with nothing but a `final_status` to go on, it has
+no way to give the browser back the extracted draft it needs to show
+the Extraction Review screen (Decision 12). The idempotency promise was
+real for *spend safety* but silently broken for *actually recovering
+the result* — the single scenario idempotent replay exists to handle.
+
+**Resolved: persist the validated normalized extraction result, and
+nothing else new.** A new `validated_result` JSONB column on
+`setup_extraction_attempts` (Decision 13), populated **only** on an
+attempt that reaches a successful terminal application-level outcome
+(`success`, `EXTRACTION_INCOMPLETE`, or `EXTRACTION_AMBIGUOUS` — never
+on a hard failure, and never on `UNKNOWN_OUTCOME`, since there is no
+validated result to store in either of those cases):
+
+```text
+setup_extraction_attempts.validated_result   JSONB, nullable
+  -- populated ONLY when this attempt reaches success/needs_review;
+  -- shaped EXACTLY like Decision 5's packageExtractionSchema output
+  -- (chargeSheet + the seven PackageSeat-keyed participants, each
+  -- with nullable profileName/personality + the bounded warnings
+  -- array) -- i.e. the POST-VALIDATION structured result, never the
+  -- provider's raw response body.
+```
+
+**Still, deliberately, not persisted** (unchanged from Decision 13's
+existing policy, not weakened by this addition):
+
+- Raw uploaded file bytes.
+- The normalized dossier *source* text (the input the model read).
+- The provider's raw/unvalidated response body.
+
+Only the **bounded, already-Zod-validated output** — the same shape
+that will become the editable Extraction Review draft regardless of
+whether this is a fresh success or a replay — is ever stored. This is
+materially smaller and structurally different exposure than the source
+dossier: it is exactly the same content class M5/M6 already persist
+once a human confirms a case + participant configuration, just staged
+one step earlier and still awaiting human review before that happens.
+
+**Requirements, all locked:**
+
+- Stored only **after** strict Zod (`packageExtractionSchema`)
+  validation succeeds — never the provider's raw, unvalidated JSON.
+- **Re-validated again on read** — loading `validated_result` for an
+  idempotent replay runs it back through `packageExtractionSchema`
+  before returning it; a schema mismatch on read (e.g. a future schema
+  version change makes a historical stored value no longer valid) fails
+  safely rather than returning unchecked data — never trust storage
+  over validation, even for data this same code wrote.
+- Bounded by the exact same schema/limits the live extraction call
+  itself is bounded by — no separate, looser persistence shape.
+- Attempt #1's `validated_result` is **never overwritten** by attempt
+  #2 — each attempt owns its own column on its own immutable row
+  (Decision 13's claim-then-terminal lifecycle already guarantees this
+  structurally; this addition does not weaken it).
+- If attempt #2 reaches a successful terminal outcome, the **logical
+  extraction's effective result** for replay purposes is attempt #2's
+  `validated_result` — the most recent successful/needs-review attempt
+  for that `extractionRequestId`, never an older, superseded one.
+
+### Idempotent initial-request replay — exact semantics, locked this pass
+
+For a request to the **initial** endpoint with a known
+`extractionRequestId`:
+
+| Existing state | Fingerprint | Response | Provider calls |
+|---|---|---|---|
+| No attempt exists yet | n/a | proceed to claim attempt #1 (normal path) | as normal |
+| Latest attempt is `CLAIMED`/`RUNNING` | matches | return the in-progress state | **zero** |
+| Latest attempt is a terminal hard failure/block (Decision 16) | matches | return that same terminal state/error code | **zero** |
+| Latest terminal-success attempt has a `validated_result` | matches | load it, **re-validate** (above), return the same draft + warnings | **zero** |
+| Any existing attempt | **mismatches** | `409 IDEMPOTENCY_CONFLICT` | **zero** |
+
+This table is what makes lost-response recovery actually work: a
+browser that never received the original success response can retry
+the identical initial request and receive the identical validated
+draft back, with the server never repeating the provider call. The
+same fingerprint-matched lookup governs the **retry** endpoint's
+replay behavior identically (Decision 15's retry-input contract,
+above) — a resent `source` that reproduces the same fingerprint as an
+already-terminal attempt #2 is likewise answered from persisted state,
+never a third provider call (which the "maximum 2 attempts" structural
+rule below already forbids regardless).
 
 - **Maximum provider attempts per logical call: 2** — enforced
   structurally (there is no third endpoint call this contract defines,
@@ -1490,9 +1760,10 @@ safe behavior, **fail closed rather than silently retrying**:
 - An accidental exact-duplicate submission to the **initial** endpoint
   (double-click, a client network retry re-sending the identical
   `extractionRequestId` and the same source) is idempotent via the
-  fingerprint-matched claim above — mirroring `POST /api/runs`'s
+  fingerprint-matched lookup above — mirroring `POST /api/runs`'s
   `client_request_id` unique-constraint pattern exactly, now realized
-  through the same atomic claim mechanism.
+  through the same atomic claim mechanism plus the new
+  `validated_result` recovery path.
 - A dossier edit, or an explicit "start over," always generates a new
   `extractionRequestId` — a genuinely new, separately billable logical
   call, never silently merged with a prior one.
@@ -1925,6 +2196,62 @@ the real network" discipline exactly):
   fixture with ample remaining time computes an effective provider
   timeout `<= PACKAGE_EXTRACTION_PROVIDER_TIMEOUT_MS` via the
   `min(providerTimeout, remainingMs)` formula.
+- **Lost-response idempotency and post-claim deadline handling — new
+  this pass (final merge-readiness review, Decisions 8/13/15)**:
+  1. A fake provider that succeeds and is validated, followed by a
+     simulated dropped HTTP response (the handler's own response write
+     never observed by the caller), leaves a `setup_extraction_attempts`
+     row with a non-null `validated_result` and a terminal success
+     status.
+  2. A replay of the same `extractionRequestId` with a matching
+     fingerprint against that row returns the identical draft +
+     warnings from step 1's `validated_result`, making **zero** new
+     `createChatCompletion` calls.
+  3. The replay path re-runs `packageExtractionSchema` validation
+     against the persisted `validated_result` before returning it
+     (server never trusts previously-validated data as still valid
+     without re-checking).
+  4. A persisted `validated_result` that has been corrupted/no longer
+     matches `packageExtractionSchema` (simulating storage drift) is
+     rejected by the re-validation step and fails safely (a stable
+     error, never a silently-wrong draft returned to the caller).
+  5. Attempt #1's `validated_result` is never overwritten by attempt
+     #2's terminal write — each attempt row's `validated_result` is
+     independently owned by its own `UNIQUE(extraction_request_id,
+     attempt_number)` row.
+  6. When attempt #2 succeeds after attempt #1 did not, the logical
+     extraction's effective replayed result is attempt #2's
+     `validated_result`, not attempt #1's.
+  7. Idempotent-replay semantics table (Decision 15): for each of the
+     four documented states — no attempt yet, existing `CLAIMED`,
+     existing terminal hard-failure/block, existing terminal
+     success/needs-review — the endpoint returns exactly the documented
+     response shape with **zero** provider calls; a mismatched
+     fingerprint against any existing state returns `409
+     IDEMPOTENCY_CONFLICT` with zero provider calls.
+  8. A fixture whose `preClaimRemainingMs` is already below
+     `PACKAGE_EXTRACTION_MIN_PROVIDER_WINDOW_MS` fails with
+     `INPUT_PROCESSING_TIMEOUT` and creates **zero**
+     `setup_extraction_attempts` rows (confirms the pre-claim branch,
+     distinct from case 9 below).
+  9. A fixture whose claim succeeds but whose *post-claim* recomputed
+     `postClaimRemainingMs` is below
+     `PACKAGE_EXTRACTION_MIN_PROVIDER_WINDOW_MS` makes **zero**
+     provider calls, yet the already-claimed attempt row is
+     terminalized to `INPUT_PROCESSING_TIMEOUT` (never left `CLAIMED`,
+     never fabricated as a success) with all actual telemetry fields
+     `null`.
+  10. A fixture where the atomic claim itself is simulated to consume
+      measurable time confirms the effective provider timeout is
+      computed from the **post-claim** recomputed `remainingMs`, not
+      the earlier pre-claim value — a test asserting the two computed
+      values can differ, and that only the post-claim one reaches the
+      `min(...)` call.
+  11. Exact-boundary test at
+      `remainingMs === PACKAGE_EXTRACTION_MIN_PROVIDER_WINDOW_MS`:
+      confirms the documented `<` (strictly less than) comparison, not
+      `<=` — a request with exactly the minimum window remaining is
+      still permitted to proceed.
 - **Canonical output-bound computation — new this pass (final
   independent review, Decision 11)**: the exact maximum
   `safeExtractionText`-legal fixture, serialized via native compact
@@ -2070,14 +2397,32 @@ not unresolved design questions.
    `UNKNOWN_OUTCOME` is the final answer, not a gap in the current
    correctness contract.
 
-**Resolved this pass (previously open, now fully locked):**
+**Resolved this pass (fourth, final merge-readiness pass — previously
+open or contradictory, now fully locked):**
+
+- Idempotent replay's ability to actually recover a lost successful
+  response, with zero new provider calls — see the new `validated_result`
+  persistence and the four-row replay-semantics table, Decision 13/15.
+- The undefined "sane minimum floor" for whether a provider call is
+  worth starting — locked as
+  `PACKAGE_EXTRACTION_MIN_PROVIDER_WINDOW_MS = 5_000`, with exact
+  pre-claim/post-claim branching — see Decision 8.
+- The stale pre-claim-only deadline check — a second, post-claim
+  recheck (using freshly recomputed monotonic time, never the stale
+  pre-claim value) is now locked — see Decision 8.
+- Decision 15's residual "reconciliation... explicitly deferred"
+  wording, which directly contradicted Decision 13's own locked
+  reconciliation policy from the prior pass — removed; replaced with a
+  cross-reference and an explicit historical note.
+
+**Resolved in the third pass (previously open, now fully locked):**
 
 - Stale-`CLAIMED`-attempt reconciliation *policy* (only the narrower
   future-evidence-recovery item above remains open) — see Decision 13.
 - `source.kind`'s semantic-fingerprint inclusion — locked out entirely,
   see Decision 15.
 
-**Resolved in the prior pass (previously open, grounded in reverified
+**Resolved in the second pass (previously open, grounded in reverified
 current evidence):** the exact Netlify Function synchronous-execution
 (60s) and buffered-payload (6 MB / ≈4.5 MB effective binary) limits —
 see Decision 20.

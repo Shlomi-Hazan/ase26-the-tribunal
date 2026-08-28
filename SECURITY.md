@@ -305,13 +305,29 @@ Decision 17):
   pre-work step can consume the entire Function lifetime, and no
   provider call (hence no spend) is ever attempted once that deadline
   is exhausted.
-- Raw upload bytes and the normalized dossier text are both transient
-  and are not retained after any extraction attempt (successful,
-  failed, or between an initial attempt and a subsequent retry — a
-  retry resends the same dossier content, since the server never stores
-  it in between); only bounded structured audit telemetry, plus a
-  one-way semantic fingerprint of the normalized content (never the
-  content itself), persists.
+- Raw upload bytes and the normalized dossier *source* text are both
+  transient and are not retained after any extraction attempt
+  (successful, failed, or between an initial attempt and a subsequent
+  retry — a retry resends the same dossier content, since the server
+  never stores it in between); only bounded structured audit
+  telemetry, plus a one-way semantic fingerprint of the normalized
+  content (never the content itself), persists.
+- **Corrected this pass (final independent review, `docs/adr/
+  0004-smart-package-extraction.md` Decisions 13/15): the one bounded
+  exception to the above is the validated extraction *result*, not the
+  source dossier.** After a successful extraction passes strict
+  server-side schema validation (Decision 5), the validated,
+  schema-shaped result — the same seven-seat/charge-sheet structure the
+  UI would otherwise show — is persisted as `validated_result` on that
+  attempt's audit row, so a lost HTTP response (a dropped connection
+  between the server and the browser) can be recovered by an idempotent
+  replay without a second paid provider call. This is categorically
+  different from source retention: it is never the raw dossier, never
+  the raw provider response, bounded by the same schema/size limits as
+  the live extraction output, re-validated on every read, and reachable
+  only through the same authenticated idempotent-replay path a normal
+  request already uses — it does not reopen "the dossier is retained"
+  in any form.
 - Dossier content (raw or normalized) must never appear in server logs.
 - The existing public-demo-data privacy notice (do not submit
   sensitive/private information) must also be shown before dossier

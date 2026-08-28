@@ -736,18 +736,30 @@ see `docs/adr/0004-smart-package-extraction.md` for full detail):**
   45,000` (not M7's 60,000 ms Tribunal constant), bounded further by a
   **complete-Function soft deadline**
   (`PACKAGE_EXTRACTION_HANDLER_SOFT_DEADLINE_MS = 55,000`, 5s of
-  margin below Netlify's reverified 60s hard limit) — the effective
-  provider timeout for a given request is
-  `min(PACKAGE_EXTRACTION_PROVIDER_TIMEOUT_MS, remainingMs)`, and no
-  provider call is ever started once that deadline is exhausted
-  (`INPUT_PROCESSING_TIMEOUT`, zero spend). A retry is a separate,
-  explicit endpoint call (resending the same dossier source, since
-  nothing dossier-derived persists server-side) whose eligibility the
-  server alone determines from persisted attempt state — never a
+  margin below Netlify's reverified 60s hard limit). A retry is a
+  separate, explicit endpoint call (resending the same dossier source,
+  since nothing dossier-derived persists server-side) whose eligibility
+  the server alone determines from persisted attempt state — never a
   client-declared attempt number. No provider call may begin before
   that specific attempt is atomically claimed in the database
   (claim-then-spend, never spend-then-claim), so concurrent duplicate
   requests can never both spend.
+- **Corrected this pass (final independent review): the deadline is
+  rechecked twice, not once, and a minimum provider start window is now
+  locked.** `PACKAGE_EXTRACTION_MIN_PROVIDER_WINDOW_MS = 5,000`. Two
+  checks against freshly recomputed monotonic elapsed/remaining time:
+  **pre-claim** (before the atomic claim is even attempted — if
+  insufficient, fail with `INPUT_PROCESSING_TIMEOUT`, zero attempt rows
+  created, zero spend) and **post-claim** (immediately before the
+  provider fetch, recomputed fresh, since the claim operation itself
+  consumes real time and can make the pre-claim value stale — if
+  insufficient here, zero provider calls are made, but the
+  already-claimed attempt row is terminalized to
+  `INPUT_PROCESSING_TIMEOUT` rather than left stuck `CLAIMED`, with all
+  actual telemetry `null`). Only past both checks is
+  `effectiveProviderTimeoutMs = min(PACKAGE_EXTRACTION_PROVIDER_TIMEOUT_MS,
+  postClaimRemainingMs)` computed — always from the **post-claim** value,
+  never the pre-claim one.
 - **Unknown-cost retry economics**: the retry-budget guard is
   `(actual_cost_usd ?? conservative_max_cost_usd) +
   fresh_attempt2_conservative_max_cost_usd <=
@@ -773,6 +785,15 @@ see `docs/adr/0004-smart-package-extraction.md` for full detail):**
   request is the *same* logical extraction; a mismatch is rejected with
   zero provider calls, never silently treated as a new attempt of
   something else.
+- **Corrected this pass (final independent review): a fingerprint match
+  must actually recover the paid-for result, not merely confirm it
+  once existed.** The validated, schema-shaped extraction result is now
+  persisted (`validated_result`, bounded and re-validated on every
+  read — never the raw provider response) so a lost HTTP response after
+  a successful, billed extraction can be replayed with the same draft
+  and warnings and **zero new provider calls** — a customer is never
+  charged twice for the same successful extraction merely because the
+  response never reached the browser.
 - **Telemetry**: actual `usage.cost` decoded once, Decimal throughout,
   unknown telemetry stays `null` — never a fabricated zero, matching §9
   exactly; recorded per provider attempt (a logical call's two attempts

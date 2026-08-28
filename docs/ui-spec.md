@@ -190,6 +190,21 @@ UI instead offers to start a fresh extraction (a new, separately
 billable attempt, going through the read-only quote and confirmation
 again).
 
+**Corrected this pass (final independent review, Decision 13/15): a
+lost network response after a successful extraction must never present
+as data loss.** If the connection between the browser and the server
+drops after the server has already extracted and validated a draft
+(the request appears to fail client-side, e.g. as a network error or a
+stalled "Extracting" state), re-submitting the same request (retrying
+the action, or simply reloading and re-entering the flow with the same
+in-progress extraction) recovers the exact same validated draft and
+warning summary with **no additional charge** — the server replays the
+persisted, re-validated result rather than calling the provider again.
+The UI does not need bespoke "did my request actually work?" messaging
+for this case; it behaves exactly like a normal successful extraction
+reaching the Extraction Review screen, just arriving on a later
+attempt.
+
 The same privacy notice shown before Charge Sheet entry (below) must
 also be shown before dossier upload/paste — free-form dossier text is
 at least as likely to carry incidental personal information.
