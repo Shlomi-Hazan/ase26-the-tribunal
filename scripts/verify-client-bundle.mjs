@@ -5,7 +5,11 @@ const distDirectory = path.resolve("dist");
 const forbiddenIdentifiers = [
   "OPENROUTER_API_KEY",
   "SUPABASE_SERVICE_ROLE_KEY",
-  "INTERNAL_FUNCTION_SECRET"
+  "INTERNAL_FUNCTION_SECRET",
+  // Milestone 7A (docs/adr/0004-smart-package-extraction.md Decision 10):
+  // server-only configuration, never browser-authoritative or
+  // dossier-selected -- same treatment as OPENROUTER_API_KEY above.
+  "PACKAGE_EXTRACTION_MODEL_ID"
 ];
 
 async function collectFiles(directory) {

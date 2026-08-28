@@ -11,6 +11,7 @@ import { JudgesPage } from "../pages/JudgesPage";
 import { NotFoundPage } from "../pages/NotFoundPage";
 import { ResultPage } from "../pages/ResultPage";
 import { ReviewPage } from "../pages/ReviewPage";
+import { SmartImportPage } from "../pages/SmartImportPage";
 import { theme } from "../theme/theme";
 
 export function AppRoutes() {
@@ -18,6 +19,7 @@ export function AppRoutes() {
     <Routes>
       <Route path="/" element={<Navigate replace to="/new/charge-sheet" />} />
       <Route path="/new/charge-sheet" element={<ChargeSheetPage />} />
+      <Route path="/new/smart-import" element={<SmartImportPage />} />
       <Route path="/new/advocates" element={<AdvocatesPage />} />
       <Route path="/new/judges" element={<JudgesPage />} />
       <Route path="/new/review" element={<ReviewPage />} />

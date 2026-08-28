@@ -1,0 +1,131 @@
+// Milestone 7A -- Smart Import client (ADR 0004 Decision 19). Mirrors
+// importApi.ts's ImportApiError/fetch pattern.
+
+import type { PackageExtractionResult } from "../schemas/packageExtraction";
+
+export type DossierSourcePayload =
+  | { kind: "text"; text: string }
+  | { kind: "file"; filename: string; contentBase64: string };
+
+export type PreflightResponse = {
+  eligible: boolean;
+  configuredModelId: string;
+  canonicalModelId: string | null;
+  providerEndpointTag: string | null;
+  conservativeMaxCostUsd: string;
+  hardCeilingUsd: string;
+  blockedReasonCodes: string[];
+  pricingObservedAt: string | null;
+};
+
+export type ExtractionAttemptSummary = {
+  attemptNumber: 1 | 2;
+  status: string;
+  conservativeMaxCostUsd: string;
+  actualCostUsd: string | null;
+  errorCode: string | null;
+};
+
+export type ExtractionSuccessResponse = {
+  status: "success" | "needs_review" | "in_progress";
+  draft?: PackageExtractionResult;
+  warnings?: PackageExtractionResult["warnings"];
+  attempt?: ExtractionAttemptSummary;
+};
+
+export type ExtractionBlockedResponse = {
+  status: "blocked";
+  errorCode: string;
+  message: string;
+  attempt?: ExtractionAttemptSummary;
+};
+
+export type ExtractionResponse = ExtractionSuccessResponse | ExtractionBlockedResponse;
+
+export class ExtractionApiError extends Error {
+  readonly errorCode: string;
+
+  constructor(errorCode: string, message: string) {
+    super(message);
+    this.name = "ExtractionApiError";
+    this.errorCode = errorCode;
+  }
+}
+
+export async function requestExtractionPreflight(
+  source: DossierSourcePayload
+): Promise<PreflightResponse> {
+  const response = await fetch("/api/setup-extractions/preflight", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ source })
+  });
+
+  const payload = (await response.json().catch(() => ({}))) as PreflightResponse & {
+    errorCode?: string;
+    message?: string;
+  };
+
+  if (!response.ok) {
+    throw new ExtractionApiError(payload.errorCode ?? "PRICING_UNAVAILABLE", payload.message ?? "Preflight failed.");
+  }
+
+  return payload;
+}
+
+export async function submitExtraction(
+  extractionRequestId: string,
+  source: DossierSourcePayload
+): Promise<ExtractionResponse> {
+  const response = await fetch("/api/setup-extractions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ extractionRequestId, source })
+  });
+
+  return parseExtractionResponse(response);
+}
+
+export async function retryExtraction(
+  extractionRequestId: string,
+  source: DossierSourcePayload
+): Promise<ExtractionResponse> {
+  const response = await fetch(
+    `/api/setup-extractions/${encodeURIComponent(extractionRequestId)}/retry`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ source })
+    }
+  );
+
+  return parseExtractionResponse(response);
+}
+
+async function parseExtractionResponse(response: Response): Promise<ExtractionResponse> {
+  const payload = (await response.json().catch(() => ({}))) as ExtractionResponse;
+
+  // 429/409/400/5xx all arrive as a body-level { status: "blocked", ... }
+  // shape (mirroring runPreflight's own body-level-status convention) --
+  // the caller distinguishes further by errorCode, not raw HTTP status.
+  return payload;
+}
+
+export async function dossierFileToPayload(file: File): Promise<DossierSourcePayload> {
+  return {
+    kind: "file",
+    filename: file.name,
+    contentBase64: arrayBufferToBase64(await file.arrayBuffer())
+  };
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+
+  for (let index = 0; index < bytes.length; index += 1) {
+    binary += String.fromCharCode(bytes[index]);
+  }
+
+  return btoa(binary);
+}
