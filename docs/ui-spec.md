@@ -190,9 +190,10 @@ UI instead offers to start a fresh extraction (a new, separately
 billable attempt, going through the read-only quote and confirmation
 again).
 
-**Corrected this pass (final independent review, Decision 13/15): a
-lost network response after a successful extraction must never present
-as data loss.** If the connection between the browser and the server
+**Corrected in the fourth pass (final independent review, Decision
+13/15): a lost network response after a successful extraction must
+never present as data loss.** If the connection between the browser
+and the server
 drops after the server has already extracted and validated a draft
 (the request appears to fail client-side, e.g. as a network error or a
 stalled "Extracting" state), re-submitting the same request (retrying
@@ -208,6 +209,41 @@ attempt.
 The same privacy notice shown before Charge Sheet entry (below) must
 also be shown before dossier upload/paste — free-form dossier text is
 at least as likely to carry incidental personal information.
+**Corrected this pass (final independent review, security/idempotency
+audit, `SECURITY.md` §15): the Smart Import notice must say more than
+the base "do not submit sensitive data" line.** It must explicitly
+disclose all four of the following before the user uploads/pastes:
+
+1. The raw dossier and its normalized text are **not retained** past
+   the extraction attempt that processed them.
+2. The **validated, structured extraction result** produced from it
+   **may be retained** to support recovering it after a lost response
+   and for audit — even before the user presses "Apply extracted
+   draft" or convenes the Tribunal.
+3. **V1 has no accounts or login** (unchanged from the rest of this
+   spec, §3/§15 below) and therefore no private per-user ownership
+   guarantee for that retained result — it is not made private merely
+   because the raw dossier itself is discarded.
+4. Do not submit sensitive, private, confidential, or personally
+   identifying material — the existing base rule, unchanged.
+
+**Also corrected this pass: nothing in the Smart Import flow may imply
+a logged-in session, "my extractions," or any form of private
+ownership** — Smart Import, like every other V1 flow, is a shared
+single-tenant demo surface, not an authenticated one.
+
+**New this pass (final independent review, security/idempotency
+audit): a source that starts too many fresh Smart Import extractions
+in a short window is rate-limited, not silently queued or
+substituted.** If the server rejects a new "Confirm & Extract" attempt
+with `RATE_LIMITED` (`docs/adr/0004-smart-package-extraction.md`
+Decision 16/19), the UI shows a clear "please try again shortly"
+message, distinct from a budget block or any extraction-content
+failure — it must not be presented as if the dossier itself was
+rejected. This limit applies only to **starting a new** extraction; it
+never blocks retrying/recovering an extraction already in progress or
+already completed (an already-open Extraction Review, or a Retry on an
+existing attempt, is unaffected by this limit).
 
 Smart Import must never automatically convene the Tribunal, and must
 never silently overwrite a draft already in progress before the user

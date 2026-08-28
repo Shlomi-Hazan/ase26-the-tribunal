@@ -143,6 +143,58 @@ from any prior version is silently erased. Full findings and
 corrections (fourth pass): Decisions 8, 11, 13, 15, 22, and
 `SECURITY.md`/`docs/economics.md`/`docs/ui-spec.md`.
 
+**Fifth, final security/idempotency merge-readiness correction pass
+(this revision):** the fourth pass's contract was substantially
+approved; a final independent audit found three remaining planning
+gaps, each corrected below:
+
+1. `SECURITY.md`'s M7A section claimed `validated_result` was reachable
+   through "the same authenticated idempotent-replay path" — false for
+   V1, which has no accounts or login at all (`SPEC.md` §18). Removed;
+   replaced with the actually-true protection: a server-authoritative,
+   fingerprint-gated replay lookup, never authentication or per-user
+   ownership. `SECURITY.md` §15 (Public Demo Data Retention) extended
+   to lock the exact four disclosures the Smart Import privacy notice
+   must make, so `validated_result` retention is never conflated with
+   privacy merely because the raw dossier itself is discarded.
+2. The new cost-bearing M7A endpoints had no explicit rate-limit/
+   admission-control contract. Locked: `POST /api/setup-extractions`
+   gets a dedicated 3-new-logical-extraction-starts-per-180s-per-source-IP
+   policy (`SECURITY.md` §10, ADR Decision 19), deliberately aligned
+   with the existing `POST /api/runs` target, explicitly **not**
+   consumed by idempotent replay of an existing `extractionRequestId`;
+   `POST /api/setup-extractions/{id}/retry` and `POST
+   /api/setup-extractions/preflight` each require their own bounded
+   operational rate limit (exact threshold left as an implementation-
+   time detail, the requirement itself locked now). A new stable
+   `RATE_LIMITED` error code (HTTP 429, Decision 16) is added: rejection
+   occurs before any atomic attempt claim, zero attempt rows, zero
+   provider calls, zero spend.
+3. Replay/retry fingerprint semantics were undefined across a
+   deployment change to `PACKAGE_EXTRACTION_PROMPT_VERSION` or
+   `PACKAGE_EXTRACTION_MODEL_ID`. Locked a new "Frozen logical-call
+   semantic identity" rule (Decision 15): both values are read once, at
+   a logical extraction's first acceptance, persisted on
+   `setup_extractions`, and become part of that extraction's immutable
+   semantic identity — every later replay or retry of that same
+   `extractionRequestId` uses the **stored** values, never the current
+   deployment's live configuration. A lost-response replay therefore
+   still recovers the persisted `validated_result` with zero provider
+   calls even after a later deployment changes the default model/prompt
+   version; a retry still targets its own stored model, blocking with
+   `MODEL_NOT_ELIGIBLE` (zero attempt-#2 calls) rather than silently
+   substituting the deployment's new default if the stored model has
+   since become ineligible. A genuinely different dossier under the
+   same `extractionRequestId` is unaffected by this rule and still
+   produces `409 IDEMPOTENCY_CONFLICT`.
+
+All previously locked lost-response/claim/deadline/economics invariants
+(fourth pass and earlier) are unchanged by this pass — this pass adds
+constraints, it does not loosen or reopen anything already locked.
+Nothing from any prior version is silently erased. Full findings and
+corrections (fifth pass): Decisions 9, 10, 15, 16, 19, 22, and
+`SECURITY.md`.
+
 ## Context
 
 Milestone 7 (merged, PR #12) built the OpenRouter provider boundary,
@@ -871,9 +923,12 @@ Locked policy, otherwise mirroring M7's preflight exactly:
   `setup_extraction_attempts`, Decision 13/14 — never an estimate once
   the real value is known) `+ conservative maximum for attempt #2`
   (worst-case-input + full-output-cap × 1.10 safety factor, using
-  **freshly re-checked** route/pricing metadata per M7's existing
-  5-minute-TTL freshness rules — pricing may have moved since attempt
-  #1) `<= EXTRACTION_HARD_CEILING_USD`. If this guard fails, the retry
+  **freshly re-checked** route/pricing metadata for the logical
+  extraction's own **stored** `configured_model_id` (Decision 15's
+  "Frozen logical-call semantic identity" — never the deployment's
+  current `PACKAGE_EXTRACTION_MODEL_ID` if it has since changed) per
+  M7's existing 5-minute-TTL freshness rules — pricing may have moved
+  since attempt #1) `<= EXTRACTION_HARD_CEILING_USD`. If this guard fails, the retry
   is blocked with `BLOCKED_BUDGET` and **no second provider call
   occurs** — attempt #1's already-incurred spend and its audit record
   are never lost or rewritten (Decision 13).
@@ -900,6 +955,19 @@ Locked policy, otherwise mirroring M7's preflight exactly:
   isolation. Both are visually and textually distinct from the Tribunal
   run's own cost display (Decision 24) — never summed into or mistaken
   for the $5 figure.
+- **New this pass (final independent review, security/idempotency
+  audit): `EXTRACTION_HARD_CEILING_USD` bounds a single logical
+  extraction's spend, but does not by itself bound how many fresh
+  logical extractions one source can start.** A source minting a new
+  `extractionRequestId` per request is stopped not by this economics
+  guard but by a separate, dedicated admission-control policy —
+  `SECURITY.md` §10, `docs/adr/0004-smart-package-extraction.md`
+  Decision 19: 3 accepted new logical-extraction starts per 180 seconds
+  per source IP, checked before the atomic claim and before this
+  economics guard even runs, rejecting with `RATE_LIMITED` (Decision
+  16) at zero cost. The two controls are orthogonal and both required:
+  this ceiling bounds each admitted call; the rate limit bounds the
+  rate of admission itself.
 
 ## Decision 10 — Model selection: a dedicated, server-only configured extraction model
 
@@ -934,6 +1002,18 @@ server-side code. Requirements:
 - The actual canonical model id and exact endpoint are still resolved
   through M7's existing route-resolution/pricing machinery (below), not
   taken as given from the configuration string alone.
+- **New this pass (final independent review, security/idempotency
+  audit): this "current `PACKAGE_EXTRACTION_MODEL_ID`" resolution
+  applies to the first acceptance of a *new* logical extraction only.**
+  A retry (`attempt_number = 2`) of an *existing* logical extraction
+  re-resolves route/pricing/eligibility for that extraction's own
+  already-**stored** `configured_model_id` (Decision 15's "Frozen
+  logical-call semantic identity"), not for whatever the deployment's
+  live `PACKAGE_EXTRACTION_MODEL_ID` currently is — if those two values
+  happen to differ because of an intervening deployment change, the
+  retry still targets the stored one, and blocks with
+  `MODEL_NOT_ELIGIBLE` rather than silently retrying against the new
+  one if the stored model is no longer eligible.
 - The UI may display the resolved model as audit information
   (Decision 18), but cannot mutate `PACKAGE_EXTRACTION_MODEL_ID` in V1
   — it is a deploy-time/server configuration value, not a runtime user
@@ -1169,8 +1249,11 @@ setup_extractions                       -- ONE row per logical call
                            -- semantic fingerprint (Decision 15 -- locked
                            -- this pass, no longer an open question)
   request_fingerprint
-  prompt_version         ('package-extraction-v1')
-  configured_model_id
+  prompt_version         ('package-extraction-v1') -- frozen at first
+                           -- acceptance, immutable semantic identity
+                           -- thereafter -- NEW this pass, Decision 15's
+                           -- "Frozen logical-call semantic identity"
+  configured_model_id    -- frozen at first acceptance, same rule
   final_status           (one of Decision 16's outcomes once terminal --
                            -- see "No-spend block persistence" below for
                            -- the pre-claim-block case)
@@ -1562,6 +1645,72 @@ Locked semantics:
   calls — the retry is rejected as not-the-same-logical-call, not
   silently accepted as a new attempt of something else.
 
+### Frozen logical-call semantic identity — new this pass (final independent review, security/idempotency audit)
+
+**A gap the prior passes left implicit: what happens to a logical
+extraction's identity if the *deployment's* current
+`PACKAGE_EXTRACTION_PROMPT_VERSION` or `PACKAGE_EXTRACTION_MODEL_ID`
+changes after that extraction was first accepted, but before it is
+replayed or retried?** The fingerprint formula above already includes
+both values, and `setup_extractions` already stores `prompt_version`
+and `configured_model_id` as columns (Decision 13) — but nothing
+previously said explicitly *whose* value (the stored one, or whatever
+the environment currently has configured) governs a later replay or
+retry. Locked now, precisely, mirroring the precedent Milestone 6
+already set for Tribunal runs (`SECURITY.md` §16: "Once a run begins,
+participant/model/prompt configuration is frozen"):
+
+- **On first acceptance of a new `extractionRequestId`** (Decision 15's
+  claim step 2, `attempt_number = 1`): the handler reads the
+  **current** application-owned `PACKAGE_EXTRACTION_PROMPT_VERSION` and
+  the **current** server-only `PACKAGE_EXTRACTION_MODEL_ID`, persists
+  both on the new `setup_extractions` row, and computes
+  `request_fingerprint` from those frozen values plus the normalized
+  dossier content — exactly as already specified above.
+- **From that moment on, `prompt_version` and `configured_model_id` are
+  part of that logical extraction's immutable semantic identity** —
+  the same discipline Decision 13 already applies to a claimed
+  attempt's `canonical_model_id`/`provider_endpoint_tag`/
+  `conservative_max_cost_usd`. They are read once, at first acceptance,
+  and never rewritten to reflect a later deployment change.
+- **Replay of an existing `extractionRequestId` (Decision 15's four-row
+  idempotent-replay table) always recomputes/checks semantics against
+  the STORED `setup_extractions.prompt_version` and
+  `setup_extractions.configured_model_id` — never the current
+  deployment's live configuration.** Concretely: a logical extraction
+  that succeeded under Model A, whose HTTP response was then lost, is
+  still replayable with **zero** provider calls even after a later
+  deployment changes `PACKAGE_EXTRACTION_MODEL_ID` to Model B — the
+  replay returns the persisted `validated_result` exactly as recorded,
+  and is **not** rejected as `409 IDEMPOTENCY_CONFLICT` merely because
+  deploy-time configuration drifted. A genuinely **different dossier**
+  under the same `extractionRequestId` still produces
+  `IDEMPOTENCY_CONFLICT`, unaffected by this rule — this rule only
+  changes what governs the *prompt/model* half of the fingerprint
+  check, not the *content* half.
+- **Retry (`attempt_number = 2`) reuses the same logical extraction's
+  stored `prompt_version` and `configured_model_id`** — it does not,
+  and must not, silently adopt whatever `PACKAGE_EXTRACTION_MODEL_ID`
+  the deployment currently has configured. A retry **may and must**
+  refresh everything that is legitimately time-varying for that
+  *same, stored* model: route/endpoint metadata resolution, current
+  pricing, current eligibility, and a freshly computed
+  `conservative_max_cost_usd` (Decision 10) — none of that is
+  identity, all of it is normal operational re-verification. If the
+  stored model has since become ineligible (deregistered, no longer
+  meeting the eligibility contract, Decision 10), the retry is blocked
+  with `MODEL_NOT_ELIGIBLE` (Decision 16) and makes **zero**
+  attempt-#2 provider calls — it does **not** silently substitute the
+  deployment's new `PACKAGE_EXTRACTION_MODEL_ID` and proceed as if
+  nothing changed. A user who wants extraction under the new model/
+  prompt configuration starts an entirely new logical extraction with a
+  new `extractionRequestId` — exactly the same escalation path already
+  locked for an `UNKNOWN_OUTCOME`-on-attempt-#2 dead end (Decision 13).
+
+This closes the one remaining ambiguity in the replay/retry semantics:
+"same logical extraction" now has one unambiguous, frozen-at-accept-time
+meaning, immune to deployment configuration drift in either direction.
+
 ### Atomic pre-spend claim — new this pass (independent review)
 
 **Corrected this pass: `UNIQUE(extraction_request_id, attempt_number)`
@@ -1787,10 +1936,20 @@ BLOCKED_BUDGET
 PROVIDER_UNAVAILABLE
 TIMEOUT
 INVALID_STRUCTURED_OUTPUT
-IDEMPOTENCY_CONFLICT           -- new this pass, Decision 15: fingerprint mismatch, zero provider calls
-INPUT_PROCESSING_TIMEOUT       -- new this pass, Decision 8: the handler's own soft deadline was
+IDEMPOTENCY_CONFLICT           -- Decision 15: fingerprint mismatch, zero provider calls
+INPUT_PROCESSING_TIMEOUT       -- Decision 8: the handler's own soft deadline was
                                 -- exhausted by pre-provider work before any claim/spend was
                                 -- attempted -- distinct from TIMEOUT (a real provider-call timeout)
+RATE_LIMITED                   -- new this pass, Decision 9/19: admission-control rejection
+                                -- (SECURITY.md Sec.10) -- the per-source-IP new-logical-extraction-
+                                -- start limit was exceeded. HTTP 429. Occurs strictly BEFORE any
+                                -- atomic attempt claim -- zero attempt rows, zero provider calls,
+                                -- zero spend, never a fabricated attempt row. Distinct from
+                                -- BLOCKED_BUDGET (a Decimal economics guard failure) and from
+                                -- IDEMPOTENCY_CONFLICT (a fingerprint mismatch on an existing id) --
+                                -- RATE_LIMITED is an admission-volume decision, made before either
+                                -- of those checks even runs, and never substitutes a different
+                                -- route/model/behavior silently.
 ```
 
 Successful-but-needs-review outcomes (a draft **is** produced; these
@@ -2015,6 +2174,46 @@ billable endpoint (Decision 15), or a retry call with no eligible
 attempt to retry; 502 for `PROVIDER_UNAVAILABLE`, mirroring
 `preflightErrorResponse`'s existing `ServerConfigError`/`ProviderError`
 → 502 mapping exactly.
+
+**New this pass (final independent review, security/idempotency
+audit): 429 for `RATE_LIMITED`.** `POST /api/setup-extractions` carries
+a dedicated admission-control policy for genuinely **new** logical
+extractions — `SECURITY.md` §10: 3 accepted new logical-extraction
+starts per 180 seconds per source IP, deliberately aligned with the
+existing `POST /api/runs` target. Response shape, same body-level
+convention as the 200 status field above but surfaced via the HTTP
+status itself since this is an admission decision, not a domain-level
+extraction outcome:
+
+```ts
+// HTTP 429
+{ status: "blocked"; errorCode: "RATE_LIMITED"; message: string; }
+```
+
+Exact rules, locked:
+
+- The rate-limit check runs **before** the atomic attempt claim
+  (Decision 15) and before any deadline check (Decision 8) — the
+  earliest possible rejection point. **Zero** `setup_extraction_attempts`
+  rows are created; **zero** provider calls; **zero** spend.
+- Only a **new** logical extraction (no existing `setup_extractions`
+  row matching this `extractionRequestId`) is checked against this
+  limit. An idempotent replay of an existing `extractionRequestId`
+  (Decision 15's four-row replay table) is resolved entirely by the
+  existing-state lookup and **never** consumes a rate-limit admission
+  slot, regardless of how many times it is repeated.
+- `POST /api/setup-extractions/{extractionRequestId}/retry` and
+  `POST /api/setup-extractions/preflight` each carry their own,
+  separately configured, operational rate limit (`SECURITY.md` §10) —
+  looser than the new-start limit is permitted, but an explicit bound
+  is required on both; the exact looser threshold for each is an
+  implementation-time tuning detail, not an open architectural
+  question.
+- A 429 rejection is never silently retried with a substitute
+  route/model, and never presented to the UI as an ordinary extraction
+  failure — the UI must show a clear "try again shortly" message
+  distinct from `BLOCKED_BUDGET` or any hard-failure/needs-review
+  outcome.
 
 **Maximum request size — corrected this pass (independent review):**
 bounded by `SMART_EXTRACTION_PDF_MAX_RAW_BYTES` (4 MiB, Decision 3)
@@ -2252,6 +2451,70 @@ the real network" discipline exactly):
       confirms the documented `<` (strictly less than) comparison, not
       `<=` — a request with exactly the minimum window remaining is
       still permitted to proceed.
+- **Rate limiting and frozen semantic identity — new this pass (final
+  independent review, security/idempotency audit, Decisions 9/13/15/16/19)**:
+  1. A fourth genuinely new logical extraction from the same simulated
+     source IP inside the 180-second admission window returns `429
+     RATE_LIMITED` and creates **zero** `setup_extractions`/
+     `setup_extraction_attempts` rows — the rejection occurs before any
+     claim is attempted.
+  2. A rate-limited request makes **zero** `createChatCompletion` calls
+     and attributes **zero** spend.
+  3. A replay of an *existing* `extractionRequestId` (matching
+     fingerprint) does **not** consume a new-logical-extraction
+     admission slot, even when called repeatedly well past the
+     3-per-180s threshold — replay volume is never throttled by this
+     limit.
+  4. A duplicate `POST .../retry` request against an already-`CLAIMED`
+     or already-terminal attempt #2 never creates a second attempt-#2
+     provider call or additional spend, independent of the rate-limit
+     check.
+  5. `POST /api/setup-extractions/preflight` and
+     `POST /api/setup-extractions/{id}/retry` each enforce some bounded
+     admission limit distinct from the new-start limit (the exact
+     threshold is an implementation-time detail; the test asserts a
+     limit exists and is enforced, not a specific number).
+  6. A successful extraction persisted under a given
+     `configured_model_id`/`prompt_version`, replayed after a fixture
+     simulates the current `PACKAGE_EXTRACTION_MODEL_ID` environment
+     value changing to a different model, still returns the persisted
+     `validated_result` via the normal replay path with **zero**
+     provider calls — it is not rejected and not silently
+     re-extracted under the new model.
+  7. The same replay-survives-drift behavior holds when the fixture
+     simulates a `PACKAGE_EXTRACTION_PROMPT_VERSION` change instead.
+  8. A fixture asserts the fingerprint recomputation on both the
+     replay and retry paths reads `setup_extractions.prompt_version`/
+     `configured_model_id` (the stored values), never a freshly-read
+     current-environment value — a test that stubs the current
+     environment value differently from the stored value and asserts
+     the stored value is what is actually used.
+  9. A retry attempted after a fixture marks the logical extraction's
+     **stored** `configured_model_id` as no longer eligible blocks
+     with `MODEL_NOT_ELIGIBLE` and makes **zero** attempt-#2 provider
+     calls — it does not silently substitute the deployment's current
+     `PACKAGE_EXTRACTION_MODEL_ID` and proceed.
+  10. A fixture confirming a genuinely *different* dossier under an
+      existing `extractionRequestId` still returns `409
+      IDEMPOTENCY_CONFLICT` even when `prompt_version`/
+      `configured_model_id` are unchanged — proving the frozen-identity
+      correction only changed what governs the prompt/model half of the
+      fingerprint check, not the content half.
+  11. No test in this suite or any other M7A suite makes a real
+      OpenRouter network call — all fixtures above use a fake/stubbed
+      provider, matching the existing repository-wide test discipline.
+  12. A lint-level/content assertion that no M7A-facing UI copy or
+      server-facing error message implies a logged-in/authenticated
+      session, ownership, or ability to view "my own" extractions —
+      V1 has no accounts (`SPEC.md` §18) and this must never be implied
+      anywhere in the Smart Import flow, matching the false-claim
+      correction to `SECURITY.md` made this pass.
+  13. A test/documentation-consistency check confirming the Smart
+      Import privacy notice text includes all four required
+      disclosures (raw dossier not retained; validated result may be
+      retained even before Apply/Convene; no private per-user
+      ownership guarantee; do not submit sensitive data) — `SECURITY.md`
+      §15.
 - **Canonical output-bound computation — new this pass (final
   independent review, Decision 11)**: the exact maximum
   `safeExtractionText`-legal fixture, serialized via native compact
@@ -2396,9 +2659,38 @@ not unresolved design questions.
    an optional future *enhancement* to reduce how often
    `UNKNOWN_OUTCOME` is the final answer, not a gap in the current
    correctness contract.
+7. **New this pass**: the exact request-count thresholds for
+   `POST /api/setup-extractions/preflight`'s and `POST
+   /api/setup-extractions/{id}/retry`'s bounded operational rate limits
+   (`SECURITY.md` §10) — the *requirement* that both are rate-limited is
+   locked now (Decision 19); only the precise looser numeric threshold
+   for each (deliberately not required to match the 3-per-180s new-start
+   limit) is deferred to implementation-time tuning, consistent with how
+   this ADR already treats other exact-constant tuning details (e.g.
+   item 2 above).
 
-**Resolved this pass (fourth, final merge-readiness pass — previously
-open or contradictory, now fully locked):**
+**Resolved this pass (fifth, final security/idempotency merge-readiness
+pass — previously undefined or incorrect, now fully locked):**
+
+- The false "authenticated idempotent-replay path" claim in
+  `SECURITY.md` — removed; V1's actual replay protection (fingerprint
+  match, not authentication) stated correctly, with the exact
+  `validated_result` retention-vs-privacy disclosure locked in
+  `SECURITY.md` §15.
+- The missing rate-limit/admission-control contract for
+  `POST /api/setup-extractions` — locked as a dedicated
+  new-logical-extraction-start limit, explicitly not consumed by
+  idempotent replay, plus a new `RATE_LIMITED`/429 error category
+  (Decision 16) with a locked before-claim, zero-spend contract.
+- Replay/retry semantic identity across deployment `PACKAGE_EXTRACTION_
+  PROMPT_VERSION`/`PACKAGE_EXTRACTION_MODEL_ID` config drift — locked
+  as "Frozen logical-call semantic identity" (Decision 15): a logical
+  extraction's `prompt_version`/`configured_model_id` are fixed at
+  first acceptance and govern every later replay/retry, never the
+  deployment's current live configuration.
+
+**Resolved in the fourth pass (previously open or contradictory, now
+fully locked):**
 
 - Idempotent replay's ability to actually recover a lost successful
   response, with zero new provider calls — see the new `validated_result`
@@ -2427,10 +2719,11 @@ current evidence):** the exact Netlify Function synchronous-execution
 (60s) and buffered-payload (6 MB / ≈4.5 MB effective binary) limits —
 see Decision 20.
 
-No unresolved billing, idempotency, or provider-attempt state-machine
-decision remains after this pass — every item still listed above is a
-narrow implementation-time tuning/verification detail (migration
-column shape, exact millisecond constants, dependency-version
+No unresolved billing, idempotency, security/authentication-framing,
+admission-control, or provider-attempt state-machine decision remains
+after this pass — every item still listed above is a narrow
+implementation-time tuning/verification detail (migration column
+shape, exact millisecond/request-count constants, dependency-version
 verification, live-metadata observation, or an optional future
 enhancement), never a gap in what a future implementation agent would
 need to invent a rule to fill.

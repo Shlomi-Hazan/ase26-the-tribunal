@@ -312,7 +312,7 @@ Decision 17):
   never stores it in between); only bounded structured audit
   telemetry, plus a one-way semantic fingerprint of the normalized
   content (never the content itself), persists.
-- **Corrected this pass (final independent review, `docs/adr/
+- **Corrected in an earlier pass (final independent review, `docs/adr/
   0004-smart-package-extraction.md` Decisions 13/15): the one bounded
   exception to the above is the validated extraction *result*, not the
   source dossier.** After a successful extraction passes strict
@@ -325,13 +325,35 @@ Decision 17):
   different from source retention: it is never the raw dossier, never
   the raw provider response, bounded by the same schema/size limits as
   the live extraction output, re-validated on every read, and reachable
-  only through the same authenticated idempotent-replay path a normal
-  request already uses — it does not reopen "the dossier is retained"
-  in any form.
+  only through **the same server-authoritative, fingerprint-gated
+  idempotent-replay API path used by the extraction request** — it does
+  not reopen "the dossier is retained" in any form.
+- **Corrected this pass (final independent review, security/idempotency
+  audit): the phrase "authenticated idempotent-replay path" used in an
+  earlier revision of this section was false and has been removed.**
+  V1 has no accounts or login at all (`SPEC.md` §18: "V1 is a
+  single-tenant educational/demo application. It does not require
+  accounts or login."; §15 above: "V1 is deliberately single-tenant and
+  has no user accounts."). The idempotent-replay path's actual
+  protection is **not** authentication or per-user ownership — it is
+  that a replay request must present the same `extractionRequestId` and
+  the server must independently recompute a matching semantic
+  fingerprint (Decision 15) before any persisted `validated_result` is
+  returned; a mismatched fingerprint is rejected regardless of who
+  sends the request. **This must never be described or implied as
+  private per-user data, logged-in ownership, or authentication that
+  does not exist** — see §15's disclosure rules, extended below for
+  `validated_result` specifically.
 - Dossier content (raw or normalized) must never appear in server logs.
 - The existing public-demo-data privacy notice (do not submit
   sensitive/private information) must also be shown before dossier
-  upload/paste, not only before Charge Sheet entry.
+  upload/paste, not only before Charge Sheet entry. **Corrected this
+  pass: that notice must say more than "do not submit sensitive data"
+  for Smart Import specifically — see §15 below, which now locks the
+  exact four disclosures required (raw dossier not retained; the
+  validated result may be retained even before Apply/Convene; no
+  private per-user ownership guarantee in V1; do not submit sensitive
+  data).**
 - No malware/antivirus content scanning exists for uploaded files in
   V1; file safety relies solely on type/size/structural validation.
 - Human review is part of the security boundary: extraction output
@@ -369,6 +391,61 @@ This is a starting operational control, not a promise of abuse-proof identity. I
 Read-only history/status endpoints can use looser limits.
 
 If public abuse becomes material, the next escalation is not to weaken the budget guard; it is to add stronger admission/authentication controls through an approved scope change.
+
+**New this pass (final independent review, security/idempotency audit
+— Milestone 7A, `docs/adr/0004-smart-package-extraction.md` Decision
+19): Smart Tribunal Package Extraction introduces a second public,
+cost-bearing action.** `EXTRACTION_HARD_CEILING_USD` bounds a single
+*logical* extraction call, but does not by itself bound how many fresh
+logical extractions a single source can start — an attacker who mints
+a new `extractionRequestId` per request is not stopped by the
+per-call ceiling alone. A dedicated admission-control policy is
+therefore locked, deliberately aligned with the existing
+`POST /api/runs` target above:
+
+```text
+POST /api/setup-extractions   (new logical extraction starts only)
+3 accepted NEW logical extraction starts per 180 seconds per source IP
+```
+
+Exact semantics, locked:
+
+- **Only a genuinely new logical extraction (a fresh
+  `extractionRequestId` with no prior matching-fingerprint record)
+  counts against this limit.** An idempotent replay of an
+  already-existing `extractionRequestId` (Decision 15's replay table)
+  does **not** consume a new admission slot and does **not** trigger a
+  new provider call — the whole reason idempotent replay exists is to
+  make repeated identical requests cheap and safe, and the rate limit
+  must not undermine that by penalizing a legitimate replay.
+- **Every admitted logical extraction remains independently bounded**
+  by `EXTRACTION_HARD_CEILING_USD` and the existing maximum-2-attempts
+  rule — the rate limit is an additional, orthogonal admission control,
+  never a replacement for the per-call budget guard.
+- **Rejection happens before any atomic attempt claim** — see the
+  `RATE_LIMITED` semantics below.
+- **`POST /api/setup-extractions/{extractionRequestId}/retry`** is a
+  request against an *existing* logical extraction, not a new one — it
+  is bounded by that extraction's own maximum-2-attempts/budget rules
+  regardless of how many times it is called (a duplicate retry request
+  against an already-`CLAIMED`-or-terminal attempt makes zero new
+  provider calls, Decision 15). It nonetheless **must be operationally
+  rate-limited** as a resource-exhaustion control (repeated retry
+  requests still cost server compute and, while not billable per call,
+  should not be admitted unbounded); its exact looser threshold is an
+  implementation-time tuning detail, but the requirement that it is
+  rate-limited is locked now, not left open.
+- **`POST /api/setup-extractions/preflight`** performs zero
+  `createChatCompletion` calls and is non-billable, but it performs
+  potentially expensive deterministic work (PDF text extraction,
+  OpenRouter model/endpoint metadata and pricing resolution) and is
+  therefore **also required to carry a bounded operational/resource
+  rate limit**, distinct from — and permitted to be looser than — the
+  billable-start limit above. Its exact threshold is an
+  implementation-time detail; the requirement itself is locked now.
+- Read-only history/status endpoints for extraction attempts (if any
+  are added) may use the same looser class of limit the existing
+  read-only run endpoints already use, per the general rule above.
 
 ---
 
@@ -468,6 +545,36 @@ Therefore:
 - the app must not imply private storage
 
 If private per-user cases become required, that is a product/security architecture change requiring authentication, authorization, database policy changes, and new tests before implementation.
+
+**Corrected this pass (final independent review, security/idempotency
+audit) — Smart Import (Milestone 7A) privacy disclosure, locked:** the
+same "no private per-user ownership" rule above applies to
+`validated_result` (`docs/adr/0004-smart-package-extraction.md`
+Decisions 13/15) exactly as it applies to any other stored V1 data —
+retaining it for idempotent recovery is not, and must never be
+presented as, private storage. The Smart Import privacy notice shown
+before dossier upload/paste (§9 above) must explicitly disclose all
+four of the following, not merely "do not submit sensitive data":
+
+1. The raw uploaded dossier and its normalized source text are **not
+   retained** past the extraction attempt that processed them.
+2. The **validated, structured extraction result** produced from that
+   dossier **may be retained** (bounded, schema-shaped, server-side) to
+   support idempotent recovery and audit — **even if the user has not
+   yet pressed "Apply extracted draft" or convened the Tribunal.** The
+   result being retained is not conditional on the user finishing the
+   flow.
+3. **V1 has no private per-user ownership guarantee** for this retained
+   result, identical to every other V1 stored artifact — it is not
+   made private merely because the raw dossier itself is discarded.
+4. Users must not submit sensitive, private, confidential, or
+   personally identifying material in the dossier, exactly as the
+   existing Charge Sheet notice already requires.
+
+Retaining the validated result must never be characterized as private
+or safe-by-default merely because the input path (source dossier) is
+discarded — retention-scope and privacy-scope are two different
+properties, and this document does not conflate them.
 
 ---
 

@@ -698,6 +698,20 @@ see `docs/adr/0004-smart-package-extraction.md` for full detail):**
   `$5.00` ceiling remains the hard intentional model-spend policy for
   the seven-participant Tribunal run and is never disguised by folding
   extraction into a fake seven-call count.
+- **New this pass (final independent review, security/idempotency
+  audit): a per-logical-call ceiling does not bound the *rate* at which
+  new logical calls can be started.** `POST /api/setup-extractions`
+  carries a dedicated admission-control policy — 3 accepted new
+  logical-extraction starts per 180 seconds per source IP
+  (`SECURITY.md` §10), deliberately aligned with the existing `POST
+  /api/runs` target — checked before any spend, rejecting with
+  `RATE_LIMITED` (429) at zero cost. A fingerprint-matched idempotent
+  replay of an *existing* `extractionRequestId` never consumes this
+  admission allowance, so it can be repeated freely without being
+  throttled; only genuinely new logical extractions count toward the
+  limit. `POST .../retry` and `POST .../preflight` each carry their own
+  bounded operational rate limit as well, distinct from — and permitted
+  to be looser than — this billable-start limit.
 - **Token/output bounds**: `EXTRACTION_OUTPUT_CAP_TOKENS = 65,000` — a
   bound covering the **canonical compact JSON serialization** of every
   schema-valid semantic extraction object (an exact, computed
@@ -794,6 +808,22 @@ see `docs/adr/0004-smart-package-extraction.md` for full detail):**
   and warnings and **zero new provider calls** — a customer is never
   charged twice for the same successful extraction merely because the
   response never reached the browser.
+- **New this pass (final independent review, security/idempotency
+  audit): "the fixed extraction configuration" above means the value
+  frozen at that logical extraction's first acceptance, not whatever
+  the deployment currently has configured.** A logical extraction's
+  `prompt_version`/configured model are read once, when the
+  `extractionRequestId` is first accepted, and persisted — every later
+  replay or retry recomputes/checks the fingerprint against those
+  **stored** values, never the live deployment configuration. This is
+  what makes the lost-response guarantee above actually hold across
+  time: a successful extraction under Model A remains replayable at
+  zero cost even after a later deployment defaults to Model B. A retry
+  (attempt #2) likewise re-prices and re-checks eligibility for that
+  same stored model, not the deployment's current one — if the stored
+  model has since become ineligible, the retry blocks
+  (`MODEL_NOT_ELIGIBLE`) rather than silently spending against a
+  different model the user never agreed to.
 - **Telemetry**: actual `usage.cost` decoded once, Decimal throughout,
   unknown telemetry stays `null` — never a fabricated zero, matching §9
   exactly; recorded per provider attempt (a logical call's two attempts
