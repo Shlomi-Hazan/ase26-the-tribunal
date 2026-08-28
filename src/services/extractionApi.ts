@@ -7,12 +7,21 @@ export type DossierSourcePayload =
   | { kind: "text"; text: string }
   | { kind: "file"; filename: string; contentBase64: string };
 
+// Corrected this pass (independent pre-live audit, Section 13): mirrors
+// service.ts's toPreflightBody exactly -- the quote's headline figure is
+// the LOGICAL (both-attempts) conservative maximum the user is actually
+// agreeing to spend up to, against the fixed $0.50 hardCeilingUsd, with
+// the per-attempt figure and full model/endpoint/pricing provenance also
+// exposed for the audit detail. The prior revision of this type still
+// had the old, pre-correction single `conservativeMaxCostUsd` field,
+// which no longer matches what the server actually returns.
 export type PreflightResponse = {
   eligible: boolean;
   configuredModelId: string;
   canonicalModelId: string | null;
   providerEndpointTag: string | null;
-  conservativeMaxCostUsd: string;
+  logicalConservativeMaxCostUsd: string;
+  perAttemptConservativeMaxCostUsd: string;
   hardCeilingUsd: string;
   blockedReasonCodes: string[];
   pricingObservedAt: string | null;
@@ -21,8 +30,13 @@ export type PreflightResponse = {
 export type ExtractionAttemptSummary = {
   attemptNumber: 1 | 2;
   status: string;
+  canonicalModelId: string | null;
+  providerEndpointTag: string | null;
   conservativeMaxCostUsd: string;
+  actualInputTokens: number | null;
+  actualOutputTokens: number | null;
   actualCostUsd: string | null;
+  latencyMs: number | null;
   errorCode: string | null;
 };
 

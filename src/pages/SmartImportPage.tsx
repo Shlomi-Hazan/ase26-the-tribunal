@@ -39,8 +39,48 @@ import {
   type ExtractionResponse,
   type PreflightResponse
 } from "../services/extractionApi";
+import { RETRYABLE_ERROR_CODES, SMART_IMPORT_PROVENANCE_MARKER } from "./smartImportConstants";
 
-type Phase = "idle" | "preflighting" | "quoted" | "extracting" | "review" | "applying";
+// Corrected this pass (independent pre-live audit, Section 8): an
+// explicit client-side state machine distinguishing "no logical
+// extraction started" / "an action's HTTP outcome is ambiguous" /
+// "attempt #1 explicitly failed, retryable" / "server confirmed
+// CLAIMED/in-progress" / "terminal, non-retryable" / "success/needs-
+// review" -- the prior revision inferred which endpoint to call purely
+// from whether `extractionId` was set, which meant a lost HTTP response
+// after a successful attempt #1 (validated_result already persisted
+// server-side) incorrectly called the RETRY endpoint instead of
+// idempotently replaying the INITIAL endpoint with the same id/source,
+// defeating the lost-response recovery contract (ADR Decision 15).
+type Phase =
+  | "idle"
+  | "preflighting"
+  | "quoted"
+  | "ambiguous"
+  | "in_progress"
+  | "retryable"
+  | "terminal_failure"
+  | "review"
+  | "applying";
+
+// The one endpoint a "recover" action replays -- always the SAME action
+// that was last actually sent, never inferred from `extractionId`
+// merely being set.
+type LastAction = "initial" | "retry" | null;
+
+// Which in-flight request (if any) is currently awaited. Kept SEPARATE
+// from `Phase` -- an earlier revision folded this into a "submitting"
+// Phase value, but the button whose click started the request needed to
+// stay visible (with its own spinner) for the exact same phase
+// (`"quoted"`/`"retryable"`/`"ambiguous"`/`"in_progress"`) the request
+// was launched from; collapsing to one shared "submitting" phase made
+// TypeScript's control-flow narrowing correctly flag every `phase ===
+// "submitting"` spinner check as unreachable dead code from within an
+// already-phase-narrowed branch (e.g. `showConfirmAction`'s block, where
+// `phase` is statically known to be `"quoted"`) -- and, not merely a
+// type-checker artifact, it was a REAL bug: the button whose action was
+// in flight vanished entirely instead of showing a spinner.
+type PendingAction = "confirm" | "retry" | "recover" | null;
 
 const SEAT_LABELS: Record<PackageSeat, string> = {
   PRO_1: "Advocate PRO I",
@@ -51,8 +91,6 @@ const SEAT_LABELS: Record<PackageSeat, string> = {
   JUDGE_2: "Judge II",
   JUDGE_3: "Judge III"
 };
-
-const RETRYABLE_ERROR_CODES = new Set(["PROVIDER_UNAVAILABLE", "TIMEOUT", "INVALID_STRUCTURED_OUTPUT"]);
 
 type EditableDraft = {
   defendant: string;
@@ -78,10 +116,7 @@ function toEditableDraft(result: PackageExtractionResult): EditableDraft {
   };
 }
 
-function toTribunalSetupDraft(
-  editable: EditableDraft,
-  sourceFilename: string | null
-): TribunalSetupDraft | null {
+function toTribunalSetupDraft(editable: EditableDraft): TribunalSetupDraft | null {
   const draft = {
     chargeSheet: {
       defendant: editable.defendant,
@@ -95,13 +130,13 @@ function toTribunalSetupDraft(
           profileName: editable.participants[seat].profileName || undefined,
           personality: editable.participants[seat].personality,
           personalitySource: "tribunal_package" as const,
-          personalitySourceFilename: sourceFilename ?? "smart-import"
+          personalitySourceFilename: SMART_IMPORT_PROVENANCE_MARKER
         }
       ])
     ),
     importSource: {
       type: "TRIBUNAL_PACKAGE_FILE" as const,
-      filename: sourceFilename ?? "smart-import"
+      filename: SMART_IMPORT_PROVENANCE_MARKER
     }
   };
 
@@ -110,11 +145,22 @@ function toTribunalSetupDraft(
   return result.success ? result.data : null;
 }
 
-function warningsFor(
+function fieldWarnings(
   result: PackageExtractionResult | null,
   path: string
 ): PackageExtractionResult["warnings"] {
   return (result?.warnings ?? []).filter((warning) => warning.field === path);
+}
+
+// Corrected this pass (independent pre-live audit, Section 15): warnings
+// whose `field` is null (e.g. UNSUPPORTED_CONTENT_IGNORED) were
+// previously invisible -- the Review UI only ever rendered warnings via
+// fieldWarnings, which by definition excludes them. Every model-reported
+// warning must be visible SOMEWHERE in Extraction Review.
+function documentLevelWarnings(
+  result: PackageExtractionResult | null
+): PackageExtractionResult["warnings"] {
+  return (result?.warnings ?? []).filter((warning) => warning.field === null);
 }
 
 export function SmartImportPage() {
@@ -122,6 +168,7 @@ export function SmartImportPage() {
   const navigate = useNavigate();
 
   const [phase, setPhase] = useState<Phase>("idle");
+  const [lastAction, setLastAction] = useState<LastAction>(null);
   const [source, setSource] = useState<DossierSourcePayload | null>(null);
   const [pastedText, setPastedText] = useState("");
   const [error, setError] = useState("");
@@ -129,11 +176,11 @@ export function SmartImportPage() {
   const [extractionId, setExtractionId] = useState<string | null>(null);
   const [rawResult, setRawResult] = useState<PackageExtractionResult | null>(null);
   const [editable, setEditable] = useState<EditableDraft | null>(null);
-  const [lastErrorCode, setLastErrorCode] = useState<string | null>(null);
   const [lastAttempt, setLastAttempt] = useState<ExtractionAttemptSummary | null>(null);
+  const [pendingAction, setPendingAction] = useState<PendingAction>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const busy = phase === "preflighting" || phase === "extracting" || phase === "applying";
+  const busy = phase === "preflighting" || phase === "applying" || pendingAction !== null;
 
   async function runPreflight(nextSource: DossierSourcePayload) {
     setError("");
@@ -171,31 +218,46 @@ export function SmartImportPage() {
     await runPreflight(await dossierFileToPayload(file));
   }
 
-  function handleResponse(response: ExtractionResponse) {
+  // `action` is passed explicitly rather than read back from the
+  // `lastAction` state: the caller's own `setLastAction(...)` call just
+  // above is asynchronous, so by the time this synchronous continuation
+  // runs, the `lastAction` closed-over value here would still be
+  // whatever it was at the START of the render that created this
+  // callback -- a real stale-closure bug caught during Section 8's own
+  // regression testing (smartImport.test.tsx's "offers Retry" case
+  // failed against this exact bug before the fix).
+  function handleResponse(action: LastAction, response: ExtractionResponse) {
     if (response.status === "blocked") {
-      setLastErrorCode(response.errorCode);
       setLastAttempt(response.attempt ?? null);
       setError(response.message);
-      setPhase("quoted");
+      // Only an attempt #1 explicit terminal failure with a retryable
+      // code offers Retry -- never merely because extractionId exists,
+      // and never for a non-retryable code (Decision 16).
+      setPhase(
+        action === "initial" && RETRYABLE_ERROR_CODES.has(response.errorCode)
+          ? "retryable"
+          : "terminal_failure"
+      );
       return;
     }
 
     if (response.status === "in_progress") {
-      setError("This extraction is still in progress. Please try again shortly.");
-      setPhase("quoted");
+      setLastAttempt(response.attempt ?? null);
+      setError("");
+      setPhase("in_progress");
       return;
     }
 
     if (!response.draft) {
       setError("Extraction succeeded but returned no draft.");
-      setPhase("quoted");
+      setPhase("terminal_failure");
       return;
     }
 
     setRawResult(response.draft);
     setEditable(toEditableDraft(response.draft));
     setLastAttempt(response.attempt ?? null);
-    setLastErrorCode(null);
+    setError("");
     setPhase("review");
   }
 
@@ -207,16 +269,24 @@ export function SmartImportPage() {
     const id = crypto.randomUUID();
 
     setExtractionId(id);
+    setLastAction("initial");
     setError("");
-    setPhase("extracting");
+    setPendingAction("confirm");
 
     try {
       const response = await submitExtraction(id, source);
 
-      handleResponse(response);
+      handleResponse("initial", response);
     } catch (caught) {
+      // The HTTP outcome is genuinely unknown (e.g. a dropped
+      // connection) -- the server may have already succeeded and
+      // persisted validated_result. "ambiguous" offers Recover, which
+      // replays this SAME initial request idempotently -- it must never
+      // fall through to the retry endpoint.
       setError(formatError(caught));
-      setPhase("quoted");
+      setPhase("ambiguous");
+    } finally {
+      setPendingAction(null);
     }
   }
 
@@ -225,16 +295,48 @@ export function SmartImportPage() {
       return;
     }
 
+    setLastAction("retry");
     setError("");
-    setPhase("extracting");
+    setPendingAction("retry");
 
     try {
       const response = await retryExtraction(extractionId, source);
 
-      handleResponse(response);
+      handleResponse("retry", response);
     } catch (caught) {
       setError(formatError(caught));
-      setPhase("quoted");
+      setPhase("ambiguous");
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
+  // Replays whichever action (initial or retry) was last actually sent
+  // -- the one and only recovery path for both an ambiguous HTTP outcome
+  // and a confirmed in-progress (CLAIMED) status. Never advances to a
+  // new attempt number by itself.
+  async function handleRecover() {
+    if (!source || !extractionId || !lastAction) {
+      return;
+    }
+
+    const action = lastAction;
+
+    setError("");
+    setPendingAction("recover");
+
+    try {
+      const response =
+        action === "initial"
+          ? await submitExtraction(extractionId, source)
+          : await retryExtraction(extractionId, source);
+
+      handleResponse(action, response);
+    } catch (caught) {
+      setError(formatError(caught));
+      setPhase("ambiguous");
+    } finally {
+      setPendingAction(null);
     }
   }
 
@@ -248,8 +350,7 @@ export function SmartImportPage() {
       return;
     }
 
-    const sourceFilename = source?.kind === "file" ? source.filename : null;
-    const draft = toTribunalSetupDraft(editable, sourceFilename);
+    const draft = toTribunalSetupDraft(editable);
 
     if (!draft) {
       setError("Complete every required field before applying the extracted draft.");
@@ -282,6 +383,10 @@ export function SmartImportPage() {
         : current
     );
   }
+
+  const showRecoverAction = phase === "ambiguous" || phase === "in_progress";
+  const showRetryAction = phase === "retryable";
+  const showConfirmAction = phase === "quoted";
 
   return (
     <Stack spacing={4}>
@@ -344,45 +449,91 @@ export function SmartImportPage() {
         </Paper>
       ) : null}
 
-      {phase === "quoted" || phase === "extracting" ? (
+      {phase !== "idle" && phase !== "preflighting" && phase !== "review" && quote ? (
         <Paper sx={{ p: { xs: 2, md: 4 } }}>
           <Stack spacing={2}>
             <Typography variant="h6">Extraction Quote</Typography>
-            {quote?.eligible ? (
-              <Typography>
-                Estimated maximum cost: <strong>${quote.conservativeMaxCostUsd}</strong> of a{" "}
-                ${quote.hardCeilingUsd} ceiling for this extraction.
-              </Typography>
+            {quote.eligible ? (
+              <Stack spacing={0.5}>
+                <Typography>
+                  Estimated maximum cost:{" "}
+                  <strong>${quote.logicalConservativeMaxCostUsd}</strong> of a $
+                  {quote.hardCeilingUsd} ceiling for this extraction (both permitted attempts
+                  combined).
+                </Typography>
+                <Typography color="text.secondary" variant="body2">
+                  Configured model: {quote.configuredModelId}
+                  {quote.canonicalModelId && quote.canonicalModelId !== quote.configuredModelId
+                    ? ` (resolved: ${quote.canonicalModelId})`
+                    : ""}
+                  {quote.providerEndpointTag ? ` — endpoint ${quote.providerEndpointTag}` : ""}
+                </Typography>
+                <Typography color="text.secondary" variant="body2">
+                  Per-attempt conservative maximum: ${quote.perAttemptConservativeMaxCostUsd}
+                  {quote.pricingObservedAt
+                    ? ` — pricing observed ${new Date(quote.pricingObservedAt).toLocaleString()}`
+                    : ""}
+                </Typography>
+              </Stack>
             ) : (
               <Typography color="error">
-                This extraction is not currently eligible ({quote?.blockedReasonCodes.join(", ")}).
+                This extraction is not currently eligible ({quote.blockedReasonCodes.join(", ")}).
               </Typography>
             )}
             {lastAttempt ? (
-              <Chip
-                label={`Attempt ${lastAttempt.attemptNumber}: ${lastAttempt.status}`}
-                size="small"
-                sx={{ alignSelf: "flex-start" }}
-              />
+              <Stack sx={{ display: "flex", flexDirection: "row", flexWrap: "wrap", gap: 1 }}>
+                <Chip label={`Attempt ${lastAttempt.attemptNumber}: ${lastAttempt.status}`} size="small" />
+                <Chip
+                  label={
+                    lastAttempt.actualCostUsd !== null
+                      ? `Actual cost: $${lastAttempt.actualCostUsd}`
+                      : `Conservative maximum: $${lastAttempt.conservativeMaxCostUsd} (actual not yet known)`
+                  }
+                  size="small"
+                  variant="outlined"
+                />
+              </Stack>
             ) : null}
+
             <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-              <Button
-                disabled={busy || !quote?.eligible}
-                onClick={extractionId ? handleRetry : handleConfirmExtract}
-                variant="contained"
-              >
-                {phase === "extracting" ? (
-                  <CircularProgress size={20} />
-                ) : extractionId && lastErrorCode && RETRYABLE_ERROR_CODES.has(lastErrorCode) ? (
-                  "Retry"
-                ) : (
-                  "Confirm & Extract"
-                )}
-              </Button>
+              {showConfirmAction ? (
+                <Button disabled={busy || !quote.eligible} onClick={handleConfirmExtract} variant="contained">
+                  {pendingAction === "confirm" ? <CircularProgress size={20} /> : "Confirm & Extract"}
+                </Button>
+              ) : null}
+              {showRetryAction ? (
+                <Button disabled={busy} onClick={handleRetry} variant="contained">
+                  {pendingAction === "retry" ? <CircularProgress size={20} /> : "Retry"}
+                </Button>
+              ) : null}
+              {showRecoverAction ? (
+                <Button disabled={busy} onClick={handleRecover} variant="contained">
+                  {pendingAction === "recover" ? (
+                    <CircularProgress size={20} />
+                  ) : phase === "in_progress" ? (
+                    "Check Status"
+                  ) : (
+                    "Recover"
+                  )}
+                </Button>
+              ) : null}
               <Button disabled={busy} onClick={handleCancel} variant="text">
                 Cancel
               </Button>
             </Stack>
+            {phase === "in_progress" ? (
+              <Typography color="text.secondary" variant="body2">
+                This extraction is still in progress on the server. Checking status replays
+                the same request -- it never starts a new attempt.
+              </Typography>
+            ) : null}
+            {phase === "ambiguous" ? (
+              <Typography color="text.secondary" variant="body2">
+                The connection was lost before a response arrived. Recovering safely
+                replays the exact same request -- if it already succeeded, no new attempt
+                or charge occurs.
+              </Typography>
+            ) : null}
           </Stack>
         </Paper>
       ) : null}
@@ -395,18 +546,46 @@ export function SmartImportPage() {
               Highlighted fields were unresolved or ambiguous -- edit them before applying.
             </Typography>
 
+            {lastAttempt ? (
+              <Stack sx={{ display: "flex", flexDirection: "row", flexWrap: "wrap", gap: 1 }}>
+                <Chip label={`Attempt ${lastAttempt.attemptNumber}: ${lastAttempt.status}`} size="small" />
+                <Chip
+                  label={
+                    lastAttempt.actualCostUsd !== null
+                      ? `Actual cost: $${lastAttempt.actualCostUsd}`
+                      : `Conservative maximum: $${lastAttempt.conservativeMaxCostUsd}`
+                  }
+                  size="small"
+                  variant="outlined"
+                />
+              </Stack>
+            ) : null}
+
+            {documentLevelWarnings(rawResult).length > 0 ? (
+              <Alert severity="warning">
+                <Typography variant="body2">
+                  Additional dossier content was not used for any field:
+                </Typography>
+                <ul>
+                  {documentLevelWarnings(rawResult).map((warning, index) => (
+                    <li key={index}>{warning.code}</li>
+                  ))}
+                </ul>
+              </Alert>
+            ) : null}
+
             <TextField
-              error={warningsFor(rawResult, "chargeSheet.defendant").length > 0}
+              error={fieldWarnings(rawResult, "chargeSheet.defendant").length > 0}
               fullWidth
-              helperText={warningsFor(rawResult, "chargeSheet.defendant")[0]?.code}
+              helperText={fieldWarnings(rawResult, "chargeSheet.defendant")[0]?.code}
               label="Defendant"
               onChange={(event) => updateField("defendant", event.target.value)}
               value={editable.defendant}
             />
             <TextField
-              error={warningsFor(rawResult, "chargeSheet.act").length > 0}
+              error={fieldWarnings(rawResult, "chargeSheet.act").length > 0}
               fullWidth
-              helperText={warningsFor(rawResult, "chargeSheet.act")[0]?.code}
+              helperText={fieldWarnings(rawResult, "chargeSheet.act")[0]?.code}
               label="Act"
               minRows={3}
               multiline
@@ -414,9 +593,9 @@ export function SmartImportPage() {
               value={editable.act}
             />
             <TextField
-              error={warningsFor(rawResult, "chargeSheet.exactQuestion").length > 0}
+              error={fieldWarnings(rawResult, "chargeSheet.exactQuestion").length > 0}
               fullWidth
-              helperText={warningsFor(rawResult, "chargeSheet.exactQuestion")[0]?.code}
+              helperText={fieldWarnings(rawResult, "chargeSheet.exactQuestion")[0]?.code}
               label="Exact Question"
               minRows={2}
               multiline
@@ -428,7 +607,7 @@ export function SmartImportPage() {
               <Stack key={seat} spacing={1}>
                 <Typography variant="subtitle2">{SEAT_LABELS[seat]}</Typography>
                 <TextField
-                  error={warningsFor(rawResult, `participants.${seat}.profileName`).length > 0}
+                  error={fieldWarnings(rawResult, `participants.${seat}.profileName`).length > 0}
                   fullWidth
                   label="Profile name (optional)"
                   onChange={(event) => updateParticipantField(seat, "profileName", event.target.value)}
@@ -436,9 +615,9 @@ export function SmartImportPage() {
                   value={editable.participants[seat].profileName}
                 />
                 <TextField
-                  error={warningsFor(rawResult, `participants.${seat}.personality`).length > 0}
+                  error={fieldWarnings(rawResult, `participants.${seat}.personality`).length > 0}
                   fullWidth
-                  helperText={warningsFor(rawResult, `participants.${seat}.personality`)[0]?.code}
+                  helperText={fieldWarnings(rawResult, `participants.${seat}.personality`)[0]?.code}
                   label="Personality"
                   minRows={2}
                   multiline
