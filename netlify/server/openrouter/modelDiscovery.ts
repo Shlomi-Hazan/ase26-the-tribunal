@@ -90,6 +90,56 @@ export type ModelDiscoveryDeps = {
   clock?: Clock;
 };
 
+// Discovery-scale correction (live integration gate): the real OpenRouter
+// catalog observed live was ~387 models. A fully sequential
+// one-endpoint-fetch-per-model sweep took ~45.7s cold against real data --
+// close enough to a typical serverless function's execution deadline to
+// be a genuine reliability risk, not just a slow best case. Bounded to 8
+// concurrent in-flight `listEndpoints()` calls: no current official
+// OpenRouter rate-limit document (reverified against
+// https://openrouter.ai/openapi.json immediately before this change)
+// specifies a numeric per-second/per-minute limit for this metadata
+// endpoint that would make 8 unsafe -- only the generic 429 response
+// shape and a deprecated, always -1 `rate_limit` field exist. If that
+// ever changes, this is a deliberate, separately reviewed value to
+// revisit, not something to silently raise.
+export const MODEL_DISCOVERY_ENDPOINT_CONCURRENCY = 8;
+
+// Deterministic bounded-concurrency worker pool: at most `concurrency`
+// calls to `worker` are ever in flight at once, but the returned array
+// is always in the same order as `items` regardless of which call
+// actually settles first -- network completion order must never become
+// result order. One worker's rejection is only possible if `worker`
+// itself throws; every call site below always resolves (its own
+// try/catch turns a per-model failure into `null`), so one endpoint
+// fetch failing never aborts the pool or any other in-flight worker.
+async function mapWithBoundedConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+
+  async function runWorker(): Promise<void> {
+    for (;;) {
+      const index = nextIndex;
+      nextIndex += 1;
+
+      if (index >= items.length) {
+        return;
+      }
+
+      results[index] = await worker(items[index], index);
+    }
+  }
+
+  const workerCount = Math.min(concurrency, items.length);
+  await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+
+  return results;
+}
+
 // ---------------------------------------------------------------------
 // Dual-role ("shared Tribunal") route resolver (independent review,
 // pre-live gate, second pass). Narrowly scoped to this generic discovery
@@ -243,74 +293,84 @@ export async function listEligibleModels(deps: ModelDiscoveryDeps): Promise<Elig
   const endpointCache =
     deps.endpointCache ?? new ModelMetadataCache<RawOpenRouterEndpoint[]>(undefined, clock);
 
-  const results: EligibleModel[] = [];
-
   const models = await cachedFetch(modelCache, "models", () => deps.provider.listModels());
 
-  for (const model of models) {
-    const separatorIndex = model.id.indexOf("/");
-    const author = separatorIndex === -1 ? model.id : model.id.slice(0, separatorIndex);
-    const slug = separatorIndex === -1 ? "" : model.id.slice(separatorIndex + 1);
+  // Bounded-concurrency sweep (Section 5/6/7 of the discovery-scale
+  // correction): identical per-model eligibility/pricing logic to the
+  // previous fully-sequential loop, only the scheduling changed. Each
+  // worker call always resolves to `EligibleModel | null` -- it never
+  // throws -- so one model's endpoint-fetch failure can never abort the
+  // pool or affect any other model's result, and the final `filter`
+  // below preserves `models`' original order regardless of which
+  // network call actually completed first.
+  const perModelResults = await mapWithBoundedConcurrency(
+    models,
+    MODEL_DISCOVERY_ENDPOINT_CONCURRENCY,
+    async (model): Promise<EligibleModel | null> => {
+      const separatorIndex = model.id.indexOf("/");
+      const author = separatorIndex === -1 ? model.id : model.id.slice(0, separatorIndex);
+      const slug = separatorIndex === -1 ? "" : model.id.slice(separatorIndex + 1);
 
-    let endpoints: RawOpenRouterEndpoint[];
-    let endpointObservedAt: string;
+      let endpoints: RawOpenRouterEndpoint[];
+      let endpointObservedAt: string;
 
-    try {
-      endpoints = await cachedFetch(endpointCache, model.id, () =>
-        deps.provider.listEndpoints(author, slug)
+      try {
+        endpoints = await cachedFetch(endpointCache, model.id, () =>
+          deps.provider.listEndpoints(author, slug)
+        );
+        // Corrected this pass (independent review, pre-live micro-
+        // correction): PricingSnapshot.observedAt is contractually the
+        // metadata FETCH timestamp (ADR Decision 9). requireCacheObservedAt
+        // throws rather than returning null -- there is deliberately no
+        // `?? currentInvocationTime` fallback here anymore. A model whose
+        // endpoint observation timestamp is unexpectedly unavailable
+        // immediately after a successful fetch is never returned with a
+        // fabricated pricingObservedAt -- it is skipped, exactly like any
+        // other metadata fetch failure.
+        endpointObservedAt = requireCacheObservedAt(endpointCache, model.id);
+      } catch {
+        return null;
+      }
+
+      const resolution = resolveSharedTribunalRoute({
+        configuredModelId: model.id,
+        models,
+        endpoints,
+        observedAt: endpointObservedAt
+      });
+
+      if (!resolution.eligible) {
+        return null;
+      }
+
+      const { route } = resolution;
+      const conservativeFullTribunalCostUsd = computeConservativeFullTribunalCostForRoute(
+        route.pricing
       );
-      // Corrected this pass (independent review, pre-live micro-
-      // correction): PricingSnapshot.observedAt is contractually the
-      // metadata FETCH timestamp (ADR Decision 9). requireCacheObservedAt
-      // throws rather than returning null -- there is deliberately no
-      // `?? currentInvocationTime` fallback here anymore. A model whose
-      // endpoint observation timestamp is unexpectedly unavailable
-      // immediately after a successful fetch is never returned with a
-      // fabricated pricingObservedAt -- it is skipped, exactly like any
-      // other metadata fetch failure.
-      endpointObservedAt = requireCacheObservedAt(endpointCache, model.id);
-    } catch {
-      continue;
+      const priceTier = classifyPriceTier(conservativeFullTribunalCostUsd);
+
+      if (priceTier === "HARD_BLOCK") {
+        return null;
+      }
+
+      return {
+        id: route.configuredModelId,
+        canonicalModelId: route.canonicalModelId,
+        name: model.name ?? route.canonicalModelId,
+        providerName: route.providerDisplayName,
+        contextLength: route.contextLength,
+        promptPricePerMillion: toDecimalString(route.pricing.promptPricePerMillion),
+        completionPricePerMillion: toDecimalString(route.pricing.completionPricePerMillion),
+        isFree: priceTier === "FREE",
+        priceTier,
+        conservativeFullTribunalEstimateUsd: toDecimalString(conservativeFullTribunalCostUsd),
+        supportsStructuredOutput: route.supportedParameters.includes("response_format"),
+        pricingObservedAt: route.observedAt
+      };
     }
+  );
 
-    const resolution = resolveSharedTribunalRoute({
-      configuredModelId: model.id,
-      models,
-      endpoints,
-      observedAt: endpointObservedAt
-    });
-
-    if (!resolution.eligible) {
-      continue;
-    }
-
-    const { route } = resolution;
-    const conservativeFullTribunalCostUsd = computeConservativeFullTribunalCostForRoute(
-      route.pricing
-    );
-    const priceTier = classifyPriceTier(conservativeFullTribunalCostUsd);
-
-    if (priceTier === "HARD_BLOCK") {
-      continue;
-    }
-
-    results.push({
-      id: route.configuredModelId,
-      canonicalModelId: route.canonicalModelId,
-      name: model.name ?? route.canonicalModelId,
-      providerName: route.providerDisplayName,
-      contextLength: route.contextLength,
-      promptPricePerMillion: toDecimalString(route.pricing.promptPricePerMillion),
-      completionPricePerMillion: toDecimalString(route.pricing.completionPricePerMillion),
-      isFree: priceTier === "FREE",
-      priceTier,
-      conservativeFullTribunalEstimateUsd: toDecimalString(conservativeFullTribunalCostUsd),
-      supportsStructuredOutput: route.supportedParameters.includes("response_format"),
-      pricingObservedAt: route.observedAt
-    });
-  }
-
-  return results;
+  return perModelResults.filter((result): result is EligibleModel => result !== null);
 }
 
 // Re-exported for callers that only need the fixed threshold constants

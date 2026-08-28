@@ -5,14 +5,40 @@
 
 export const MODEL_METADATA_TTL_MS = 300_000;
 
-// Small, explicit bound appropriate for this application: V1 only ever
-// resolves a handful of distinct configured model IDs per run (at most
-// seven participants, realistically far fewer distinct models), so this
-// cache never needs to hold more than a modest number of entries. Chosen
-// as a round number comfortably above any plausible single-run working
-// set, not derived from a load estimate -- if this ever needs to grow,
-// that is a deliberate, documented, reviewed change, not a silent one.
+// Small, explicit bound appropriate for a SINGLE FROZEN RUN'S working
+// set: preflight only ever resolves a handful of distinct configured
+// model IDs per run (at most seven participants, realistically far
+// fewer distinct models), so a cache used only for that purpose never
+// needs to hold more than a modest number of entries. This remains the
+// DEFAULT for any ModelMetadataCache instance that does not explicitly
+// override maxEntries (e.g. the catalog cache below, and any test that
+// constructs a bare cache) -- if this ever needs to grow for that
+// narrower purpose, that is a deliberate, documented, reviewed change,
+// not a silent one.
 export const MODEL_METADATA_CACHE_MAX_ENTRIES = 200;
+
+// Discovery/live-gate correction: this bound is explicitly too small for
+// the FULL-CATALOG endpoint-metadata working set GET /api/models needs
+// -- one cache entry per catalog model, not per configured participant.
+// The M7 live integration gate observed a real catalog of ~387 models;
+// with the 200-entry default, the least-recently-set eviction policy
+// discarded early entries before a single discovery sweep even finished,
+// so a second call within the 5-minute TTL still had to refetch nearly
+// everything (confirmed empirically: a second handleModelsRequest call
+// took ~47s, matching the first cold sweep, and the selected model's
+// pricingObservedAt changed between calls -- not a cache hit).
+//
+// ENDPOINT_METADATA_CACHE_MAX_ENTRIES is a SEPARATE, explicit, reviewed
+// bound for the production endpoint-metadata cache specifically (see
+// sharedMetadataCache.ts's sharedEndpointCache) -- more than 2x the
+// observed real catalog size, still a fixed in-process bound (no Redis,
+// no DB table, no "unlimited"/future-proof claim). If OpenRouter's
+// catalog later grows past this, that is a new, separate, reviewed
+// capacity decision, not something this constant silently absorbs.
+// The MODEL CATALOG cache (one "models" key) and any preflight-only
+// cache remain correctly sized by the smaller MODEL_METADATA_CACHE_MAX_ENTRIES
+// default above -- this bound is intentionally NOT applied everywhere.
+export const ENDPOINT_METADATA_CACHE_MAX_ENTRIES = 1024;
 
 export type Clock = () => number;
 

@@ -29,9 +29,25 @@
 // ModelMetadataCache (or omits one, letting the service default to a
 // fresh instance) so test runs stay fully isolated and deterministic --
 // see preflight.ts's/modelDiscovery.ts's optional cache parameters.
-
-import { ModelMetadataCache } from "./cache";
+//
+// Discovery-scale correction (live integration gate): sharedModelCache
+// holds exactly one entry (the "models" key -- the whole raw catalog as
+// a single value), so the small MODEL_METADATA_CACHE_MAX_ENTRIES default
+// is correct for it unchanged. sharedEndpointCache instead holds one
+// entry PER MODEL evaluated during a full-catalog discovery sweep
+// (~387 observed live) -- it now uses the explicit, larger, reviewed
+// ENDPOINT_METADATA_CACHE_MAX_ENTRIES bound so a complete sweep's working
+// set survives for the rest of its 5-minute TTL instead of evicting its
+// own earliest entries before the sweep even finishes. This is the same
+// cache instance POST /api/preflight uses for its own (much smaller)
+// per-run participant lookups -- a larger bound only ever helps that
+// narrower use case, never hurts it.
+import { ENDPOINT_METADATA_CACHE_MAX_ENTRIES, ModelMetadataCache } from "./cache";
 import type { RawOpenRouterEndpoint, RawOpenRouterModel } from "./schemas";
 
 export const sharedModelCache = new ModelMetadataCache<RawOpenRouterModel[]>();
-export const sharedEndpointCache = new ModelMetadataCache<RawOpenRouterEndpoint[]>();
+export const sharedEndpointCache = new ModelMetadataCache<RawOpenRouterEndpoint[]>(
+  undefined,
+  undefined,
+  ENDPOINT_METADATA_CACHE_MAX_ENTRIES
+);
