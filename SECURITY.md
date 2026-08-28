@@ -305,6 +305,19 @@ Decision 17):
   pre-work step can consume the entire Function lifetime, and no
   provider call (hence no spend) is ever attempted once that deadline
   is exhausted.
+- **New this pass (final independent review, prompt-version resolution
+  audit): a retry's stored prompt version must resolve to an
+  immutable, versioned historical prompt implementation before any
+  provider call is attempted** (`docs/adr/
+  0004-smart-package-extraction.md` Decision 7). A released prompt
+  version's text/behavior is never modified in place — a behavioral
+  change is a new version, added additively, never overwriting the old
+  one — so a retry always sends the exact same prompt the original
+  attempt would have sent, regardless of any prompt change deployed in
+  between. If the stored version cannot be resolved (`PROMPT_VERSION_
+  UNAVAILABLE`, Decision 16), the request fails closed: zero provider
+  calls, zero new spend, no fallback to the current prompt, no silent
+  version substitution.
 - Raw upload bytes and the normalized dossier *source* text are both
   transient and are not retained after any extraction attempt
   (successful, failed, or between an initial attempt and a subsequent

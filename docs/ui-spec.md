@@ -190,6 +190,19 @@ UI instead offers to start a fresh extraction (a new, separately
 billable attempt, going through the read-only quote and confirmation
 again).
 
+**New this pass (final independent review, prompt-version resolution
+audit): `PROMPT_VERSION_UNAVAILABLE` (Decision 7/16) is an
+application-side unavailability, not something the user's dossier or
+Retry action caused.** If a Retry cannot resolve the historical prompt
+its original attempt used, the UI must say so plainly (e.g. "this
+extraction attempt can't be retried right now -- please start a new
+extraction") rather than implying a dossier problem or offering a
+misleading "try again" that would repeat the same unresolved state.
+The UI's recovery path is the same one already offered after a
+terminal `UNKNOWN_OUTCOME` on attempt #2: start a fresh extraction
+(new `extractionRequestId`, through the read-only quote and
+confirmation again), never a bespoke workaround.
+
 **Corrected in the fourth pass (final independent review, Decision
 13/15): a lost network response after a successful extraction must
 never present as data loss.** If the connection between the browser

@@ -143,10 +143,9 @@ from any prior version is silently erased. Full findings and
 corrections (fourth pass): Decisions 8, 11, 13, 15, 22, and
 `SECURITY.md`/`docs/economics.md`/`docs/ui-spec.md`.
 
-**Fifth, final security/idempotency merge-readiness correction pass
-(this revision):** the fourth pass's contract was substantially
-approved; a final independent audit found three remaining planning
-gaps, each corrected below:
+**Fifth, security/idempotency merge-readiness correction pass:** the
+fourth pass's contract was substantially approved; a final independent
+audit found three remaining planning gaps, each corrected below:
 
 1. `SECURITY.md`'s M7A section claimed `validated_result` was reachable
    through "the same authenticated idempotent-replay path" — false for
@@ -194,6 +193,71 @@ constraints, it does not loosen or reopen anything already locked.
 Nothing from any prior version is silently erased. Full findings and
 corrections (fifth pass): Decisions 9, 10, 15, 16, 19, 22, and
 `SECURITY.md`.
+
+**Sixth, final prompt-version resolution correction pass (this
+revision):** the fifth pass's security/idempotency contract was
+approved in full — V1 no-login/privacy wording, `validated_result`
+retention/disclosure, extraction admission-control/`RATE_LIMITED`
+semantics, and the frozen `configured_model_id`/`prompt_version`
+identity across deployment drift are all unchanged by this pass. One
+remaining implementation-readiness gap was found: Decision 15 freezes
+`prompt_version` on a logical extraction, but nothing previously
+defined how an implementation resolves the *actual historical prompt
+text* for that stored version once a later deployment introduces a new
+one — a stored version identifier without a resolvable historical
+prompt body is not sufficient to execute a retry under frozen
+semantics. Corrected:
+
+1. **A versioned, immutable historical prompt registry is locked**
+   (Decision 7), planned at `src/prompts/package-extraction/` (`v1.ts`,
+   a future `v2.ts`, `registry.ts`), replacing the previously planned
+   single mutable `package-extraction-system.ts` builder file — the
+   single-file pattern that works for M7's advocate/judge prompts does
+   not survive M7A's retry-across-a-later-deployment window the way
+   the Tribunal's same-request retry does.
+2. **Immutability rule locked**: once `package-extraction-v1` has been
+   used by any accepted logical extraction, its prompt text/behavior is
+   never modified in place — a behavioral change is a new version
+   (`package-extraction-v2`), added additively; `PACKAGE_EXTRACTION_
+   PROMPT_VERSION` then advances for **new** logical extractions only,
+   while every existing `v1` logical extraction's stored
+   `prompt_version` — and its retry, if still eligible — remains `v1`.
+3. **Retry prompt resolution locked** (Decision 7): a retry loads the
+   stored `prompt_version`, resolves the exact historical builder
+   through the registry, and sends that — never the deployment's
+   current prompt merely because it is more convenient to load; only
+   route/pricing/eligibility metadata for the stored model is refreshed.
+4. **Replay vs. retry clarified**: a successful idempotent replay of a
+   persisted `validated_result` needs zero prompt resolution and zero
+   provider calls — `prompt_version` there is audit metadata only. Only
+   a billable retry actually requires resolving the historical prompt
+   body.
+5. **Missing historical version fails closed**: a new
+   `PROMPT_VERSION_UNAVAILABLE` error code (Decision 16) — zero
+   provider calls, zero new spend, no fallback to the current prompt,
+   no silent version substitution, and never conflated with
+   `MODEL_NOT_ELIGIBLE`.
+6. **Version/schema compatibility minimum rule locked** (Decision 7):
+   `prompt_version` (model behavior) and the `packageExtractionSchema`
+   contract a persisted `validated_result` is re-validated against
+   (Decision 13) are two distinct compatibility axes; a future
+   incompatible evolution between them requires its own explicit,
+   separately reviewed decision, never a silent reinterpretation of
+   historical data. No full migration system is invented now — only
+   silent drift is prevented.
+
+Also added, as implementation-mechanism guidance rather than a new
+product decision (Decision 19): the approved rate-limit behavior is
+unchanged, but a note clarifies that "idempotent replay never consumes
+a new-start admission slot" requires an application-aware counting
+mechanism (not a naive path-level HTTP counter), and that the
+per-source-IP dimension must use a trusted IP from the Netlify
+Function's own invocation context, never a caller-supplied forwarding
+header taken at face value.
+
+Nothing from any prior version is silently erased. Full findings and
+corrections (sixth pass): Decisions 7, 16, 18, 19, 22, `SECURITY.md`,
+`docs/ui-spec.md`.
 
 ## Context
 
@@ -621,12 +685,11 @@ validation the moment the human attempts to Convene — no new
 enforcement code is needed; only new UI surfacing of *why* a field is
 empty (Decision 18).
 
-## Decision 7 — Prompt contract and prompt-injection defenses
+## Decision 7 — Prompt contract, prompt-injection defenses, and a versioned historical prompt registry
 
 New, additive files (planned — not created in this task), matching
 `src/prompts/versions.ts`/`src/prompts/schemas.ts`'s existing pattern:
 
-- `src/prompts/package-extraction-system.ts` — system prompt builder.
 - `src/prompts/package-extraction-schema.ts` — Decision 5's Zod/JSON
   Schema pair, defined side by side like the advocate/judge schemas.
 - `src/prompts/versions.ts` gains one new, additive export:
@@ -634,6 +697,67 @@ New, additive files (planned — not created in this task), matching
   never `advocate-v1` or `judge-v1`, and adding it does not touch
   either existing constant or the prompt-version/migration anti-drift
   test's existing assertions.
+
+**Corrected this pass (final independent review, prompt-version
+resolution audit): a single, unversioned
+`src/prompts/package-extraction-system.ts` builder is not sufficient.**
+`PACKAGE_EXTRACTION_PROMPT_VERSION` names the *current* version for new
+logical extractions, but Decision 15 already locks `prompt_version` as
+part of an *existing* logical extraction's frozen semantic identity —
+governing not just the fingerprint, but which literal prompt text a
+retry must actually send. A single mutable builder file, edited in
+place when the prompt changes, cannot answer "what was
+`package-extraction-v1`'s exact prompt text" once the file has since
+been rewritten for `v2`. This is a materially different situation from
+M7's `advocate-system.ts`/`judge-system.ts`: a Tribunal participant's
+one permitted retry (Decision 8/SPEC.md) happens within the same
+request, against the one running deployment that started it, so there
+is no deployment-drift window to survive; M7A's extraction retry is a
+**separate, later, explicit HTTP call** (Decision 19) that can arrive
+after an intervening deployment — exactly the scenario Decision 15's
+frozen-identity rule exists to handle, and exactly what a versioned
+registry is required to make actually executable, not merely
+identifiable by name.
+
+**Locked: a versioned, immutable historical prompt registry**, planned
+location `src/prompts/package-extraction/`:
+
+```text
+src/prompts/package-extraction/
+  v1.ts        -- exports the exact, frozen package-extraction-v1
+                  system-prompt builder; never edited in place once
+                  package-extraction-v1 has been used by any accepted
+                  logical extraction
+  registry.ts  -- getPackageExtractionPrompt(version: string):
+                  PackageExtractionPromptBuilder | undefined
+                  (or an equivalent PACKAGE_EXTRACTION_PROMPT_REGISTRY
+                  keyed-lookup object of the same shape) -- the sole
+                  resolution point every call site uses; never a
+                  direct import of a specific vN module from outside
+                  this directory
+  (future) v2.ts -- added only when the prompt materially changes;
+                    v1.ts is never modified to make room for it
+```
+
+Exact filenames/module boundaries may follow whatever convention is
+current at implementation time, but the **semantic contract is
+mandatory and not an implementation-time detail**: given a
+`prompt_version` string, there must be exactly one deterministic way
+to resolve either the exact historical prompt builder for that version
+or a definite "not resolvable" outcome — never an approximation, never
+a silent fallback to whatever the current builder happens to be.
+
+**Immutability rule, locked:** once `package-extraction-v1` has been
+used by any accepted logical extraction (i.e. its `setup_extractions`
+row exists), its prompt text/behavior must not be modified in place.
+A materially different prompt is a **new version**
+(`package-extraction-v2`), added as a new registry entry —
+`v1`'s module is never rewritten to become `v2`. `PACKAGE_EXTRACTION_
+PROMPT_VERSION` is then updated to `"package-extraction-v2"` for
+**new** logical extractions only; every existing `v1` logical
+extraction remains `v1` — its `setup_extractions.prompt_version`
+column never changes, and its retry (if any remains eligible) still
+resolves and sends `v1`'s exact historical prompt text, never `v2`'s.
 
 The system prompt must explicitly state, mirroring `SECURITY.md`'s
 existing untrusted-input discipline:
@@ -669,6 +793,86 @@ Defense-in-depth, beyond the prompt text itself:
   only ever populates a staged preview (Decision 12); nothing it
   produces can trigger Convene, persistence of a real case, or a model
   call by itself.
+
+### Retry prompt resolution — new this pass (final independent review, prompt-version resolution audit)
+
+For attempt #2 (`POST .../retry`, Decision 19), the handler resolves
+the exact prompt to send in this fixed order, before any provider call:
+
+1. Load the logical extraction's stored `setup_extractions.prompt_version`
+   (frozen at first acceptance, Decision 15 — never the deployment's
+   current `PACKAGE_EXTRACTION_PROMPT_VERSION`).
+2. Resolve the exact historical prompt builder for that version through
+   the versioned registry above (`getPackageExtractionPrompt(prompt_version)`
+   or equivalent) — never a direct reference to whatever the current
+   builder module happens to export.
+3. Build the request using **that** resolved prompt.
+4. Use the logical extraction's stored `configured_model_id` (Decision
+   15's frozen identity — unchanged by this pass).
+5. Refresh only what is legitimately operational/time-varying for that
+   same stored model: route/endpoint metadata resolution, current
+   pricing, current eligibility, and a freshly computed
+   `conservative_max_cost_usd` (Decision 9/10) — never the prompt text
+   or the model identity itself.
+
+The deployment's *current* extraction prompt is never substituted for
+convenience, performance, or because the historical version is
+inconvenient to load — the whole reason the registry above is a
+locked, mandatory contract rather than an optional nicety is to make
+step 2 always well-defined.
+
+### Replay vs. retry — new this pass (final independent review, prompt-version resolution audit)
+
+**A successful idempotent replay of a persisted `validated_result`
+(Decision 13/15) requires none of the above.** Replay returns an
+already-produced, already-validated result with **zero** provider
+calls (Decision 15's four-row replay table, unchanged) — it never
+re-sends a prompt to anything, so it never needs to resolve the
+historical prompt body at all. `setup_extractions.prompt_version`
+remains, for a pure replay, **audit metadata only** — recorded for
+traceability, not read to construct a request. The registry/resolution
+contract above applies exclusively to a **billable retry**
+(`attempt_number = 2`), which is the only path that genuinely
+constructs and sends a new prompt.
+
+### Missing historical prompt version — new this pass (final independent review, prompt-version resolution audit)
+
+**Fail closed.** If a stored `prompt_version` cannot be resolved by the
+registry (a state that should not arise under the immutability rule
+above, but must still be handled explicitly rather than assumed
+impossible — e.g. an operational error, a registry regression, or data
+predating a registry entry that was never backfilled): the retry
+request fails with **zero** provider calls and **zero** new spend —
+never a fallback to the current prompt, never a silent version
+substitution, never treated as `MODEL_NOT_ELIGIBLE` (that code means
+"the *model* is ineligible," a different failure than "the *prompt
+version* is unresolvable," and conflating the two would misdirect a
+future implementer's or user's diagnosis). A new, dedicated stable
+error code — `PROMPT_VERSION_UNAVAILABLE` — is added to Decision 16's
+taxonomy for exactly this case, with the corresponding UI treatment
+(Decision 18) making clear this is an application-side unavailability,
+not something the user's dossier or Retry action caused.
+
+### Version/schema compatibility — new this pass (final independent review, prompt-version resolution audit)
+
+`prompt_version` identifies **model behavior/instructions** (what was
+asked of the provider); the persisted `validated_result` (Decision 13)
+is independently re-validated on every read against **the currently
+supported `packageExtractionSchema` contract** (Decision 5) — these are
+two distinct compatibility axes, not one. This pass does **not** invent
+a full schema-migration system: it locks the minimum rule needed to
+prevent silent drift between them. If a future prompt version's output
+shape is not compatible with the schema contract a stored
+`validated_result` was originally validated against, that is itself a
+**new, explicitly reviewed schema/versioning decision** (mirroring how
+`package-extraction-v2` itself must be an explicit, separately reviewed
+addition, above) — never a silent reinterpretation of historical data
+under a newer contract's assumptions. Nothing about this rule changes
+Decision 13's existing re-validate-on-read behavior; it only makes
+explicit that "re-validated" means "against the schema contract that
+is actually still in effect," and that a genuine incompatibility is a
+planning decision this ADR defers, not a bug this ADR resolves
+silently by construction.
 
 ## Decision 8 — One logical call, explicit retry, no in-request loop
 
@@ -1950,6 +2154,18 @@ RATE_LIMITED                   -- new this pass, Decision 9/19: admission-contro
                                 -- RATE_LIMITED is an admission-volume decision, made before either
                                 -- of those checks even runs, and never substitutes a different
                                 -- route/model/behavior silently.
+PROMPT_VERSION_UNAVAILABLE     -- new this pass, Decision 7/15: a retry's stored
+                                -- setup_extractions.prompt_version cannot be resolved by the
+                                -- versioned historical prompt registry. HTTP 4xx (mirrors
+                                -- MODEL_NOT_ELIGIBLE's status-code treatment). Zero provider
+                                -- calls, zero new spend, no fallback to the current prompt, no
+                                -- silent version substitution. Distinct from MODEL_NOT_ELIGIBLE
+                                -- (that code means the *model* is ineligible; this one means the
+                                -- *prompt version* is unresolvable -- the two must never be
+                                -- conflated, since they point a future implementer/user at
+                                -- different causes). Should not arise under the immutability rule
+                                -- (Decision 7), but is handled explicitly rather than assumed
+                                -- structurally impossible.
 ```
 
 Successful-but-needs-review outcomes (a draft **is** produced; these
@@ -2214,6 +2430,26 @@ Exact rules, locked:
   failure — the UI must show a clear "try again shortly" message
   distinct from `BLOCKED_BUDGET` or any hard-failure/needs-review
   outcome.
+
+**Implementation mechanism note — new this pass (final independent
+review, prompt-version resolution audit; not a product-decision
+change, this policy is unchanged from the fifth pass):** the locked
+"new logical extraction only; idempotent replay never consumes a
+new-start admission slot" semantics above are **application-aware**,
+not a property of raw HTTP traffic volume. A naive path-level request
+counter that increments on every `POST /api/setup-extractions` call
+regardless of whether it is a genuinely new `extractionRequestId` or a
+replay of an existing one does **not** by itself implement this
+contract — it would incorrectly throttle legitimate, cost-free
+replays. Whatever counting mechanism is chosen at implementation time
+must be able to distinguish the two before incrementing. Separately:
+the "per source IP" dimension must use a trusted source IP taken from
+the Netlify Function's own invocation context, never a caller-supplied
+forwarding header (e.g. a raw client-set `X-Forwarded-For`) taken at
+face value — an unauthenticated caller could otherwise trivially spoof
+a fresh IP per request and defeat the limit entirely. Both are
+implementation-mechanism guidance for a future implementer, not a new
+architectural decision this pass is making.
 
 **Maximum request size — corrected this pass (independent review):**
 bounded by `SMART_EXTRACTION_PDF_MAX_RAW_BYTES` (4 MiB, Decision 3)
@@ -2515,6 +2751,45 @@ the real network" discipline exactly):
       retained even before Apply/Convene; no private per-user
       ownership guarantee; do not submit sensitive data) — `SECURITY.md`
       §15.
+- **Versioned historical prompt resolution — new this pass (final
+  independent review, prompt-version resolution audit, Decisions
+  7/13/15/16/18)**:
+  1. A new logical extraction's request is built using the registry's
+     resolution of the **current** `PACKAGE_EXTRACTION_PROMPT_VERSION`
+     — a test asserting the resolved builder matches the current
+     version's registry entry.
+  2. A retry of an existing logical extraction, after a fixture
+     simulates `PACKAGE_EXTRACTION_PROMPT_VERSION` having since changed
+     from `v1` to `v2` at the deployment level, still resolves and uses
+     the **stored** `v1` builder from the registry — a test asserting
+     the exact `v1` prompt body/builder is invoked, not `v2`'s, and
+     that the outgoing request reflects `v1`'s content.
+  3. A companion assertion on the same fixture confirms the request is
+     **not** built from whatever the current/default registry lookup
+     would return absent an explicit stored-version argument — proving
+     the resolution path is version-parameterized, not
+     current-version-defaulted.
+  4. A successful lost-response replay (Decision 13/15) performs
+     **zero** prompt resolution and **zero** provider/model calls —
+     a test asserting the registry's resolution function is never
+     invoked on the replay code path at all.
+  5. A retry fixture whose stored `prompt_version` has no corresponding
+     registry entry (simulating a missing/unresolvable historical
+     version) fails with `PROMPT_VERSION_UNAVAILABLE` and makes
+     **zero** provider calls, **zero** new spend, and does not touch
+     the already-existing attempt #1 audit record.
+  6. A drift/snapshot test (or equivalent immutable-version contract)
+     that fails if `v1`'s registry module's exported prompt text ever
+     changes from its originally recorded snapshot — catching an
+     accidental in-place edit of a released version at the earliest
+     possible point (matching the discipline the repository's existing
+     `promptVersionDrift.test.ts` already applies to `advocate-v1`/
+     `judge-v1`).
+  7. A fixture confirming that adding a `v2` registry entry is
+     **additive**: existing tests asserting `v1`'s exact behavior/
+     resolution continue to pass unchanged after `v2` is introduced —
+     proving `v2`'s addition cannot silently alter `v1`'s resolved
+     content or behavior.
 - **Canonical output-bound computation — new this pass (final
   independent review, Decision 11)**: the exact maximum
   `safeExtractionText`-legal fixture, serialized via native compact
@@ -2627,9 +2902,10 @@ not unresolved design questions.
    timeout values — bounded by `NORMALIZED_DOSSIER_TEXT_MAX_CHARS`
    downstream regardless of the exact number chosen.
 3. Exact `EXTRACTION_FIXED_PROMPT_OVERHEAD_TOKENS` value — computed
-   from the real extraction system prompt's byte length once drafted
-   (formula locked in Decision 11; the prompt text does not exist
-   yet).
+   from `package-extraction-v1`'s real prompt byte length once drafted
+   in the registry (formula locked in Decision 11; the prompt text does
+   not exist yet — see Decision 7's versioned registry, corrected this
+   pass, for exactly where it will live).
 4. `pdfjs-dist`'s current exact version/security posture — verify at
    dependency-addition time, per `AGENTS.md`'s standing
    dependency-addition rule.
@@ -2668,9 +2944,34 @@ not unresolved design questions.
    limit) is deferred to implementation-time tuning, consistent with how
    this ADR already treats other exact-constant tuning details (e.g.
    item 2 above).
+8. **New this pass**: the exact drift/snapshot test tooling used to
+   catch an accidental in-place edit of a released prompt version
+   (Decision 22's new item 6) — the *requirement* that such a test
+   exists is locked now; whether it is a literal string-snapshot
+   assertion, a content hash comparison, or another mechanism achieving
+   the same guarantee is an implementation-time choice, mirroring how
+   `promptVersionDrift.test.ts` already polices `advocate-v1`/
+   `judge-v1` today.
 
-**Resolved this pass (fifth, final security/idempotency merge-readiness
-pass — previously undefined or incorrect, now fully locked):**
+**Resolved this pass (sixth, final prompt-version resolution
+correction pass — previously undefined, now fully locked):**
+
+- How an implementation resolves the *actual historical prompt text*
+  for a logical extraction's frozen `prompt_version` after a later
+  deployment introduces a new version — locked as a versioned,
+  immutable historical prompt registry (Decision 7), replacing the
+  previously planned single mutable prompt-builder file.
+- The missing `PROMPT_VERSION_UNAVAILABLE` fail-closed error category
+  (Decision 16) for a retry whose stored prompt version cannot be
+  resolved — zero provider calls, zero new spend, never conflated with
+  `MODEL_NOT_ELIGIBLE`.
+- The replay-vs-retry distinction for prompt resolution — replay needs
+  zero prompt resolution (Decision 15's persisted `validated_result`
+  suffices); only a billable retry requires resolving the historical
+  prompt body (Decision 7).
+
+**Resolved in the fifth pass (previously undefined or incorrect, now
+fully locked):**
 
 - The false "authenticated idempotent-replay path" claim in
   `SECURITY.md` — removed; V1's actual replay protection (fingerprint
@@ -2720,10 +3021,11 @@ current evidence):** the exact Netlify Function synchronous-execution
 see Decision 20.
 
 No unresolved billing, idempotency, security/authentication-framing,
-admission-control, or provider-attempt state-machine decision remains
-after this pass — every item still listed above is a narrow
-implementation-time tuning/verification detail (migration column
-shape, exact millisecond/request-count constants, dependency-version
-verification, live-metadata observation, or an optional future
-enhancement), never a gap in what a future implementation agent would
-need to invent a rule to fill.
+admission-control, prompt-version-resolution, or provider-attempt
+state-machine decision remains after this pass — every item still
+listed above is a narrow implementation-time tuning/verification
+detail (migration column shape, exact millisecond/request-count
+constants, dependency-version verification, live-metadata observation,
+test-tooling choice, or an optional future enhancement), never a gap in
+what a future implementation agent would need to invent a rule to
+fill.
