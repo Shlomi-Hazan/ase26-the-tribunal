@@ -52,15 +52,19 @@ export async function handleSetupExtractionsRequest(
   return jsonResponse(result.statusCode, result.body);
 }
 
-function buildRealDeps(event: HandlerEvent): ExtractionSourceDeps {
+function buildRealDeps(): ExtractionSourceDeps {
   const openRouterConfig = readOpenRouterServerConfig();
 
   return {
     provider: new RealOpenRouterProvider(openRouterConfig),
     createTimedProvider: (timeoutMs) => new RealOpenRouterProvider(openRouterConfig, undefined, timeoutMs),
+    createTimedMetadataProvider: (timeoutMs) =>
+      new RealOpenRouterProvider(openRouterConfig, undefined, timeoutMs),
     repository: createSupabaseExtractionRepository(),
     rateLimiter: sharedExtractionRateLimiter,
-    sourceIp: trustedSourceIp(event.headers as Record<string, string | undefined>),
+    // No args -- trustedSourceIp() resolves the trusted platform IP via
+    // getContext() itself (Section 5); never a caller-supplied header.
+    sourceIp: trustedSourceIp(),
     configuredModelId: readPackageExtractionServerConfig().PACKAGE_EXTRACTION_MODEL_ID,
     promptVersion: PACKAGE_EXTRACTION_PROMPT_VERSION,
     modelCache: sharedModelCache,
@@ -70,7 +74,7 @@ function buildRealDeps(event: HandlerEvent): ExtractionSourceDeps {
 
 export const handler: Handler = async (event) => {
   try {
-    return await handleSetupExtractionsRequest(event, buildRealDeps(event));
+    return await handleSetupExtractionsRequest(event, buildRealDeps());
   } catch {
     return jsonResponse(500, {
       status: "blocked",

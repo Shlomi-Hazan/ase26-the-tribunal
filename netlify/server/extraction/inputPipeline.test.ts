@@ -6,6 +6,7 @@ import path from "node:path";
 import os from "node:os";
 import { describe, expect, it } from "vitest";
 import { ExtractionError } from "./errors";
+import { HandlerDeadline } from "./deadline";
 import {
   NORMALIZED_DOSSIER_TEXT_MAX_CHARS,
   SMART_EXTRACTION_PDF_MAX_RAW_BYTES,
@@ -17,8 +18,22 @@ import {
   sanitizeDossierFilename
 } from "./inputPipeline";
 
-function noopDeadline() {
-  // no-op -- most tests never approach the deadline.
+// A deadline that is always ample -- most tests never approach it.
+function freshDeadline(): HandlerDeadline {
+  return new HandlerDeadline(() => 0);
+}
+
+// A deadline that is already exhausted at construction -- every
+// assertMinimumWindow() call throws immediately.
+function exhaustedDeadline(): HandlerDeadline {
+  let calls = 0;
+  const clock = () => {
+    calls += 1;
+
+    return calls === 1 ? 0 : 999_999_999;
+  };
+
+  return new HandlerDeadline(clock);
 }
 
 function toBase64(text: string): string {
@@ -123,7 +138,7 @@ describe("resolveNormalizedDossier -- pasted text", () => {
   it("accepts valid pasted text", async () => {
     const result = await resolveNormalizedDossier(
       { kind: "text", text: "Hello dossier." },
-      noopDeadline
+      freshDeadline()
     );
 
     expect(result.normalizedText).toBe("Hello dossier.");
@@ -133,7 +148,7 @@ describe("resolveNormalizedDossier -- pasted text", () => {
 
   it("rejects empty pasted text", async () => {
     await expect(
-      resolveNormalizedDossier({ kind: "text", text: "   " }, noopDeadline)
+      resolveNormalizedDossier({ kind: "text", text: "   " }, freshDeadline())
     ).rejects.toMatchObject({ code: "NORMALIZED_TEXT_EMPTY" });
   });
 
@@ -141,7 +156,7 @@ describe("resolveNormalizedDossier -- pasted text", () => {
     const oversized = "a".repeat(SMART_EXTRACTION_TEXT_MAX_RAW_BYTES + 1);
 
     await expect(
-      resolveNormalizedDossier({ kind: "text", text: oversized }, noopDeadline)
+      resolveNormalizedDossier({ kind: "text", text: oversized }, freshDeadline())
     ).rejects.toMatchObject({ code: "FILE_TOO_LARGE" });
   });
 
@@ -149,7 +164,7 @@ describe("resolveNormalizedDossier -- pasted text", () => {
     const oversized = "a".repeat(NORMALIZED_DOSSIER_TEXT_MAX_CHARS + 1);
 
     await expect(
-      resolveNormalizedDossier({ kind: "text", text: oversized }, noopDeadline)
+      resolveNormalizedDossier({ kind: "text", text: oversized }, freshDeadline())
     ).rejects.toMatchObject({ code: "INPUT_TOO_LARGE_FOR_MODEL" });
   });
 });
@@ -158,7 +173,7 @@ describe("resolveNormalizedDossier -- .txt/.md files", () => {
   it("accepts a valid .txt file", async () => {
     const result = await resolveNormalizedDossier(
       { kind: "file", filename: "dossier.txt", contentBase64: toBase64("Case facts.") },
-      noopDeadline
+      freshDeadline()
     );
 
     expect(result.normalizedText).toBe("Case facts.");
@@ -169,7 +184,7 @@ describe("resolveNormalizedDossier -- .txt/.md files", () => {
   it("accepts a valid .md file", async () => {
     const result = await resolveNormalizedDossier(
       { kind: "file", filename: "dossier.md", contentBase64: toBase64("# Case") },
-      noopDeadline
+      freshDeadline()
     );
 
     expect(result.sourceFilename).toBe("dossier.md");
@@ -181,7 +196,7 @@ describe("resolveNormalizedDossier -- .txt/.md files", () => {
     await expect(
       resolveNormalizedDossier(
         { kind: "file", filename: "dossier.txt", contentBase64: invalidUtf8 },
-        noopDeadline
+        freshDeadline()
       )
     ).rejects.toMatchObject({ code: "INPUT_INVALID" });
   });
@@ -190,7 +205,7 @@ describe("resolveNormalizedDossier -- .txt/.md files", () => {
     await expect(
       resolveNormalizedDossier(
         { kind: "file", filename: "dossier.txt", contentBase64: "" },
-        noopDeadline
+        freshDeadline()
       )
     ).rejects.toMatchObject({ code: "INPUT_INVALID" });
   });
@@ -201,7 +216,7 @@ describe("resolveNormalizedDossier -- .txt/.md files", () => {
     await expect(
       resolveNormalizedDossier(
         { kind: "file", filename: "dossier.txt", contentBase64: oversized },
-        noopDeadline
+        freshDeadline()
       )
     ).rejects.toMatchObject({ code: "FILE_TOO_LARGE" });
   });
@@ -210,9 +225,76 @@ describe("resolveNormalizedDossier -- .txt/.md files", () => {
     await expect(
       resolveNormalizedDossier(
         { kind: "file", filename: "dossier.docx", contentBase64: toBase64("x") },
-        noopDeadline
+        freshDeadline()
       )
     ).rejects.toMatchObject({ code: "UNSUPPORTED_FILE_TYPE" });
+  });
+});
+
+describe("decodeBase64 strict validation (Section 17, independent pre-live audit)", () => {
+  it("rejects Base64 containing an illegal character", async () => {
+    await expect(
+      resolveNormalizedDossier(
+        { kind: "file", filename: "dossier.txt", contentBase64: "not!valid$base64===" },
+        freshDeadline()
+      )
+    ).rejects.toMatchObject({ code: "INPUT_INVALID" });
+  });
+
+  it("rejects Base64 with a length not a multiple of 4", async () => {
+    await expect(
+      resolveNormalizedDossier(
+        { kind: "file", filename: "dossier.txt", contentBase64: "abcde" },
+        freshDeadline()
+      )
+    ).rejects.toMatchObject({ code: "INPUT_INVALID" });
+  });
+
+  it("rejects Base64 with padding in the wrong position", async () => {
+    await expect(
+      resolveNormalizedDossier(
+        { kind: "file", filename: "dossier.txt", contentBase64: "ab=c" },
+        freshDeadline()
+      )
+    ).rejects.toMatchObject({ code: "INPUT_INVALID" });
+  });
+
+  it("rejects Base64 with more than two trailing padding characters", async () => {
+    await expect(
+      resolveNormalizedDossier(
+        { kind: "file", filename: "dossier.txt", contentBase64: "ab===" },
+        freshDeadline()
+      )
+    ).rejects.toMatchObject({ code: "INPUT_INVALID" });
+  });
+
+  it("accepts well-formed Base64 with 0, 1, and 2 padding characters", async () => {
+    // "abcd" (0 padding), "abcw" repeated as needed; construct each
+    // padding variant directly from a real UTF-8 payload.
+    const zeroPad = toBase64("abcd"); // 4 chars -> "YWJjZA==" actually has padding; use a length that avoids it
+    const onePad = toBase64("abc"); // -> ends with a single '='
+    const twoPad = toBase64("ab"); // -> ends with '=='
+
+    await expect(
+      resolveNormalizedDossier(
+        { kind: "file", filename: "dossier.txt", contentBase64: zeroPad },
+        freshDeadline()
+      )
+    ).resolves.toMatchObject({ normalizedText: "abcd" });
+
+    await expect(
+      resolveNormalizedDossier(
+        { kind: "file", filename: "dossier.txt", contentBase64: onePad },
+        freshDeadline()
+      )
+    ).resolves.toMatchObject({ normalizedText: "abc" });
+
+    await expect(
+      resolveNormalizedDossier(
+        { kind: "file", filename: "dossier.txt", contentBase64: twoPad },
+        freshDeadline()
+      )
+    ).resolves.toMatchObject({ normalizedText: "ab" });
   });
 });
 
@@ -220,7 +302,7 @@ describe("resolveNormalizedDossier -- .pdf files (real pdfjs-dist text-layer ext
   it("extracts text from a valid single-page PDF", async () => {
     const result = await resolveNormalizedDossier(
       { kind: "file", filename: "dossier.pdf", contentBase64: pdfBase64("Hello World") },
-      noopDeadline
+      freshDeadline()
     );
 
     expect(result.normalizedText).toContain("Hello World");
@@ -233,7 +315,7 @@ describe("resolveNormalizedDossier -- .pdf files (real pdfjs-dist text-layer ext
     await expect(
       resolveNormalizedDossier(
         { kind: "file", filename: "dossier.pdf", contentBase64: invalid },
-        noopDeadline
+        freshDeadline()
       )
     ).rejects.toMatchObject({ code: "PDF_ENCRYPTED_OR_INVALID" });
   });
@@ -248,26 +330,40 @@ describe("resolveNormalizedDossier -- .pdf files (real pdfjs-dist text-layer ext
     await expect(
       resolveNormalizedDossier(
         { kind: "file", filename: "dossier.pdf", contentBase64: oversizedBase64 },
-        noopDeadline
+        freshDeadline()
       )
     ).rejects.toMatchObject({ code: "FILE_TOO_LARGE" });
   });
 
   it("checks the deadline before starting PDF page extraction", async () => {
-    let deadlineCalls = 0;
-    const throwingDeadline = () => {
-      deadlineCalls += 1;
-      throw new ExtractionError("INPUT_PROCESSING_TIMEOUT", "deadline exhausted");
+    await expect(
+      resolveNormalizedDossier(
+        { kind: "file", filename: "dossier.pdf", contentBase64: pdfBase64("Hello World") },
+        exhaustedDeadline()
+      )
+    ).rejects.toMatchObject({ code: "INPUT_PROCESSING_TIMEOUT" });
+  });
+
+  it("bounds the PDF document-load await itself against the deadline (not only the between-pages check)", async () => {
+    // A deadline that reports ample time on the FIRST call
+    // (resolveNormalizedDossier's own entry check) but is already
+    // exhausted by the time withPdfDeadline checks it immediately before
+    // racing loadingTask.promise -- proving that specific await is
+    // itself deadline-bounded, not merely the checks between pages.
+    let calls = 0;
+    const clock = () => {
+      calls += 1;
+
+      return calls <= 1 ? 0 : 999_999_999;
     };
+    const deadline = new HandlerDeadline(clock);
 
     await expect(
       resolveNormalizedDossier(
         { kind: "file", filename: "dossier.pdf", contentBase64: pdfBase64("Hello World") },
-        throwingDeadline
+        deadline
       )
     ).rejects.toMatchObject({ code: "INPUT_PROCESSING_TIMEOUT" });
-
-    expect(deadlineCalls).toBeGreaterThan(0);
   });
 
   it("rejects an image-only/no-text-layer PDF as PDF_TEXT_UNAVAILABLE, never OCR", async () => {
@@ -276,7 +372,7 @@ describe("resolveNormalizedDossier -- .pdf files (real pdfjs-dist text-layer ext
     await expect(
       resolveNormalizedDossier(
         { kind: "file", filename: "dossier.pdf", contentBase64: imageOnlyBase64 },
-        noopDeadline
+        freshDeadline()
       )
     ).rejects.toMatchObject({ code: "PDF_TEXT_UNAVAILABLE" });
   });
@@ -289,7 +385,7 @@ describe("resolveNormalizedDossier -- .pdf files (real pdfjs-dist text-layer ext
 
     const result = await resolveNormalizedDossier(
       { kind: "file", filename: "dossier.pdf", contentBase64: roundTripBase64 },
-      noopDeadline
+      freshDeadline()
     );
 
     expect(result.normalizedText).toContain("Temp Fixture Text");

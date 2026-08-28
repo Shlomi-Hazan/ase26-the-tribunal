@@ -9,6 +9,7 @@ import { PACKAGE_EXTRACTION_PROMPT_VERSION } from "../../src/prompts/versions";
 import { sharedEndpointCache, sharedModelCache } from "../server/openrouter/sharedMetadataCache";
 import { sharedExtractionRateLimiter, trustedSourceIp } from "../server/extraction/rateLimit";
 import { runExtractionPreflight, type ExtractionSourceDeps } from "../server/extraction/service";
+import type { ExtractionRepository } from "../server/extraction/repository";
 
 function jsonResponse(statusCode: number, body: unknown) {
   return {
@@ -42,34 +43,46 @@ export async function handleSetupExtractionsPreflightRequest(
 
 export const handler: Handler = async (event) => {
   try {
-    const deps: ExtractionSourceDeps = {
-      provider: new RealOpenRouterProvider(readOpenRouterServerConfig()),
-      repository: {
-        // Preflight never persists -- these methods are structurally
-        // unreachable from runExtractionPreflight, but ExtractionSourceDeps
-        // requires a repository field. A repository that throws if ever
-        // invoked is a stronger guarantee than a working one here.
-        getExtraction() {
-          throw new Error("Preflight must never touch persistence.");
-        },
-        getAttempt() {
-          throw new Error("Preflight must never touch persistence.");
-        },
-        claimAttemptOne() {
-          throw new Error("Preflight must never touch persistence.");
-        },
-        claimAttemptTwo() {
-          throw new Error("Preflight must never touch persistence.");
-        },
-        terminalize() {
-          throw new Error("Preflight must never touch persistence.");
-        },
-        block() {
-          throw new Error("Preflight must never touch persistence.");
-        }
+    const openRouterConfig = readOpenRouterServerConfig();
+    const throwingRepository: ExtractionRepository = {
+      // Preflight never persists -- these methods are structurally
+      // unreachable from runExtractionPreflight, but ExtractionSourceDeps
+      // requires a repository field. A repository that throws if ever
+      // invoked is a stronger guarantee than a working one here.
+      getExtraction() {
+        throw new Error("Preflight must never touch persistence.");
       },
+      getAttempt() {
+        throw new Error("Preflight must never touch persistence.");
+      },
+      claimAttemptOne() {
+        throw new Error("Preflight must never touch persistence.");
+      },
+      claimAttemptTwo() {
+        throw new Error("Preflight must never touch persistence.");
+      },
+      terminalize() {
+        throw new Error("Preflight must never touch persistence.");
+      },
+      block() {
+        throw new Error("Preflight must never touch persistence.");
+      },
+      reconcileAttempts() {
+        throw new Error("Preflight must never touch persistence.");
+      },
+      checkAndRecordAdmission() {
+        throw new Error("Preflight must never touch persistence.");
+      }
+    };
+    const deps: ExtractionSourceDeps = {
+      provider: new RealOpenRouterProvider(openRouterConfig),
+      createTimedMetadataProvider: (timeoutMs) =>
+        new RealOpenRouterProvider(openRouterConfig, undefined, timeoutMs),
+      repository: throwingRepository,
       rateLimiter: sharedExtractionRateLimiter,
-      sourceIp: trustedSourceIp(event.headers as Record<string, string | undefined>),
+      // No args -- trustedSourceIp() resolves the trusted platform IP via
+      // getContext() itself (Section 5); never a caller-supplied header.
+      sourceIp: trustedSourceIp(),
       configuredModelId: readPackageExtractionServerConfig().PACKAGE_EXTRACTION_MODEL_ID,
       promptVersion: PACKAGE_EXTRACTION_PROMPT_VERSION,
       modelCache: sharedModelCache,

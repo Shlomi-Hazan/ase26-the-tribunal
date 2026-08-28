@@ -16,7 +16,6 @@ import { z } from "zod";
 import type { PreflightReasonCode } from "../openrouter/errors";
 import { normalizeHttpFailure, ProviderError } from "../openrouter/errors";
 import type { OpenRouterProvider } from "../openrouter/provider";
-import { toDecimalString } from "../openrouter/pricing";
 import type { ModelMetadataCache, Clock } from "../openrouter/cache";
 import type { RawOpenRouterEndpoint, RawOpenRouterModel } from "../openrouter/schemas";
 import { buildFutureCompletionRequest } from "../openrouter/executionRequest";
@@ -51,7 +50,11 @@ import {
   EXTRACTION_PREFLIGHT_RATE_LIMIT,
   EXTRACTION_RETRY_RATE_LIMIT
 } from "./constants";
-import { SlidingWindowRateLimiter, sharedExtractionRateLimiter } from "./rateLimit";
+import {
+  hashedAdmissionBucket,
+  SlidingWindowRateLimiter,
+  sharedExtractionRateLimiter
+} from "./rateLimit";
 
 export type ExtractionSourceDeps = {
   provider: OpenRouterProvider;
@@ -62,6 +65,11 @@ export type ExtractionSourceDeps = {
   // RealOpenRouterProvider's internals. Defaults to `provider` itself when
   // omitted (every test's fake provider ignores timeoutMs entirely).
   createTimedProvider?: (timeoutMs: number) => OpenRouterProvider;
+  // New this pass (independent pre-live audit, Section 6): same idea as
+  // createTimedProvider above, but for the metadata (listModels/
+  // listEndpoints) path -- constructs a provider bounded to the freshly
+  // recomputed remaining handler time for each individual metadata call.
+  createTimedMetadataProvider?: (timeoutMs: number) => OpenRouterProvider;
   repository: ExtractionRepository;
   rateLimiter?: SlidingWindowRateLimiter;
   sourceIp: string;
@@ -223,21 +231,29 @@ export async function runExtractionPreflight(
   let normalized;
 
   try {
-    normalized = await resolveNormalizedDossier(source, () => deadline.assertMinimumWindow());
+    normalized = await resolveNormalizedDossier(source, deadline);
   } catch (error) {
     return toErrorResponse(error);
   }
 
-  const eligibility = await evaluateExtractionEligibility(
-    deps.configuredModelId,
-    normalized.normalizedText,
-    {
-      provider: deps.provider,
-      modelCache: deps.modelCache,
-      endpointCache: deps.endpointCache,
-      clock: deps.metadataClock
-    }
-  );
+  let eligibility;
+
+  try {
+    eligibility = await evaluateExtractionEligibility(
+      deps.configuredModelId,
+      normalized.normalizedText,
+      {
+        provider: deps.provider,
+        deadline,
+        createTimedMetadataProvider: deps.createTimedMetadataProvider,
+        modelCache: deps.modelCache,
+        endpointCache: deps.endpointCache,
+        clock: deps.metadataClock
+      }
+    );
+  } catch (error) {
+    return toErrorResponse(error);
+  }
 
   return { statusCode: 200, body: toPreflightBody(eligibility) };
 }
@@ -248,7 +264,12 @@ function toPreflightBody(eligibility: ExtractionPreflightResult) {
     configuredModelId: eligibility.configuredModelId,
     canonicalModelId: eligibility.canonicalModelId,
     providerEndpointTag: eligibility.providerEndpointTag,
-    conservativeMaxCostUsd: eligibility.conservativeMaxCostUsd,
+    // Corrected this pass (Section 2/14): the quote/UI displays the
+    // LOGICAL (both-attempts) figure as the headline estimate -- what
+    // the user is actually agreeing to spend up to -- with the
+    // per-attempt figure also exposed for the secondary audit detail.
+    logicalConservativeMaxCostUsd: eligibility.logicalConservativeMaxCostUsd,
+    perAttemptConservativeMaxCostUsd: eligibility.perAttemptConservativeMaxCostUsd,
     hardCeilingUsd: eligibility.hardCeilingUsd,
     blockedReasonCodes: eligibility.eligible
       ? []
@@ -294,47 +315,50 @@ export async function submitInitialExtraction(
     return replayExisting(extractionId, rawSource, existingExtraction.requestFingerprint, deps);
   }
 
-  // Step 1: admission control -- new-start rate limit.
-  const limiter = deps.rateLimiter ?? sharedExtractionRateLimiter;
-  const admitted = limiter.checkAndRecord(
-    "extraction-start",
-    deps.sourceIp,
-    EXTRACTION_NEW_START_RATE_LIMIT
+  // Step 1: admission control -- new-start rate limit. Corrected this
+  // pass (independent pre-live audit, Section 4): the AUTHORITATIVE
+  // check is the Supabase-backed admission RPC (race-safe across
+  // Netlify's ephemeral, horizontally-scaled runtimes) -- a
+  // single-process in-memory limiter cannot enforce this exact
+  // production target. The bucket is a hashed, privacy-conscious
+  // representation of the trusted source IP (never a raw client-
+  // supplied forwarding header, Section 5).
+  const admissionBucket = hashedAdmissionBucket("extraction-start", deps.sourceIp);
+  const admitted = await deps.repository.checkAndRecordAdmission(
+    admissionBucket,
+    EXTRACTION_NEW_START_RATE_LIMIT.windowMs / 1000,
+    EXTRACTION_NEW_START_RATE_LIMIT.maxAcceptedRequests
   );
 
-  if (!admitted.allowed) {
+  if (!admitted) {
     return blockedResponse(429, "RATE_LIMITED", "Too many new extractions started. Try again shortly.");
   }
 
   const source = validateDossierSource(rawSource);
   const deadline = new HandlerDeadline(deps.deadlineClock);
 
-  // Step 2: deterministic input processing.
+  // Step 2: deterministic input processing. Corrected this pass
+  // (independent pre-live audit, Section 12): a failure here occurs
+  // BEFORE any real dossier content was ever successfully normalized --
+  // there is no genuine semantic identity to persist yet, and the prior
+  // revision's fingerprint over an empty string was a fabricated
+  // placeholder, not this request's actual (unknowable) content.
+  // Preferred design: return the input error directly, with zero
+  // logical-extraction persistence -- these failures are deterministic
+  // functions of the input alone, so idempotency tracking adds nothing
+  // real to protect.
   let normalized;
 
   try {
-    normalized = await resolveNormalizedDossier(source, () => deadline.assertMinimumWindow());
+    normalized = await resolveNormalizedDossier(source, deadline);
   } catch (error) {
-    if (error instanceof ExtractionError) {
-      await safeBlock(deps, {
-        extractionId,
-        sourceType: "PASTED_TEXT",
-        requestFingerprint: computeExtractionFingerprint({
-          normalizedDossierText: "",
-          promptVersion: deps.promptVersion,
-          configuredModelId: deps.configuredModelId
-        }),
-        promptVersion: deps.promptVersion,
-        configuredModelId: deps.configuredModelId,
-        status: error.code
-      });
-    }
-
     return toErrorResponse(error);
   }
 
   // Step 3: resolve/freeze semantic config (this IS a new id -- current
-  // application config is what freezes).
+  // application config is what freezes). A real fingerprint now exists,
+  // so every guard failure from this point on IS persisted as a
+  // pre-claim block (Decision 13) under this genuine fingerprint.
   const sourceType = deriveSourceType(normalized.sourceKind, normalized.sourceFilename);
   const requestFingerprint = computeExtractionFingerprint({
     normalizedDossierText: normalized.normalizedText,
@@ -342,19 +366,66 @@ export async function submitInitialExtraction(
     configuredModelId: deps.configuredModelId
   });
 
+  // Step 4: current prompt version must resolve BEFORE any claim
+  // (independent pre-live audit, Section 13) -- fail closed here rather
+  // than claiming attempt #1 and only discovering the historical
+  // registry can't resolve the CURRENT version after spend-adjacent
+  // state already exists. Retry already resolves its own STORED version
+  // before claim; this mirrors that same discipline for a new id's
+  // CURRENT version.
+  if (!getPackageExtractionPrompt(deps.promptVersion)) {
+    await safeBlock(deps, {
+      extractionId,
+      sourceType,
+      requestFingerprint,
+      promptVersion: deps.promptVersion,
+      configuredModelId: deps.configuredModelId,
+      status: "PROMPT_VERSION_UNAVAILABLE"
+    });
+
+    return blockedResponse(
+      400,
+      "PROMPT_VERSION_UNAVAILABLE",
+      "The current extraction prompt version could not be resolved."
+    );
+  }
+
   // Step 5 (authoritative guard) evaluated before the deadline recheck
   // per the locked step order -- pre-claim deadline is checked
-  // immediately below it, both still strictly before any claim.
-  const eligibility = await evaluateExtractionEligibility(
-    deps.configuredModelId,
-    normalized.normalizedText,
-    {
-      provider: deps.provider,
-      modelCache: deps.modelCache,
-      endpointCache: deps.endpointCache,
-      clock: deps.metadataClock
-    }
-  );
+  // immediately below it, both still strictly before any claim. Passes
+  // `deadline` through so metadata fetches are bounded by the SAME
+  // handler-wide deadline (Section 6) -- a metadata-path
+  // INPUT_PROCESSING_TIMEOUT propagates as its own ExtractionError,
+  // caught and persisted like any other pre-claim block below.
+  let eligibility;
+
+  try {
+    eligibility = await evaluateExtractionEligibility(
+      deps.configuredModelId,
+      normalized.normalizedText,
+      {
+        provider: deps.provider,
+        deadline,
+        createTimedMetadataProvider: deps.createTimedMetadataProvider,
+        modelCache: deps.modelCache,
+        endpointCache: deps.endpointCache,
+        clock: deps.metadataClock
+      }
+    );
+  } catch (error) {
+    const code = error instanceof ExtractionError ? error.code : "PRICING_UNAVAILABLE";
+
+    await safeBlock(deps, {
+      extractionId,
+      sourceType,
+      requestFingerprint,
+      promptVersion: deps.promptVersion,
+      configuredModelId: deps.configuredModelId,
+      status: code
+    });
+
+    return toErrorResponse(error);
+  }
 
   if (!eligibility.eligible || !eligibility.route) {
     const failureCode = mapReasonCodesToExtractionFailure(eligibility.blockedReasonCodes);
@@ -404,7 +475,7 @@ export async function submitInitialExtraction(
       configuredModelId: deps.configuredModelId,
       canonicalModelId: eligibility.route.canonicalModelId,
       providerEndpointTag: eligibility.route.providerEndpointTag,
-      conservativeMaxCostUsd: eligibility.conservativeMaxCostUsd
+      perAttemptConservativeMaxCostUsd: eligibility.perAttemptConservativeMaxCostUsd
     });
   } catch (error) {
     if (error instanceof ExtractionIdempotencyConflictError) {
@@ -464,7 +535,7 @@ async function replayExisting(
   let normalized;
 
   try {
-    normalized = await resolveNormalizedDossier(source, () => deadline.assertMinimumWindow());
+    normalized = await resolveNormalizedDossier(source, deadline);
   } catch {
     // Even a re-normalization failure on replay must still be evaluated
     // as a fingerprint check first (a mismatched dossier is a conflict,
@@ -502,6 +573,14 @@ async function loadAttemptOutcome(
   extractionId: string,
   deps: ExtractionSourceDeps
 ): Promise<ApiResult> {
+  // Corrected this pass (independent pre-live audit, Section 9):
+  // opportunistic stale-claim reconciliation now also runs on this
+  // plain read/replay path, not only inside the two claim RPCs -- a
+  // replay of a CLAIMED attempt at/beyond the 120s stale threshold
+  // (no retry ever attempted) previously returned "in_progress"
+  // forever instead of surfacing UNKNOWN_OUTCOME.
+  await deps.repository.reconcileAttempts(extractionId);
+
   // Attempt #2's result, if it exists at all, is always the logical
   // extraction's effective one (ADR Decision 13) -- checked first.
   const attemptTwo = await deps.repository.getAttempt(extractionId, 2);
@@ -806,7 +885,7 @@ export async function submitExtractionRetry(
   let normalized;
 
   try {
-    normalized = await resolveNormalizedDossier(source, () => deadline.assertMinimumWindow());
+    normalized = await resolveNormalizedDossier(source, deadline);
   } catch (error) {
     return toErrorResponse(error);
   }
@@ -857,17 +936,26 @@ export async function submitExtractionRetry(
   }
 
   // Re-check eligibility for the SAME stored model -- never the current
-  // deployment default.
-  const eligibility = await evaluateExtractionEligibility(
-    extraction.configuredModelId,
-    normalized.normalizedText,
-    {
-      provider: deps.provider,
-      modelCache: deps.modelCache,
-      endpointCache: deps.endpointCache,
-      clock: deps.metadataClock
-    }
-  );
+  // deployment default. `deadline` passed through so metadata fetches
+  // are bounded by the same handler-wide deadline (Section 6).
+  let eligibility;
+
+  try {
+    eligibility = await evaluateExtractionEligibility(
+      extraction.configuredModelId,
+      normalized.normalizedText,
+      {
+        provider: deps.provider,
+        deadline,
+        createTimedMetadataProvider: deps.createTimedMetadataProvider,
+        modelCache: deps.modelCache,
+        endpointCache: deps.endpointCache,
+        clock: deps.metadataClock
+      }
+    );
+  } catch (error) {
+    return toErrorResponse(error);
+  }
 
   if (!eligibility.eligible || !eligibility.route) {
     const failureCode = mapReasonCodesToExtractionFailure(eligibility.blockedReasonCodes);
@@ -880,7 +968,12 @@ export async function submitExtractionRetry(
   }
 
   // Retry-budget guard: attempt #1's real (or conservative) spend + a
-  // fresh attempt #2 conservative maximum.
+  // fresh PER-ATTEMPT conservative maximum for attempt #2 (Section 2 --
+  // never a logical/both-attempts figure here). This TypeScript check is
+  // a fast client-visible pre-check only -- the atomic claim RPC below
+  // re-verifies the SAME formula server-authoritatively before ever
+  // inserting attempt #2 (Section 3), so this check being skipped or
+  // wrong can never itself authorize an over-budget claim.
   const attemptOne = await deps.repository.getAttempt(extractionId, 1);
 
   if (!attemptOne) {
@@ -889,8 +982,10 @@ export async function submitExtractionRetry(
 
   const budget = evaluateRetryBudget({
     attemptOneActualCostUsd: attemptOne.actualCostUsd,
-    attemptOneConservativeMaxCostUsd: attemptOne.conservativeMaxCostUsd,
-    attemptTwoConservativeMaxCostUsd: new Decimal(eligibility.conservativeMaxCostUsd).div(2)
+    attemptOnePerAttemptConservativeMaxCostUsd: attemptOne.conservativeMaxCostUsd,
+    attemptTwoPerAttemptConservativeMaxCostUsd: new Decimal(
+      eligibility.perAttemptConservativeMaxCostUsd
+    )
   });
 
   if (!budget.allowed) {
@@ -911,7 +1006,8 @@ export async function submitExtractionRetry(
       requestFingerprint: extraction.requestFingerprint,
       canonicalModelId: eligibility.route.canonicalModelId,
       providerEndpointTag: eligibility.route.providerEndpointTag,
-      conservativeMaxCostUsd: toDecimalString(new Decimal(eligibility.conservativeMaxCostUsd).div(2))
+      perAttemptConservativeMaxCostUsd: eligibility.perAttemptConservativeMaxCostUsd,
+      hardCeilingUsd: eligibility.hardCeilingUsd
     });
   } catch (error) {
     if (error instanceof ExtractionIdempotencyConflictError) {
@@ -932,6 +1028,16 @@ export async function submitExtractionRetry(
 
     if (claim.blockReason === "ATTEMPT_ONE_NOT_RETRYABLE") {
       return blockedResponse(400, "IDEMPOTENCY_CONFLICT", "Attempt #1 is not retryable.");
+    }
+
+    // The atomic claim RPC's own authoritative retry-budget guard
+    // (Section 3) rejected this claim -- reachable even when the
+    // TypeScript pre-check above passed (e.g. a concurrent attempt #1
+    // finalization changed its actual_cost_usd in the race window
+    // between this request's own pre-check and its claim attempt).
+    // Zero attempt #2 row was ever created.
+    if (claim.blockReason === "BLOCKED_BUDGET") {
+      return blockedResponse(400, "BLOCKED_BUDGET", "Retrying would exceed the extraction budget ceiling.");
     }
 
     return loadAttemptOutcome(extractionId, deps);

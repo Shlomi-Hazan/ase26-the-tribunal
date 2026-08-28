@@ -1,14 +1,31 @@
-// Milestone 7A -- application-aware admission-control rate limiter (ADR
-// 0004 Decision 19, SECURITY.md Sec 10). A single-process in-memory
-// bound, mirroring M7's ModelMetadataCache in spirit (no Redis, no DB
-// table, no queue) -- appropriate for a V1 single-tenant demo app.
+// Milestone 7A -- admission-control rate limiting (ADR 0004 Decision 19,
+// SECURITY.md Sec 10).
 //
-// Deliberately NOT a naive path-level HTTP request counter (implementation
-// note, ADR Decision 19 sixth pass): the caller decides WHETHER a given
-// request counts as an admission at all (e.g. the initial endpoint only
-// calls `recordAndCheck` for a genuinely NEW extractionRequestId, never
-// for an idempotent replay of an existing one) -- this module only
-// implements the sliding-window counting/eviction mechanism itself.
+// Corrected this pass (independent pre-live audit, Section 4):
+// `SlidingWindowRateLimiter` below is a single-process IN-MEMORY bound.
+// Netlify Functions execute in ephemeral, horizontally-scaled runtimes
+// (per Netlify's own Functions documentation) -- a per-process Map
+// cannot enforce the locked "3 accepted NEW logical-extraction starts
+// per 180 seconds per source IP" target across concurrent/successive
+// invocations that may land on different underlying instances. This
+// class therefore remains valid ONLY as an OPTIONAL best-effort/local
+// coarse layer (e.g. for the looser, non-exact retry/preflight
+// operational limits, Section 4's own allowance) -- it MUST NOT be
+// treated as the authoritative implementation of the new-start policy.
+// The authoritative, cross-process mechanism is
+// ExtractionRepository#checkAndRecordAdmission (repository.ts), backed
+// by a Supabase RPC using a transaction-scoped advisory lock (no
+// Redis) -- see service.ts's submitInitialExtraction.
+//
+// Deliberately NOT a naive path-level HTTP request counter (regardless
+// of which layer is used): the caller decides WHETHER a given request
+// counts as an admission at all (e.g. the initial endpoint only records
+// an admission for a genuinely NEW extractionRequestId, never for an
+// idempotent replay of an existing one) -- this module only implements
+// the sliding-window counting/eviction mechanism itself.
+
+import { createHash } from "node:crypto";
+import { getContext } from "@netlify/functions";
 
 export type RateLimitConfig = {
   maxAcceptedRequests: number;
@@ -85,26 +102,56 @@ export class SlidingWindowRateLimiter {
 export const sharedExtractionRateLimiter = new SlidingWindowRateLimiter();
 
 // ---------------------------------------------------------------------
-// Trusted source IP (implementation note, ADR Decision 19 sixth pass):
-// derived from the Netlify Function invocation context, never a raw
-// caller-supplied header taken at face value -- an unauthenticated caller
-// could otherwise spoof a fresh IP per request via a forwarding header
-// and defeat the limit entirely. Netlify's HandlerEvent structurally
-// carries a platform-populated `headers["x-nf-client-connection-ip"]`
-// (set by the edge/CDN layer itself, not forwarded verbatim from the
-// client) -- this is the one field trusted here. If it is ever absent
-// (e.g. a non-Netlify local dev invocation), the caller falls back to a
-// fixed shared bucket key rather than trusting any client-supplied
-// header, which is intentionally conservative (stricter, not laxer) --
-// a missing trusted IP means every untrusted caller shares one bucket.
+// Trusted source IP -- corrected this pass (independent pre-live audit,
+// Section 5). The prior revision trusted
+// `headers["x-nf-client-connection-ip"]`, a claim review could not
+// verify against current official Netlify documentation. The
+// `@netlify/functions` package (the one this repository already
+// depends on) exports `getContext()`, documented to return the current
+// invocation's platform `Context` object -- which includes `ip: string`
+// -- callable from a legacy-format Handler function without changing
+// its signature (the "smallest compatible change" the correction task
+// required). `getContext()` is the value trusted here; a raw
+// caller-supplied forwarding header (e.g. `X-Forwarded-For`) is never
+// read or trusted anywhere in this module.
+//
+// `getContext()` throws (or `Context.ip` may be empty) outside a real
+// Netlify Function invocation -- e.g. local unit tests, or a genuinely
+// missing platform value -- in which case this falls back to a fixed
+// shared bucket key rather than trusting any client-supplied
+// alternative, intentionally conservative (stricter, not laxer): a
+// missing trusted IP means every untrusted caller shares one bucket.
+// `overrideIp` exists purely so tests can inject a deterministic value
+// without a real Netlify runtime context -- production call sites never
+// pass it.
 // ---------------------------------------------------------------------
 
-export function trustedSourceIp(headers: Record<string, string | undefined>): string {
-  const trusted = headers["x-nf-client-connection-ip"];
+export function trustedSourceIp(overrideIp?: string | null): string {
+  if (overrideIp !== undefined) {
+    return overrideIp && overrideIp.trim().length > 0 ? overrideIp.trim() : "unknown-source";
+  }
 
-  if (trusted && trusted.trim().length > 0) {
-    return trusted.trim();
+  try {
+    // getContext() throws outside a real Netlify Function invocation
+    // (e.g. this module's own unit tests, or a local non-Netlify dev
+    // server) -- caught below, conservative fallback.
+    const context = getContext();
+
+    if (context.ip && context.ip.trim().length > 0) {
+      return context.ip.trim();
+    }
+  } catch {
+    // Not running inside a real Netlify Function invocation, or the
+    // platform IP was genuinely unavailable -- conservative fallback.
   }
 
   return "unknown-source";
+}
+
+// A privacy-conscious bucket key for the Supabase-backed admission RPC
+// (Section 3/4): the raw source IP is hashed before it ever reaches the
+// database, so no raw IP address is stored in
+// setup_extraction_admission_events.
+export function hashedAdmissionBucket(namespace: string, sourceIp: string): string {
+  return `${namespace}:${createHash("sha256").update(sourceIp, "utf8").digest("hex")}`;
 }

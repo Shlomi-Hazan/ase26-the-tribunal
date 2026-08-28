@@ -1,9 +1,14 @@
 // Milestone 7A -- deterministic in-memory ExtractionRepository fake for
 // tests (ADR 0004 Decision 15). Reproduces the real RPCs' atomic-claim,
-// idempotency-conflict, and stale-claim-reconciliation semantics
-// synchronously (no real database, no real race window) -- every
-// automated M7A test injects this instead of SupabaseExtractionRepository.
+// idempotency-conflict, retry-budget-guard, and stale-claim-
+// reconciliation semantics synchronously (no real database, no real race
+// window) -- every automated M7A test injects this instead of
+// SupabaseExtractionRepository. Kept in parity with
+// supabase/migrations/20260828180000_setup_extractions.sql's actual SQL
+// -- independent pre-live audit, Section 3/19 -- so this fake is never
+// "more lenient" than what the real RPCs enforce.
 
+import Decimal from "decimal.js";
 import type { ExtractionAttemptStatus } from "./errors";
 import { STALE_EXTRACTION_CLAIM_AFTER_MS } from "./constants";
 import {
@@ -28,6 +33,7 @@ const RETRYABLE_ATTEMPT_ONE_STATUSES: ReadonlySet<string> = new Set([
 export class FakeExtractionRepository implements ExtractionRepository {
   extractions = new Map<string, SetupExtractionRow>();
   attempts = new Map<string, SetupExtractionAttemptRow>(); // key: `${extractionId}:${attemptNumber}`
+  private readonly admissionEvents = new Map<string, number[]>(); // bucket -> timestamps
 
   constructor(private readonly clock: () => number = Date.now) {}
 
@@ -65,6 +71,14 @@ export class FakeExtractionRepository implements ExtractionRepository {
     this.reconcileStale(extractionId, attemptNumber);
 
     return this.attempts.get(this.attemptKey(extractionId, attemptNumber)) ?? null;
+  }
+
+  // Mirrors reconcile_setup_extraction_attempts (Section 9): reconciles
+  // BOTH attempt slots for this id, callable from a plain read/replay
+  // path, not only from inside a claim attempt.
+  async reconcileAttempts(extractionId: string): Promise<void> {
+    this.reconcileStale(extractionId, 1);
+    this.reconcileStale(extractionId, 2);
   }
 
   async claimAttemptOne(input: ClaimAttemptOneInput): Promise<ClaimResult> {
@@ -105,7 +119,7 @@ export class FakeExtractionRepository implements ExtractionRepository {
       status: "CLAIMED",
       canonicalModelId: input.canonicalModelId,
       providerEndpointTag: input.providerEndpointTag,
-      conservativeMaxCostUsd: input.conservativeMaxCostUsd,
+      conservativeMaxCostUsd: input.perAttemptConservativeMaxCostUsd,
       actualInputTokens: null,
       actualOutputTokens: null,
       actualCostUsd: null,
@@ -143,6 +157,20 @@ export class FakeExtractionRepository implements ExtractionRepository {
       return { wonClaim: false, attemptStatus: null, blockReason: "ATTEMPT_ONE_NOT_RETRYABLE" };
     }
 
+    // Authoritative retry-budget guard, mirroring
+    // claim_setup_extraction_attempt_two's SQL exactly (Section 3):
+    // GREATEST(COALESCE(actual, conservative), conservative) + attempt2
+    // per-attempt conservative maximum <= hard ceiling.
+    const attempt1Debit = Decimal.max(
+      new Decimal(attemptOne.actualCostUsd ?? attemptOne.conservativeMaxCostUsd),
+      new Decimal(attemptOne.conservativeMaxCostUsd)
+    );
+    const totalDebit = attempt1Debit.plus(new Decimal(input.perAttemptConservativeMaxCostUsd));
+
+    if (totalDebit.gt(new Decimal(input.hardCeilingUsd))) {
+      return { wonClaim: false, attemptStatus: null, blockReason: "BLOCKED_BUDGET" };
+    }
+
     const key = this.attemptKey(input.extractionId, 2);
     const existingTwo = this.attempts.get(key);
 
@@ -163,7 +191,7 @@ export class FakeExtractionRepository implements ExtractionRepository {
       status: "CLAIMED",
       canonicalModelId: input.canonicalModelId,
       providerEndpointTag: input.providerEndpointTag,
-      conservativeMaxCostUsd: input.conservativeMaxCostUsd,
+      conservativeMaxCostUsd: input.perAttemptConservativeMaxCostUsd,
       actualInputTokens: null,
       actualOutputTokens: null,
       actualCostUsd: null,
@@ -212,17 +240,69 @@ export class FakeExtractionRepository implements ExtractionRepository {
     }
   }
 
+  // Corrected this pass (independent pre-live audit, Section 12):
+  // mirrors block_setup_extraction's SQL exactly -- a genuinely new id
+  // is created unconditionally; an EXISTING id is only updated
+  // idempotently if its stored semantic identity (fingerprint,
+  // prompt_version, configured_model_id) matches exactly, otherwise this
+  // throws ExtractionIdempotencyConflictError and mutates nothing. A
+  // concurrent different request can never overwrite another logical
+  // extraction's terminal state merely by reusing its UUID.
   async block(input: BlockInput): Promise<void> {
     const existing = this.extractions.get(input.extractionId);
 
+    if (!existing) {
+      this.extractions.set(input.extractionId, {
+        id: input.extractionId,
+        requestFingerprint: input.requestFingerprint,
+        promptVersion: input.promptVersion,
+        configuredModelId: input.configuredModelId,
+        finalStatus: input.status,
+        createdAt: new Date(this.clock()).toISOString(),
+        completedAt: new Date(this.clock()).toISOString()
+      });
+      return;
+    }
+
+    if (
+      existing.requestFingerprint !== input.requestFingerprint ||
+      existing.promptVersion !== input.promptVersion ||
+      existing.configuredModelId !== input.configuredModelId
+    ) {
+      throw new ExtractionIdempotencyConflictError();
+    }
+
     this.extractions.set(input.extractionId, {
-      id: input.extractionId,
-      requestFingerprint: input.requestFingerprint,
-      promptVersion: input.promptVersion,
-      configuredModelId: input.configuredModelId,
+      ...existing,
       finalStatus: input.status,
-      createdAt: existing?.createdAt ?? new Date(this.clock()).toISOString(),
       completedAt: new Date(this.clock()).toISOString()
     });
+  }
+
+  // In-memory analogue of check_and_record_admission (Section 4) --
+  // real production admission control uses the Supabase-backed RPC
+  // (SupabaseExtractionRepository); this fake exists only so tests never
+  // need a real database. Same sliding-window semantics as
+  // netlify/server/extraction/rateLimit.ts's SlidingWindowRateLimiter.
+  async checkAndRecordAdmission(
+    bucket: string,
+    windowSeconds: number,
+    maxRequests: number
+  ): Promise<boolean> {
+    const now = this.clock();
+    const windowStart = now - windowSeconds * 1000;
+    const existing = (this.admissionEvents.get(bucket) ?? []).filter(
+      (timestamp) => timestamp > windowStart
+    );
+
+    if (existing.length >= maxRequests) {
+      this.admissionEvents.set(bucket, existing);
+      return false;
+    }
+
+    existing.push(now);
+    this.admissionEvents.set(bucket, existing);
+
+    return true;
   }
 }

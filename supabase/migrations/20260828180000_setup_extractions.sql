@@ -295,12 +295,26 @@ grant execute on function public.claim_setup_extraction_attempt_one(
 --    retry claim. Requires attempt #1 to already be terminal and
 --    retryable; never creates the logical setup_extractions row itself.
 -- ---------------------------------------------------------------------
+-- Corrected this pass (independent pre-live audit, Section 3): ADR
+-- Decision 15 requires the atomic attempt #2 claim to itself verify the
+-- retry budget before inserting attempt #2 -- the prior revision only
+-- checked this in TypeScript before calling the RPC, so the RPC alone
+-- (the true final write authority) could claim an economically-invalid
+-- attempt if a future server call site ever got the pre-check wrong.
+-- `p_attempt_two_conservative_max_cost_usd` is the PER-ATTEMPT
+-- conservative maximum for attempt #2 (never the whole two-attempt
+-- logical maximum -- see the economics correction in
+-- netlify/server/extraction/preflight.ts); `p_hard_ceiling_usd` is
+-- passed in rather than hard-coded a second time, so it can never
+-- silently drift from the application's own EXTRACTION_HARD_CEILING_USD
+-- (asserted equal by migrationConsistency.test.ts).
 create function public.claim_setup_extraction_attempt_two(
   p_extraction_id uuid,
   p_request_fingerprint text,
   p_canonical_model_id text,
   p_provider_endpoint_tag text,
-  p_conservative_max_cost_usd numeric
+  p_attempt_two_conservative_max_cost_usd numeric,
+  p_hard_ceiling_usd numeric
 )
 returns table (
   extraction_id uuid,
@@ -315,7 +329,9 @@ set search_path = ''
 as $$
 declare
   v_stored_fingerprint text;
-  v_attempt_one_status text;
+  v_attempt_one record;
+  v_attempt1_debit numeric;
+  v_total_debit numeric;
   v_new_attempt_id uuid;
   v_existing_two record;
 begin
@@ -339,17 +355,35 @@ begin
     and sea.status = 'CLAIMED'
     and sea.created_at < now() - interval '120 seconds';
 
-  select sea.status into v_attempt_one_status
+  select sea.status, sea.actual_cost_usd, sea.conservative_max_cost_usd
+  into v_attempt_one
   from public.setup_extraction_attempts as sea
   where sea.extraction_request_id = p_extraction_id and sea.attempt_number = 1;
 
-  if v_attempt_one_status is null or v_attempt_one_status = 'CLAIMED' then
+  if v_attempt_one.status is null or v_attempt_one.status = 'CLAIMED' then
     return query select p_extraction_id, false, null::uuid, null::text, 'ATTEMPT_ONE_NOT_TERMINAL'::text;
     return;
   end if;
 
-  if v_attempt_one_status not in ('PROVIDER_UNAVAILABLE', 'TIMEOUT', 'INVALID_STRUCTURED_OUTPUT', 'UNKNOWN_OUTCOME') then
+  if v_attempt_one.status not in ('PROVIDER_UNAVAILABLE', 'TIMEOUT', 'INVALID_STRUCTURED_OUTPUT', 'UNKNOWN_OUTCOME') then
     return query select p_extraction_id, false, null::uuid, null::text, 'ATTEMPT_ONE_NOT_RETRYABLE'::text;
+    return;
+  end if;
+
+  -- Authoritative retry-budget guard (ADR Decision 9/15): attempt #1's
+  -- known actual cost, or its stored per-attempt conservative maximum if
+  -- unknown -- whichever is LARGER, never assuming the smaller one, and
+  -- never treating an unknown actual cost as $0 -- plus a fresh
+  -- per-attempt conservative maximum for attempt #2, compared against
+  -- the whole-logical-call ceiling.
+  v_attempt1_debit := greatest(
+    coalesce(v_attempt_one.actual_cost_usd, v_attempt_one.conservative_max_cost_usd),
+    v_attempt_one.conservative_max_cost_usd
+  );
+  v_total_debit := v_attempt1_debit + p_attempt_two_conservative_max_cost_usd;
+
+  if v_total_debit > p_hard_ceiling_usd then
+    return query select p_extraction_id, false, null::uuid, null::text, 'BLOCKED_BUDGET'::text;
     return;
   end if;
 
@@ -360,7 +394,7 @@ begin
     )
     values (
       p_extraction_id, 2, 'CLAIMED',
-      p_canonical_model_id, p_provider_endpoint_tag, p_conservative_max_cost_usd
+      p_canonical_model_id, p_provider_endpoint_tag, p_attempt_two_conservative_max_cost_usd
     )
     returning sea.id into v_new_attempt_id;
   exception
@@ -382,11 +416,41 @@ end;
 $$;
 
 revoke execute on function public.claim_setup_extraction_attempt_two(
-  uuid, text, text, text, numeric
+  uuid, text, text, text, numeric, numeric
 ) from public, anon, authenticated;
 grant execute on function public.claim_setup_extraction_attempt_two(
-  uuid, text, text, text, numeric
+  uuid, text, text, text, numeric, numeric
 ) to service_role;
+
+-- ---------------------------------------------------------------------
+-- 4A. reconcile_setup_extraction_attempts — new this pass (independent
+--    pre-live audit, Section 9): opportunistic stale-claim reconciliation
+--    reachable from a plain READ/replay path, not only from inside the
+--    two claim RPCs above. ADR 0004 explicitly allows/expects
+--    reconciliation on "later server-authoritative requests," which
+--    includes an idempotent-replay status load -- the prior revision
+--    only reconciled inside a claim attempt, so a replay of a >=120s-old
+--    CLAIMED attempt (no retry ever attempted) returned "in_progress"
+--    forever instead of surfacing UNKNOWN_OUTCOME.
+-- ---------------------------------------------------------------------
+create function public.reconcile_setup_extraction_attempts(p_extraction_id uuid)
+returns void
+language sql
+security definer
+set search_path = ''
+as $$
+  update public.setup_extraction_attempts as sea
+  set status = 'UNKNOWN_OUTCOME', completed_at = now()
+  where sea.extraction_request_id = p_extraction_id
+    and sea.attempt_number in (1, 2)
+    and sea.status = 'CLAIMED'
+    and sea.created_at < now() - interval '120 seconds';
+$$;
+
+revoke execute on function public.reconcile_setup_extraction_attempts(uuid)
+from public, anon, authenticated;
+grant execute on function public.reconcile_setup_extraction_attempts(uuid)
+to service_role;
 
 -- ---------------------------------------------------------------------
 -- 5. terminalize_setup_extraction_attempt — the ONE permitted status
@@ -466,6 +530,17 @@ grant execute on function public.terminalize_setup_extraction_attempt(
 --    fake provider-attempt row for work that never reached a provider
 --    attempt.
 -- ---------------------------------------------------------------------
+-- Corrected this pass (independent pre-live audit, Section 12): the
+-- prior `ON CONFLICT (id) DO UPDATE` unconditionally overwrote
+-- final_status on ANY existing row with this id, regardless of whether
+-- that row actually belongs to the same logical extraction (same
+-- fingerprint/prompt_version/configured_model_id) -- a concurrent
+-- different request reusing the same UUID could mutate another logical
+-- extraction's terminal state. Now race-safe via the same insert-then-
+-- catch-unique-violation idiom the claim RPCs already use: a genuinely
+-- new id inserts cleanly; an existing id is only updated idempotently
+-- if its stored semantic identity matches exactly, otherwise this
+-- raises idempotency_conflict and mutates nothing.
 create function public.block_setup_extraction(
   p_extraction_id uuid,
   p_source_type text,
@@ -479,6 +554,8 @@ language plpgsql
 security definer
 set search_path = ''
 as $$
+declare
+  v_existing record;
 begin
   if p_status not in (
     'INPUT_INVALID', 'UNSUPPORTED_FILE_TYPE', 'FILE_TOO_LARGE',
@@ -489,14 +566,34 @@ begin
     raise exception 'invalid block status' using errcode = '22023';
   end if;
 
-  insert into public.setup_extractions as se (
-    id, case_id, source_type, request_fingerprint, prompt_version, configured_model_id, final_status, completed_at
-  )
-  values (
-    p_extraction_id, null, p_source_type, p_request_fingerprint, p_prompt_version, p_configured_model_id, p_status, now()
-  )
-  on conflict (id) do update
-  set final_status = p_status, completed_at = now();
+  begin
+    insert into public.setup_extractions as se (
+      id, case_id, source_type, request_fingerprint, prompt_version, configured_model_id, final_status, completed_at
+    )
+    values (
+      p_extraction_id, null, p_source_type, p_request_fingerprint, p_prompt_version, p_configured_model_id, p_status, now()
+    );
+    return;
+  exception
+    when unique_violation then
+      null; -- existing row -- fall through to the idempotency check below.
+  end;
+
+  select se.request_fingerprint, se.prompt_version, se.configured_model_id
+  into v_existing
+  from public.setup_extractions as se
+  where se.id = p_extraction_id;
+
+  if v_existing.request_fingerprint is distinct from p_request_fingerprint
+    or v_existing.prompt_version is distinct from p_prompt_version
+    or v_existing.configured_model_id is distinct from p_configured_model_id
+  then
+    raise exception 'idempotency_conflict' using errcode = 'P0001', hint = 'idempotency_conflict';
+  end if;
+
+  update public.setup_extractions as se
+  set final_status = p_status, completed_at = now()
+  where se.id = p_extraction_id;
 end;
 $$;
 
@@ -506,3 +603,93 @@ revoke execute on function public.block_setup_extraction(
 grant execute on function public.block_setup_extraction(
   uuid, text, text, text, text, text
 ) to service_role;
+
+-- ---------------------------------------------------------------------
+-- 7. Distributed admission control -- new this pass (independent
+--    pre-live audit, Section 4). ADR 0004 Decision 19 / SECURITY.md
+--    Sec 10's "3 accepted NEW logical-extraction starts per 180 seconds
+--    per source IP" target must be authoritative across Netlify
+--    Functions' ephemeral, horizontally-scaled runtimes -- a
+--    single-process in-memory counter (netlify/server/extraction/
+--    rateLimit.ts's SlidingWindowRateLimiter) cannot enforce that; it
+--    remains valid only as an OPTIONAL best-effort local layer, never
+--    the authoritative one. No Redis is introduced -- this is ordinary
+--    Postgres, matching the rest of this migration's stack.
+--
+-- `bucket` is a privacy-conscious representation of (namespace, source)
+-- -- the application hashes the trusted source IP before it ever
+-- reaches this table (netlify/server/extraction/rateLimit.ts), so no
+-- raw IP address is stored here.
+-- ---------------------------------------------------------------------
+create table public.setup_extraction_admission_events (
+  id uuid primary key default gen_random_uuid(),
+  bucket text not null,
+  created_at timestamptz not null default now(),
+
+  constraint setup_extraction_admission_events_bucket_check check (
+    char_length(bucket) between 1 and 200
+  )
+);
+
+create index setup_extraction_admission_events_bucket_created_at_idx
+  on public.setup_extraction_admission_events (bucket, created_at);
+
+alter table public.setup_extraction_admission_events enable row level security;
+
+revoke all on table public.setup_extraction_admission_events from public, anon, authenticated, service_role;
+grant select on table public.setup_extraction_admission_events to service_role;
+
+-- Atomically checks whether `bucket` has capacity remaining under a
+-- sliding `p_window_seconds`-wide window bounded at `p_max_requests`,
+-- and if so, records this admission and returns true; otherwise returns
+-- false and records nothing. Race-safe across concurrent callers for
+-- the SAME bucket via a transaction-scoped advisory lock (released
+-- automatically at the end of this function's implicit transaction) --
+-- callers for DIFFERENT buckets never block each other. Old events for
+-- this bucket are pruned opportunistically on every call, so the table
+-- never grows unbounded per bucket.
+create function public.check_and_record_admission(
+  p_bucket text,
+  p_window_seconds int,
+  p_max_requests int
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_count int;
+begin
+  if p_bucket is null or char_length(p_bucket) < 1 or char_length(p_bucket) > 200 then
+    raise exception 'invalid bucket' using errcode = '22023';
+  end if;
+
+  if p_window_seconds <= 0 or p_max_requests <= 0 then
+    raise exception 'invalid admission parameters' using errcode = '22023';
+  end if;
+
+  perform pg_advisory_xact_lock(hashtextextended(p_bucket, 0));
+
+  delete from public.setup_extraction_admission_events as e
+  where e.bucket = p_bucket
+    and e.created_at < now() - make_interval(secs => p_window_seconds);
+
+  select count(*) into v_count
+  from public.setup_extraction_admission_events as e
+  where e.bucket = p_bucket;
+
+  if v_count >= p_max_requests then
+    return false;
+  end if;
+
+  insert into public.setup_extraction_admission_events (bucket) values (p_bucket);
+
+  return true;
+end;
+$$;
+
+revoke execute on function public.check_and_record_admission(text, int, int)
+from public, anon, authenticated;
+grant execute on function public.check_and_record_admission(text, int, int)
+to service_role;

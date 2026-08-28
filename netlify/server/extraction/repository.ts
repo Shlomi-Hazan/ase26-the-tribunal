@@ -63,7 +63,10 @@ export type ClaimAttemptOneInput = {
   configuredModelId: string;
   canonicalModelId: string;
   providerEndpointTag: string;
-  conservativeMaxCostUsd: string;
+  // Corrected this pass (independent pre-live audit, Section 2): this is
+  // the PER-ATTEMPT conservative maximum -- never the whole two-attempt
+  // logical maximum. See netlify/server/extraction/preflight.ts.
+  perAttemptConservativeMaxCostUsd: string;
 };
 
 export type ClaimAttemptTwoInput = {
@@ -71,7 +74,14 @@ export type ClaimAttemptTwoInput = {
   requestFingerprint: string;
   canonicalModelId: string;
   providerEndpointTag: string;
-  conservativeMaxCostUsd: string;
+  perAttemptConservativeMaxCostUsd: string;
+  // Corrected this pass (independent pre-live audit, Section 3): the
+  // retry-budget guard is now enforced INSIDE the atomic claim RPC
+  // itself, not only in TypeScript beforehand -- the RPC needs the hard
+  // ceiling to compare against, passed explicitly rather than
+  // hard-coded a second time in SQL (asserted equal to
+  // EXTRACTION_HARD_CEILING_USD by migrationConsistency.test.ts).
+  hardCeilingUsd: string;
 };
 
 export type ClaimResult =
@@ -110,6 +120,24 @@ export type ExtractionRepository = {
   claimAttemptTwo(input: ClaimAttemptTwoInput): Promise<ClaimResult>;
   terminalize(input: TerminalizeInput): Promise<void>;
   block(input: BlockInput): Promise<void>;
+  // New this pass (independent pre-live audit, Section 9): opportunistic
+  // stale-claim reconciliation reachable from a plain read/replay path,
+  // not only from inside the two claim RPCs -- ADR 0004 explicitly
+  // allows/expects reconciliation on "later server-authoritative
+  // requests," which includes an idempotent-replay status load.
+  reconcileAttempts(extractionId: string): Promise<void>;
+  // New this pass (Section 4): the authoritative, cross-process admission
+  // check for the "3 accepted NEW logical-extraction starts per 180s per
+  // source IP" target -- a single-process in-memory counter cannot
+  // enforce this across Netlify Functions' ephemeral, horizontally-scaled
+  // runtimes. `bucket` is already a privacy-conscious, pre-hashed
+  // representation of (namespace, source) -- this method never receives
+  // a raw source IP.
+  checkAndRecordAdmission(
+    bucket: string,
+    windowSeconds: number,
+    maxRequests: number
+  ): Promise<boolean>;
 };
 
 const extractionRowSchema = z.object({
@@ -248,7 +276,7 @@ export class SupabaseExtractionRepository implements ExtractionRepository {
       p_configured_model_id: input.configuredModelId,
       p_canonical_model_id: input.canonicalModelId,
       p_provider_endpoint_tag: input.providerEndpointTag,
-      p_conservative_max_cost_usd: input.conservativeMaxCostUsd
+      p_conservative_max_cost_usd: input.perAttemptConservativeMaxCostUsd
     });
 
     if (error) {
@@ -278,7 +306,8 @@ export class SupabaseExtractionRepository implements ExtractionRepository {
       p_request_fingerprint: input.requestFingerprint,
       p_canonical_model_id: input.canonicalModelId,
       p_provider_endpoint_tag: input.providerEndpointTag,
-      p_conservative_max_cost_usd: input.conservativeMaxCostUsd
+      p_attempt_two_conservative_max_cost_usd: input.perAttemptConservativeMaxCostUsd,
+      p_hard_ceiling_usd: input.hardCeilingUsd
     });
 
     if (error) {
@@ -336,7 +365,39 @@ export class SupabaseExtractionRepository implements ExtractionRepository {
     });
 
     if (error) {
+      if (error.hint === "idempotency_conflict") {
+        throw new ExtractionIdempotencyConflictError();
+      }
+
       throw new ExtractionPersistenceError();
     }
+  }
+
+  async reconcileAttempts(extractionId: string): Promise<void> {
+    const { error } = await this.client.rpc("reconcile_setup_extraction_attempts", {
+      p_extraction_id: extractionId
+    });
+
+    if (error) {
+      throw new ExtractionPersistenceError();
+    }
+  }
+
+  async checkAndRecordAdmission(
+    bucket: string,
+    windowSeconds: number,
+    maxRequests: number
+  ): Promise<boolean> {
+    const { data, error } = await this.client.rpc("check_and_record_admission", {
+      p_bucket: bucket,
+      p_window_seconds: windowSeconds,
+      p_max_requests: maxRequests
+    });
+
+    if (error) {
+      throw new ExtractionPersistenceError();
+    }
+
+    return Boolean(data);
   }
 }

@@ -16,6 +16,7 @@ import {
   SMART_EXTRACTION_TEXT_MAX_RAW_BYTES
 } from "./constants";
 import { ExtractionError } from "./errors";
+import type { HandlerDeadline } from "./deadline";
 
 export type DossierSourceKind = "text" | "file";
 
@@ -97,14 +98,71 @@ function decodeUtf8Strict(bytes: Uint8Array): string {
   }
 }
 
-function decodeBase64(contentBase64: string): Uint8Array {
-  let buffer: Buffer;
+// Corrected this pass (independent pre-live audit, Section 17):
+// `Buffer.from(value, "base64")` is permissive -- it silently skips
+// characters outside the Base64 alphabet rather than reliably throwing
+// for malformed input, so a caller-supplied string containing garbage
+// bytes could previously decode "successfully" into unintended content.
+// Validated strictly against the canonical Base64 grammar (RFC 4648
+// Sec 4: groups of 4 characters from [A-Za-z0-9+/], with 0, 1, or 2
+// trailing `=` padding characters only in the final group) before any
+// decode is attempted.
+// A single-pass, O(n), non-regex scanner -- not a regex literal (a
+// backtracking-capable regex against a multi-megabyte string was
+// observed during implementation to raise "Maximum call stack size
+// exceeded" in V8's regex engine for this exact validation shape; a
+// plain character-code loop has no such limit regardless of input size,
+// the same reasoning netlify/server/runs.ts's containsControlCharacter
+// already applies to a different control-character check). Validates
+// the canonical Base64 grammar (RFC 4648 Sec 4): length a multiple of 4,
+// every character in [A-Za-z0-9+/], with 0, 1, or 2 trailing `=`
+// padding characters confined to the final group.
+function isStrictBase64(value: string): boolean {
+  const length = value.length;
 
-  try {
-    buffer = Buffer.from(contentBase64, "base64");
-  } catch {
+  if (length === 0 || length % 4 !== 0) {
+    return false;
+  }
+
+  let paddingCount = 0;
+
+  for (let index = 0; index < length; index += 1) {
+    const code = value.charCodeAt(index);
+    const isUpper = code >= 0x41 && code <= 0x5a; // A-Z
+    const isLower = code >= 0x61 && code <= 0x7a; // a-z
+    const isDigit = code >= 0x30 && code <= 0x39; // 0-9
+    const isPlus = code === 0x2b; // +
+    const isSlash = code === 0x2f; // /
+    const isPad = code === 0x3d; // =
+
+    if (isPad) {
+      paddingCount += 1;
+
+      if (index < length - 2) {
+        return false; // padding only ever allowed in the final 2 positions.
+      }
+
+      continue;
+    }
+
+    if (paddingCount > 0) {
+      return false; // a real character can never follow padding.
+    }
+
+    if (!isUpper && !isLower && !isDigit && !isPlus && !isSlash) {
+      return false;
+    }
+  }
+
+  return paddingCount <= 2;
+}
+
+function decodeBase64(contentBase64: string): Uint8Array {
+  if (!isStrictBase64(contentBase64)) {
     throw new ExtractionError("INPUT_INVALID", "Invalid file content encoding.");
   }
+
+  const buffer = Buffer.from(contentBase64, "base64");
 
   if (buffer.length === 0) {
     throw new ExtractionError("INPUT_INVALID", "Uploaded file is empty.");
@@ -113,17 +171,62 @@ function decodeBase64(contentBase64: string): Uint8Array {
   return new Uint8Array(buffer);
 }
 
-// A caller-supplied deadline check, invoked between PDF pages. Throws
-// (never returns false) so the same monotonic-deadline contract
-// (Decision 8) governs every deterministic pre-work step through one
-// mechanism -- implementation-time decision C (Issue #15): no separate
-// PDF-specific millisecond sub-budget, just periodic rechecks against the
-// existing handler-wide deadline.
-export type DeadlineCheck = () => void;
+// Corrected this pass (independent pre-live audit, Section 7): the prior
+// revision only called `checkDeadline()` BETWEEN high-level pdfjs
+// operations -- a single long `await` (document load, one page's
+// getTextContent) could still run past the 55s handler deadline before
+// the next check ever executed. `withPdfDeadline` races each individual
+// pdfjs await against the freshly recomputed remaining handler time and,
+// on timeout, destroys the loading task (pdfjs's own documented
+// cancellation/cleanup API) before throwing.
+//
+// Honest limitation, disclosed rather than hidden: this repository runs
+// pdfjs-dist's Node "fake worker" mode, which executes synchronously on
+// the SAME thread as this race's timer (empirically verified during
+// implementation -- no real Worker is spawned). `Promise.race` can only
+// preempt an operation that itself yields the event loop between
+// internal steps (which pdfjs's own async document/page/text-content
+// resolution genuinely does in normal operation -- each is its own
+// resolved promise, not one long synchronous call) -- it cannot forcibly
+// interrupt a single pathological, purely synchronous parse that never
+// yields before finishing. A hard preemptive guarantee against that
+// narrower case would require isolating PDF parsing in a real
+// `worker_threads` worker (terminable via `Worker#terminate()`), which
+// is a larger architectural change out of scope for this correction
+// pass -- flagged explicitly here and in the implementation report
+// rather than silently claimed as fully solved.
+class PdfDeadlineExceededError extends Error {
+  constructor() {
+    super("PDF processing exceeded the remaining handler deadline.");
+    this.name = "PdfDeadlineExceededError";
+  }
+}
+
+async function withPdfDeadline<T>(
+  operation: Promise<T>,
+  deadline: HandlerDeadline
+): Promise<T> {
+  const remainingMs = deadline.remainingMs();
+
+  if (remainingMs <= 0) {
+    throw new PdfDeadlineExceededError();
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new PdfDeadlineExceededError()), remainingMs);
+  });
+
+  try {
+    return await Promise.race([operation, timeoutPromise]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 async function extractPdfTextLayer(
   bytes: Uint8Array,
-  checkDeadline: DeadlineCheck
+  deadline: HandlerDeadline
 ): Promise<string> {
   // Deferred require (not a top-level import) so this heavy, server-only
   // module is never pulled into any code path the client bundle could
@@ -140,7 +243,7 @@ async function extractPdfTextLayer(
       useSystemFonts: false
     });
 
-    const document = await loadingTask.promise;
+    const document = await withPdfDeadline(loadingTask.promise, deadline);
 
     if (document.numPages > PACKAGE_EXTRACTION_PDF_MAX_PAGES) {
       throw new ExtractionError(
@@ -152,10 +255,10 @@ async function extractPdfTextLayer(
     const pageTexts: string[] = [];
 
     for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
-      checkDeadline();
+      deadline.assertMinimumWindow();
 
-      const page = await document.getPage(pageNumber);
-      const content = await page.getTextContent();
+      const page = await withPdfDeadline(document.getPage(pageNumber), deadline);
+      const content = await withPdfDeadline(page.getTextContent(), deadline);
       // Deterministic ordering as far as the PDF text layer permits
       // (Decision 6): the order getTextContent().items returns items in
       // -- the document's own content-stream drawing order, never
@@ -185,6 +288,13 @@ async function extractPdfTextLayer(
       throw error;
     }
 
+    if (error instanceof PdfDeadlineExceededError) {
+      throw new ExtractionError(
+        "INPUT_PROCESSING_TIMEOUT",
+        "PDF processing exceeded the remaining handler deadline."
+      );
+    }
+
     const name = (error as { name?: string } | null)?.name;
 
     if (name === "PasswordException") {
@@ -203,6 +313,9 @@ async function extractPdfTextLayer(
       "PDF could not be parsed."
     );
   } finally {
+    // Cancels/cleans up pdfjs's own internal work -- the documented
+    // cancellation API this Node architecture actually supports (see the
+    // honest limitation noted above).
     await loadingTask?.destroy();
   }
 }
@@ -214,15 +327,16 @@ export type NormalizedDossier = {
 };
 
 // The single entry point every caller (preflight, initial, retry) uses.
-// `checkDeadline` is invoked at least once before any PDF-specific
-// per-page work, and between pages -- callers pass the same pre-claim
-// deadline check the handler already computes (Decision 8).
+// `deadline` is checked before any PDF-specific per-page work, between
+// pages, and races each individual pdfjs await (see withPdfDeadline
+// above) -- callers pass the same HandlerDeadline instance the handler
+// already constructed (Decision 8).
 export async function resolveNormalizedDossier(
   source: DossierSource,
-  checkDeadline: DeadlineCheck
+  deadline: HandlerDeadline
 ): Promise<NormalizedDossier> {
   if (source.kind === "text") {
-    checkDeadline();
+    deadline.assertMinimumWindow();
 
     const byteLength = new TextEncoder().encode(source.text).length;
 
@@ -244,7 +358,7 @@ export async function resolveNormalizedDossier(
     return { normalizedText: normalized, sourceKind: "text", sourceFilename: null };
   }
 
-  checkDeadline();
+  deadline.assertMinimumWindow();
 
   const safeFilename = sanitizeDossierFilename(source.filename);
   const extension = extensionOf(safeFilename);
@@ -258,7 +372,7 @@ export async function resolveNormalizedDossier(
       );
     }
 
-    const rawPdfText = await extractPdfTextLayer(bytes, checkDeadline);
+    const rawPdfText = await extractPdfTextLayer(bytes, deadline);
     const normalized = normalizeDossierText(rawPdfText);
 
     assertNormalizedLength(normalized);
