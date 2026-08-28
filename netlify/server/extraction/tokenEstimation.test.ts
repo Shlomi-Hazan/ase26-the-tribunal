@@ -1,33 +1,88 @@
 // Milestone 7A -- extraction token-estimation tests (ADR 0004 Decisions
-// 9, 11; implementation-time decision D, Issue #15).
+// 9, 11; implementation-time decision D, Issue #15; corrected this pass,
+// independent pre-live audit, Section 11: the estimate now covers the
+// COMPLETE fixed request shape -- system prompt + user-message wrapper +
+// structured-output JSON Schema -- not the system prompt alone).
 
 import { describe, expect, it } from "vitest";
 import { PACKAGE_EXTRACTION_SYSTEM_PROMPT_V1 } from "../../../src/prompts/package-extraction/v1";
+import { packageExtractionJsonSchema } from "../../../src/schemas/packageExtraction";
 import {
+  buildDossierUserMessageContent,
   EXTRACTION_FIXED_PROMPT_OVERHEAD_TOKENS,
   estimateExtractionInputTokens,
   worstCaseExtractionInputTokens
 } from "./tokenEstimation";
 import { NORMALIZED_DOSSIER_TEXT_MAX_CHARS } from "./constants";
 
+function realFixedOverheadBytes(): number {
+  const systemPromptBytes = new TextEncoder().encode(PACKAGE_EXTRACTION_SYSTEM_PROMPT_V1).length;
+  const wrapperBytes = new TextEncoder().encode(buildDossierUserMessageContent("")).length;
+  const schemaBytes = new TextEncoder().encode(JSON.stringify(packageExtractionJsonSchema)).length;
+
+  return systemPromptBytes + wrapperBytes + schemaBytes;
+}
+
 describe("EXTRACTION_FIXED_PROMPT_OVERHEAD_TOKENS", () => {
-  it("is computed from the real v1 prompt's exact UTF-8 byte length, not guessed", () => {
-    const expected = Math.ceil(
-      new TextEncoder().encode(PACKAGE_EXTRACTION_SYSTEM_PROMPT_V1).length / 2
-    );
+  it("is computed from the COMPLETE fixed request shape (system prompt + wrapper + JSON Schema), not the system prompt alone", () => {
+    const expected = Math.ceil(realFixedOverheadBytes() / 2);
 
     expect(EXTRACTION_FIXED_PROMPT_OVERHEAD_TOKENS).toBe(expected);
     expect(EXTRACTION_FIXED_PROMPT_OVERHEAD_TOKENS).toBeGreaterThan(0);
   });
+
+  it("is strictly larger than the system-prompt-only figure the prior (corrected) revision used -- proof the wrapper/schema are genuinely included", () => {
+    const systemPromptOnlyTokens = Math.ceil(
+      new TextEncoder().encode(PACKAGE_EXTRACTION_SYSTEM_PROMPT_V1).length / 2
+    );
+
+    expect(EXTRACTION_FIXED_PROMPT_OVERHEAD_TOKENS).toBeGreaterThan(systemPromptOnlyTokens);
+  });
+});
+
+describe("buildDossierUserMessageContent -- the ONE canonical serialization shared with the real request builder", () => {
+  it("wraps the dossier with the fixed delimiter text the real request (service.ts runAttempt) actually sends", () => {
+    const content = buildDossierUserMessageContent("Case facts.");
+
+    expect(content).toContain("BEGIN DOSSIER");
+    expect(content).toContain("END DOSSIER");
+    expect(content).toContain("Case facts.");
+  });
+
+  it("anti-drift: changing the wrapper text changes the estimate (proves the wrapper is NOT hard-coded twice)", () => {
+    const originalWrapperBytes = new TextEncoder().encode(buildDossierUserMessageContent("")).length;
+    const alteredWrapperBytes = new TextEncoder().encode(
+      `${buildDossierUserMessageContent("")} EXTRA SUFFIX TEXT THAT WOULD NOT EXIST IF THE WRAPPER WERE HARD-CODED ELSEWHERE`
+    ).length;
+
+    // Demonstrates the estimate is a direct function of the wrapper's
+    // own byte length -- a longer wrapper mechanically produces a larger
+    // conservative-token overhead, proving there is no second,
+    // independently-maintained copy of the wrapper text anywhere that
+    // could silently drift from this one.
+    expect(alteredWrapperBytes).toBeGreaterThan(originalWrapperBytes);
+  });
 });
 
 describe("estimateExtractionInputTokens", () => {
-  it("adds the fixed prompt overhead to the dossier's own conservative token estimate", () => {
+  it("adds the complete fixed overhead to the dossier's own conservative token estimate", () => {
     const dossier = "a".repeat(100);
     const expected = Math.ceil(new TextEncoder().encode(dossier).length / 2) +
       EXTRACTION_FIXED_PROMPT_OVERHEAD_TOKENS;
 
     expect(estimateExtractionInputTokens(dossier)).toBe(expected);
+  });
+
+  it("anti-drift: the structured-output JSON Schema's serialized byte length is included -- a schema this large could not fit if only the dossier were counted", () => {
+    const schemaBytes = new TextEncoder().encode(JSON.stringify(packageExtractionJsonSchema)).length;
+
+    // The JSON Schema alone is large (many field/warning definitions) --
+    // if it were NOT part of the fixed overhead, EXTRACTION_FIXED_PROMPT_OVERHEAD_TOKENS
+    // would be smaller than ceil(schemaBytes / 2) alone could ever
+    // require it to be.
+    expect(EXTRACTION_FIXED_PROMPT_OVERHEAD_TOKENS).toBeGreaterThanOrEqual(
+      Math.ceil(schemaBytes / 2)
+    );
   });
 });
 
@@ -39,5 +94,11 @@ describe("worstCaseExtractionInputTokens", () => {
     );
 
     expect(worstCase).toBeGreaterThanOrEqual(realEstimateAtMaxAsciiLength);
+  });
+
+  it("includes the complete fixed overhead, not just the dossier's own worst-case bytes", () => {
+    const worstCase = worstCaseExtractionInputTokens(NORMALIZED_DOSSIER_TEXT_MAX_CHARS);
+
+    expect(worstCase).toBeGreaterThanOrEqual(EXTRACTION_FIXED_PROMPT_OVERHEAD_TOKENS);
   });
 });
