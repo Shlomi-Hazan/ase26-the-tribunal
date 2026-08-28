@@ -19,7 +19,22 @@ import { z } from "zod";
 
 export const pricingOverrideSchema = z.object({
   min_prompt_tokens: z.number().optional(),
-  utc_days: z.array(z.number()).optional(),
+  // Correction (live integration gate, real-data defect): the official
+  // OpenRouter OpenAPI (https://openrouter.ai/openapi.json,
+  // components.schemas.PricingOverride.properties.utc_days) declares
+  // this an array of STRINGS -- the documented weekday enum
+  // ("monday".."sunday"), with `x-speakeasy-unknown-values: allow`
+  // explicitly permitting future values outside that enum. The real
+  // live GET /models catalog contains string utc_days entries, which
+  // the previous z.array(z.number()) declaration rejected outright,
+  // failing the *entire* model-list parse for every model whenever any
+  // one model used this shape. z.string() (not a weekday enum) is used
+  // deliberately: M7 never needs to interpret weekday semantics, since
+  // ADR Decision 7A already blocks ANY non-empty pricing.overrides array
+  // as PRICING_UNREPRESENTABLE regardless of its contents (see the
+  // dedicated regression test below) -- parsing this field is not
+  // authorization to price it.
+  utc_days: z.array(z.string()).min(1).optional(),
   utc_start: z.number().optional(),
   utc_end: z.number().optional(),
   prompt: z.string().optional(),

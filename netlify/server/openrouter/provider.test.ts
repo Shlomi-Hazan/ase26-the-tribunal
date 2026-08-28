@@ -60,6 +60,51 @@ describe("RealOpenRouterProvider", () => {
     expect(models[0].id).toBe("openai/gpt-5");
   });
 
+  // Live-gate correction (real-data defect): a realistic full GET
+  // /models fixture mirroring the exact shape that previously failed
+  // against the real OpenRouter catalog -- string-valued utc_days
+  // inside a conditional pricing override, alongside otherwise-ordinary
+  // models. Independently reverified against
+  // https://openrouter.ai/openapi.json before the fix landed. Proves
+  // RealOpenRouterProvider.listModels() now parses the complete
+  // response rather than failing the whole catalog over one model's
+  // shape. No real network -- fakeFetch only.
+  it("parses a complete realistic catalog containing a model with real live-shape string utc_days overrides", async () => {
+    const fetchImpl = fakeFetch([
+      {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: [
+            { id: "openai/gpt-5", canonical_slug: "openai/gpt-5", name: "GPT-5" },
+            {
+              id: "anthropic/claude-5-sonnet",
+              canonical_slug: "anthropic/claude-5-sonnet",
+              name: "Claude 5 Sonnet",
+              context_length: 200_000,
+              supported_parameters: ["response_format", "max_completion_tokens"],
+              pricing: {
+                prompt: "0.000003",
+                completion: "0.000015",
+                overrides: [
+                  { utc_days: ["monday", "tuesday", "wednesday", "thursday", "friday"], prompt: "0.0000025" },
+                  { utc_days: ["saturday", "sunday"], prompt: "0.000002" }
+                ]
+              }
+            }
+          ]
+        })
+      }
+    ]);
+    const provider = new RealOpenRouterProvider(config, fetchImpl);
+
+    const models = await provider.listModels();
+
+    expect(models).toHaveLength(2);
+    expect(models[1].id).toBe("anthropic/claude-5-sonnet");
+    expect(models[1].pricing?.overrides).toHaveLength(2);
+  });
+
   it("normalizes malformed model list JSON as INVALID_PROVIDER_RESPONSE", async () => {
     const fetchImpl = fakeFetch([
       { ok: true, status: 200, json: async () => ({ notData: [] }) }
