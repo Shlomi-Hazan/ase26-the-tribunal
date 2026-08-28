@@ -699,9 +699,13 @@ see `docs/adr/0004-smart-package-extraction.md` for full detail):**
   the seven-participant Tribunal run and is never disguised by folding
   extraction into a fake seven-call count.
 - **Token/output bounds**: `EXTRACTION_OUTPUT_CAP_TOKENS = 65,000` — a
-  formally derived bound (not a "realistic" guess) covering the actual
-  maximum serialized structured-output shape the schema can produce;
-  worst-case input bounded by `NORMALIZED_DOSSIER_TEXT_MAX_CHARS =
+  formally derived bound covering the actual maximum serialized
+  structured-output shape the schema can produce, resting on a
+  dedicated `safeExtractionText` character-class contract (excludes
+  raw control characters and unpaired Unicode surrogates on every
+  free-text field) that makes the underlying 3-UTF-8-byte-per-code-unit
+  assumption a true bound on JSON-serialized output, not merely
+  assumed; worst-case input bounded by `NORMALIZED_DOSSIER_TEXT_MAX_CHARS =
   40,000` characters plus fixed prompt overhead, estimated with the
   same conservative `ceil(UTF-8 bytes / 2)` proxy §7/§8 already use for
   the seven-call Tribunal — no new estimation methodology.
@@ -710,21 +714,41 @@ see `docs/adr/0004-smart-package-extraction.md` for full detail):**
   content), resolved through the existing M7 exact-endpoint/
   unique-pinnability/no-fallback contract with an extraction-specific
   bounded-output check substituted for the advocate/judge output caps.
+- **Pre-spend confirmation**: a read-only, non-billable
+  `POST /api/setup-extractions/preflight` quote (zero
+  `createChatCompletion` calls) is available before the user commits to
+  spend; the billable initial call always reruns the same
+  authoritative eligibility/budget guard fresh immediately before any
+  provider call — the browser's earlier quote is never trusted as
+  authoritative.
 - **Retry/timeout**: at most 2 provider attempts per logical extraction
   call, reusing the existing `RETRYABLE_CATEGORIES` plus a schema-invalid
   response; a **new, extraction-specific**
   `PACKAGE_EXTRACTION_PROVIDER_TIMEOUT_MS = 45,000` (not M7's 60,000 ms
   Tribunal constant) leaves the synchronous Function's reverified
   60-second execution ceiling real headroom for the rest of its work.
-  A retry is a separate, explicit endpoint call whose eligibility the
-  server alone determines from persisted attempt state — never a
-  client-declared attempt number — re-checked against the remaining
-  logical-call budget (actual attempt-#1 spend + a fresh conservative
-  attempt-#2 estimate) before it is permitted.
+  A retry is a separate, explicit endpoint call (resending the same
+  dossier source, since nothing dossier-derived persists server-side)
+  whose eligibility the server alone determines from persisted attempt
+  state — never a client-declared attempt number — re-checked against
+  the remaining logical-call budget (actual attempt-#1 spend + a fresh
+  conservative attempt-#2 estimate) before it is permitted. No provider
+  call may begin before that specific attempt is atomically claimed in
+  the database (claim-then-spend, never spend-then-claim), so
+  concurrent duplicate requests can never both spend.
+- **Idempotency**: a server-computed semantic fingerprint over the
+  normalized dossier content plus the fixed extraction configuration
+  (prompt version, configured model) proves a replayed/retried request
+  is the *same* logical extraction; a mismatch is rejected with zero
+  provider calls, never silently treated as a new attempt of something
+  else.
 - **Telemetry**: actual `usage.cost` decoded once, Decimal throughout,
   unknown telemetry stays `null` — never a fabricated zero, matching §9
   exactly; recorded per provider attempt (a logical call's two attempts
-  remain independently auditable, never overwriting each other).
+  remain independently auditable, never overwriting each other) —
+  including whenever the provider itself supplied usage/cost data, even
+  if the application later rejects that same response as
+  `INVALID_STRUCTURED_OUTPUT`.
 - **Display**: an estimated (pre-attempt) and an actual (post-attempt)
   extraction cost are both shown, visually and textually distinct from
   the Tribunal run's own cost figures — never summed into or mistaken

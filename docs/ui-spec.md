@@ -146,7 +146,11 @@ with `[SECTION]`/`FIELD:` markers. Full contract:
 New Case
   -> Smart Import
   -> Upload / Paste dossier
-  -> [client-side type/size check] -> Extract (shows estimated cost, requires confirmation)
+  -> [client-side type/size check]
+  -> read-only quote (zero spend -- shows eligibility/estimated cost)
+  -> explicit "Confirm & Extract" (this is where spend can occur; the
+     server re-checks eligibility/budget fresh, never trusting the
+     quote shown above)
   -> Extracting
   -> Extraction Review (staged preview -- does not touch the active draft)
        - unresolved/ambiguous fields visibly highlighted
@@ -172,7 +176,9 @@ surfaced in plain language, with a "Retry" action when the failure is
 retryable and an "edit and try again" path otherwise. At most one
 Retry is ever offered per extraction attempt (2 provider attempts
 total per logical extraction) -- the server, not the client, decides
-whether Retry is available.
+whether Retry is available. The UI resends the same dossier content
+the user already provided when Retry is pressed -- the user is never
+asked to re-upload/re-paste.
 
 The same privacy notice shown before Charge Sheet entry (below) must
 also be shown before dossier upload/paste — free-form dossier text is

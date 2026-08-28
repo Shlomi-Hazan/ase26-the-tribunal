@@ -299,8 +299,12 @@ Decision 17):
   canvas, no embedded-JavaScript execution) — no OCR, no cloud document
   parser.
 - Raw upload bytes and the normalized dossier text are both transient
-  and are not retained after a successful (or failed) extraction
-  attempt; only bounded structured audit telemetry persists.
+  and are not retained after any extraction attempt (successful,
+  failed, or between an initial attempt and a subsequent retry — a
+  retry resends the same dossier content, since the server never stores
+  it in between); only bounded structured audit telemetry, plus a
+  one-way semantic fingerprint of the normalized content (never the
+  content itself), persists.
 - Dossier content (raw or normalized) must never appear in server logs.
 - The existing public-demo-data privacy notice (do not submit
   sensitive/private information) must also be shown before dossier

@@ -9,20 +9,40 @@ migration, or any real OpenRouter model request. Written on branch
 `milestone/07a-smart-package-extraction`, base `main` at
 `926ba66cace83347a1a3f27f46921819213dd6b5` (the M7 merge commit).
 
-**Independent-review correction pass (this revision):** an independent
-review of the first version of this ADR found nine material planning
-defects — a Netlify request-payload/PDF-size mismatch, a synchronous-
+**First independent-review correction pass:** an independent review of
+the first version of this ADR found nine material planning defects — a
+Netlify request-payload/PDF-size mismatch, a synchronous-
 Function-timeout/provider-timeout mismatch, an impossible planning-PR
 live-gate timing requirement, a logical-call/provider-attempt audit gap
 that could lose attempt-level evidence, a client-declared retry-authority
 gap, a false Tribunal-tier/extraction-eligibility inference, an
 output-cap/schema-maximum mismatch, a warning-path/uncertainty-policy
 gap, and an unspecified extraction-model configuration location. All
-nine are corrected in the decisions below (each marked "corrected this
-pass"); nothing from the original version is silently erased —
-corrections are written alongside the reasoning for the original
-choice, so the trail stays honest. Full findings and corrections:
-Decisions 3, 8, 9, 10, 11, 13, 14, 15, 19, 20, 22, 23.
+nine were corrected (each marked "corrected this pass" at the time).
+
+**Second, deeper independent-review correction pass (this revision):**
+a further audit of the now-concrete retry/audit/API contract found four
+additional material consistency defects plus one minor
+current-dependency wording error — a retry-input contradiction (the
+retry endpoint required no body while retention policy forbids
+persisting the dossier server-side, making attempt #2 impossible to
+construct); a missing semantic fingerprint (nothing proved a
+replayed/retried request was the *same* logical extraction); an
+incomplete atomic pre-spend claim (the earlier `UNIQUE` constraint
+alone did not prevent two concurrent requests from both spending before
+racing on the insert); a mischaracterization of the attempt row as
+"immutable, insert-only" that conflicted with claiming it before spend;
+an incomplete output-cap "formal" bound (the 3-byte-per-code-unit
+assumption did not account for JSON control-character escaping, which
+can cost up to 6 bytes); and stale `pdfjs-dist` Node-version wording.
+All are corrected below (each marked "corrected this pass" for this
+second revision, distinguished from the first pass's own markers by
+context); a pre-spend read-only quote endpoint and an explicit
+Function-death/ambiguous-claim fail-closed policy were also added,
+closing two further gaps this deeper audit surfaced. Nothing from
+either prior version is silently erased. Full findings and corrections
+(this pass): Decisions 5, 9, 11, 13, 14, 15, 18, 19, 22, and the Open
+Decisions list.
 
 ## Context
 
@@ -177,20 +197,33 @@ only text-based PDFs are supported").
 ## Decision 4 — PDF extraction: `pdfjs-dist`, server-only, text-layer only
 
 **Recommended, not installed — general choice reconfirmed by
-independent review.** `pdfjs-dist` (Mozilla's PDF.js, Apache-2.0, the
-library behind Firefox's built-in PDF viewer) via its `legacy`
-Node-compatible entry point (`pdfjs-dist/legacy/build/pdf.mjs`),
-calling `getTextContent()` per page — no rendering, no canvas, no
-`node-canvas` native dependency, no image processing. Reverified
-directly against the package's current official README/npm listing in
-this pass: Apache-2.0 confirmed, actively published on npm, the exact
-`pdfjs-dist/legacy/build/pdf.mjs` import path confirmed as the
-documented Node-compatible entry point, Node.js ≥18 documented as
-required. (This ADR does not assert a more specific minimum-version
-number than that without direct confirmation — the exact current
-version/security posture remains, correctly, an implementation-time
-verification item, Open Decisions below; this general library choice is
-approved, not the risk-closure claim.)
+independent review, twice.** `pdfjs-dist` (Mozilla's PDF.js,
+Apache-2.0, the library behind Firefox's built-in PDF viewer) via its
+`legacy` Node-compatible entry point
+(`pdfjs-dist/legacy/build/pdf.mjs`), calling `getTextContent()` per
+page — no rendering, no canvas, no `node-canvas` native dependency, no
+image processing. Reverified directly against the package's current
+official README/npm/registry listing: Apache-2.0 confirmed, actively
+published on npm (latest observed during this pass: `6.2.108`), the
+exact `pdfjs-dist/legacy/build/pdf.mjs` import path confirmed as the
+documented Node-compatible entry point.
+
+**Corrected this pass (deeper independent review) — the runtime
+requirement wording was stale.** The prior pass cited "Node.js ≥18
+documented as required," which was accurate for older `pdfjs-dist`
+majors but not the current `6.x` line: current `6.x` package metadata
+observed during this pass requires a materially newer Node runtime
+(`>=22.13.0 || >=24`, per the package's own `engines` field as of
+`6.0.227`+). This is **not a compatibility blocker** — the repository
+already runs Node 24. Current `pdfjs-dist` runtime requirements must
+still be reverified at the exact version pin chosen at
+dependency-addition time (Open Decisions, below); this ADR only
+confirms the repository's Node 24 runtime is compatible with the `6.x`
+requirement observed during this planning pass, not a permanent
+guarantee that stays true for every future `pdfjs-dist` release. (The
+exact current version/security posture remains, correctly, an
+implementation-time verification item, Open Decisions below; this
+general library choice is approved, not a risk-closure claim.)
 
 Rejected alternatives:
 - **`pdf-parse`** — a thin wrapper around an older pdf.js build with
@@ -245,15 +278,37 @@ not a new heuristic.
 ```ts
 // src/prompts/package-extraction-schema.ts (new, planned — not created
 // in this task)
+
+// Corrected this pass (independent review, Decision 11): every free-text
+// output field uses this shared refinement instead of bare
+// z.string().trim().max(N) -- see Decision 11 for why. Excludes C0
+// control characters other than newline/tab (which JSON escapes to a
+// fixed 2 bytes) and DEL, and requires well-formed UTF-16 (no lone/
+// unpaired surrogates) -- both are exactly the classes of code unit that
+// can otherwise inflate a single JSON-serialized character beyond the
+// assumed 3-UTF-8-byte worst case (e.g. a raw control character with no
+// named JSON escape serializes as `\u00XX`, 6 ASCII bytes).
+const safeExtractionText = (maxLength: number) =>
+  z
+    .string()
+    .trim()
+    .max(maxLength)
+    .refine((value) => value.isWellFormed(), {
+      message: "Text must not contain unpaired Unicode surrogates."
+    })
+    .refine((value) => !/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(value), {
+      message: "Text must not contain control characters other than newline/tab."
+    });
+
 const chargeSheetExtractionSchema = z.object({
-  defendant: z.string().trim().max(200).nullable(),
-  act: z.string().trim().max(6000).nullable(),
-  exactQuestion: z.string().trim().max(1000).nullable()
+  defendant: safeExtractionText(200).nullable(),
+  act: safeExtractionText(6000).nullable(),
+  exactQuestion: safeExtractionText(1000).nullable()
 }).strict();
 
 const participantExtractionSchema = z.object({
-  profileName: z.string().trim().max(120).nullable(),
-  personality: z.string().trim().max(4000).nullable()
+  profileName: safeExtractionText(120).nullable(),
+  personality: safeExtractionText(4000).nullable()
 }).strict();
 
 // Corrected this pass (independent review): `field` was a free-text
@@ -312,13 +367,24 @@ export const packageExtractionSchema = z.object({
 Every numeric bound (`200`/`6000`/`1000`/`120`/`4000`) is the **exact
 same constant** already exported from `src/schemas/tribunalSetup.ts` —
 the model's own output can never itself violate the schema it will
-later be re-validated against. The paired JSON Schema (sent as
-`response_format.json_schema`, mirroring `src/prompts/schemas.ts`'s
-existing `advocateSpeechJsonSchema`/`judgeVerdictJsonSchema` pattern
-exactly) uses `additionalProperties: false` at every level. No `side`,
-`role`, `seatId`, model assignment, prompt version, execution mode,
-provider endpoint, pricing, or run status field exists anywhere in this
-schema — they are structurally absent, not merely instructed away.
+later be re-validated against. The `safeExtractionText` character-class
+restriction (new this pass) is **additive** to those existing bounds,
+never a reduction of them — it excludes only content classes (raw
+control characters other than newline/tab, DEL, unpaired surrogates)
+that legitimate personality/Charge-Sheet prose has no real need for, in
+exchange for making Decision 11's output-cap bound actually provable.
+The paired JSON Schema (sent as `response_format.json_schema`,
+mirroring `src/prompts/schemas.ts`'s existing
+`advocateSpeechJsonSchema`/`judgeVerdictJsonSchema` pattern exactly)
+uses `additionalProperties: false` at every level and a `pattern`
+constraint mirroring the same excluded-character-class regex (JSON
+Schema cannot express a Unicode well-formedness check directly, so
+server-side Zod validation remains the authoritative enforcement for
+the surrogate-pairing rule — the JSON Schema `pattern` is defense-in-depth,
+not the sole gate). No `side`, `role`, `seatId`, model assignment,
+prompt version, execution mode, provider endpoint, pricing, or run
+status field exists anywhere in this schema — they are structurally
+absent, not merely instructed away.
 
 ## Decision 6 — Ambiguity / null policy and warning taxonomy
 
@@ -559,12 +625,29 @@ pass's correction):
 Locked policy, otherwise mirroring M7's preflight exactly:
 
 - Decimal arithmetic throughout (`decimal.js`, no new library).
-- **Initial preflight** (before attempt #1) reserves conservatively for
-  **both** possible attempts: worst-case-input + full-output-cap,
-  priced at the resolved route's actual rates, × 2 (both attempts) ×
-  1.10 safety factor, checked against the full
-  `EXTRACTION_HARD_CEILING_USD`. Insufficient budget blocks with
-  `BLOCKED_BUDGET` before any spend.
+- **Two-stage preflight — corrected this pass (independent review) to
+  close a pre-spend-confirmation gap.** The prior version described
+  only an "initial preflight" performed as part of the billable call
+  itself, with no server-authoritative way for the UI to show the user
+  a quote *before* they commit to spending. Now split into:
+  1. A **read-only, non-billable quote** (`POST
+     /api/setup-extractions/preflight`, Decision 19) the UI calls after
+     upload/paste and before the user presses "Confirm & Extract" —
+     reserves conservatively for **both** possible attempts
+     (worst-case-input + full-output-cap, priced at the resolved
+     route's actual rates, × 2 attempts × 1.10 safety factor, compared
+     against `EXTRACTION_HARD_CEILING_USD`), makes **zero**
+     `createChatCompletion`/provider-inference calls, and returns the
+     result for display (Decision 18).
+  2. An **authoritative re-check inside the atomic claim** (Decision
+     15) immediately before the billable initial `POST
+     /api/setup-extractions` call is permitted to reach the provider —
+     the same computation, rerun fresh, never trusting the browser's
+     earlier quote as authoritative (pricing/eligibility may have
+     changed between the quote and the confirm). Insufficient budget at
+     *this* stage blocks with `BLOCKED_BUDGET` before any spend, exactly
+     as before — the quote step changes *when the user sees an
+     estimate*, not the authority of the pre-spend guard itself.
 - **Retry preflight — corrected this pass (independent review):**
   before the `POST .../retry` call is permitted to reach the provider,
   the server re-runs an authoritative guard using
@@ -591,15 +674,16 @@ Locked policy, otherwise mirroring M7's preflight exactly:
   is not needed here.
 - Actual `usage.cost` telemetry reuses ADR 0003 Decision 9's exact
   semantics (decimal-converted once on receipt, no further float math).
-- Display: an **estimated** conservative cost is shown before the user
-  commits to "Extract" (the same kind of explicit pre-spend
-  confirmation Convene already requires); an **actual** cost is shown
-  after a successful attempt, and a running total (attempt #1 actual +
-  attempt #2 estimate/actual) is shown before/after a retry so the user
-  always sees the logical call's cumulative spend against $0.50, not
-  a per-attempt figure in isolation. Both are visually and textually
-  distinct from the Tribunal run's own cost display (Decision 24) —
-  never summed into or mistaken for the $5 figure.
+- Display: the read-only preflight quote's **estimated** conservative
+  cost is shown before the user commits to "Confirm & Extract" (the
+  same kind of explicit pre-spend confirmation Convene already
+  requires); an **actual** cost is shown after a successful attempt,
+  and a running total (attempt #1 actual + attempt #2 estimate/actual)
+  is shown before/after a retry so the user always sees the logical
+  call's cumulative spend against $0.50, not a per-attempt figure in
+  isolation. Both are visually and textually distinct from the Tribunal
+  run's own cost display (Decision 24) — never summed into or mistaken
+  for the $5 figure.
 
 ## Decision 10 — Model selection: a dedicated, server-only configured extraction model
 
@@ -668,35 +752,67 @@ derived bound from the actual maximum serialized shape), not by
 silently shrinking the schema's field limits below the existing
 downstream `TribunalSetupDraft` bounds.
 
+**Corrected again this pass (deeper independent review): the prior
+"formal" computation was still not actually formal.** `content chars x
+3 UTF-8 bytes` is not a valid bound on *serialized JSON* bytes on its
+own — `z.string().trim().max(N)` alone does not exclude control
+characters or unpaired Unicode surrogates, and JSON serialization can
+expand a single such code unit to more than 3 bytes (e.g. a raw C0
+control character with no named JSON escape serializes as `\u00XX`, 6
+ASCII bytes — double the assumed maximum). Resolved by making the
+**precondition** true rather than continuing to assert an unproven
+bound: Decision 5's `safeExtractionText` refinement now excludes, on
+every free-text field, exactly the code-unit classes that could exceed
+3 bytes once JSON-serialized (C0 control characters other than
+newline/tab, DEL, and unpaired surrogates via `.isWellFormed()`). Under
+that precondition, every remaining representable character either (a)
+needs no JSON escape and costs its raw UTF-8 byte count (at most 3
+bytes for any BMP code unit, including the CJK worst case; a
+surrogate-pair character costs 4 bytes for 2 code units = 2 bytes/unit,
+already under the bound), or (b) is one of the four characters JSON
+*does* require escaping — `"`, `\`, `\n`, `\t` — each of which escapes
+to exactly 2 ASCII bytes, still under 3. **With `safeExtractionText` in
+place, `3 bytes per code unit` is now a true, provable maximum of the
+serialized JSON output**, not an assumption.
+
 **Formal worst-case computation** (Decision 5's schema, all fields
-populated, 3-byte-UTF-8 worst-case characters, matching M7's
-`worstCaseAdvocateInputTokens()` methodology exactly):
+populated at their `safeExtractionText`-constrained maximum, matching
+M7's `worstCaseAdvocateInputTokens()` methodology exactly — also
+corrected this pass: the warnings-row byte count previously referenced
+the pre-correction 80-character free-text `field` maximum; `field` is
+now Decision 5's closed 17-entry enum, whose longest member,
+`"participants.JUDGE_1.profileName"` / `"...personality"`, is 32
+characters, not 80):
 
 ```text
 content chars =
     chargeSheet          (200 + 6000 + 1000)                =  7,200
   + participants (x7)    (120 + 4000) x 7                   = 28,840
-  + warnings (x40)       (30 [longest code] + 80 [field]) x40 =  4,400
+  + warnings (x40)       (30 [longest code] + 32 [longest field path]) x40 = 2,480
                                                               --------
-  total content chars                                        = 40,440
+  total content chars                                        = 38,520
 
-content bytes  = 40,440 x 3 (3-byte UTF-8 worst case)        = 121,320
-structural JSON overhead (keys/braces/quotes/commas, ASCII)  ~=   3,000
+content bytes  = 38,520 x 3 (3-byte UTF-8 worst case, now a
+                 true bound under safeExtractionText)         = 115,560
+structural JSON overhead (keys/braces/quotes/commas, ASCII,
+                 application-controlled, not model output)   ~=   3,000
                                                               --------
-total worst-case bytes                                       ~= 124,320
+total worst-case bytes                                       ~= 118,560
 
-conservative tokens = ceil(bytes / 2)  (M7's proxy)           ~=  62,160
+conservative tokens = ceil(bytes / 2)  (M7's proxy)           ~=  59,280
 ```
 
 ```ts
 export const EXTRACTION_OUTPUT_CAP_TOKENS = 65_000;
 ```
 
-`65,000` is a real, provider-enforced `max_completion_tokens` ceiling —
-**not** "unbounded" — set with a small, deliberate margin above the
-formally computed `62,160` worst case (structural-overhead estimation
-slack), never the schema's field bounds themselves being narrowed. It
-is a new, extraction-specific constant, never
+`65,000` remains the locked cap — unchanged in value, now resting on a
+genuinely formal bound (`59,280`, tighter than the prior pass's
+`62,160` once the field-path correction is applied) with slightly more
+margin than before, not less. It is a real, provider-enforced
+`max_completion_tokens` ceiling — **not** "unbounded" — never the
+schema's field bounds themselves being narrowed. It is a new,
+extraction-specific constant, never
 `ADVOCATE_OUTPUT_CAP_TOKENS`/`JUDGE_OUTPUT_CAP_TOKENS`.
 
 **Disclosed tradeoff, per this pass's explicit review instruction not
@@ -711,6 +827,25 @@ convenient understatement; whether real-catalog model availability at
 this bound is workable in practice is a live-gate/implementation-time
 observation (Open Decisions, below), not something this ADR can verify
 without real metadata.
+
+**Model feasibility context (added this pass, independent review):**
+this correction is not evidence that no practical model exists at this
+bound — the review that raised it also cited several plausible
+high-output structured-output-capable candidates as illustrative
+examples (e.g. models publicly advertising roughly 1,000,000-token
+context with tens-of-thousands-to-128,000-token maximum output and
+structured-output support). **These specific figures are cited as the
+review's own illustrative examples, not independently reverified
+against live OpenRouter metadata in this planning-only task** (this
+task does not authorize a real OpenRouter metadata request, even a
+read-only one, without separate explicit authorization) — they do not
+substitute for M7's actual endpoint-level live eligibility,
+pinnability, pricing-overrides, or freshness checks, which remain
+exactly what Decision 10's route resolution already requires. The
+point is narrower and still holds without independent reverification:
+`65,000` is a real, achievable output-window size in the current model
+landscape in principle, not a bound that presumes no model could ever
+satisfy it.
 
 Input estimation reuses M7's exact methodology
 (`netlify/server/openrouter/tokenEstimation.ts`'s `ceil(UTF8
@@ -740,11 +875,12 @@ failure, timeout, malformed JSON, schema failure, a limit violation
 complete, internally-consistent preview draft, or it produces nothing
 the UI treats as a draft at all.
 
-## Decision 13 — Persistence: two-table audit model (logical extraction vs. provider attempt), future migration
+## Decision 13 — Persistence: two-table audit model with a claim-then-terminal attempt lifecycle, future migration
 
 **Not persisted** (deliberately, to minimize retained
 untrusted/incidental-personal content beyond what the product already
-needs):
+needs) — **unchanged by this pass's corrections below**, which resolve
+retry/concurrency safety without weakening this:
 
 - Raw uploaded file bytes — already project policy (`SECURITY.md`),
   unchanged.
@@ -752,128 +888,311 @@ needs):
   pre-model) — no product/audit need for it once the structured result
   exists; retaining it would increase exposure of content the user may
   not have intended to expose as prominently as a Charge Sheet field.
-- The raw model extraction JSON, independent of the audit fields in
-  Decision 14 — once reviewed/edited by the human, its accepted content
-  is indistinguishable from, and persists via, the **existing**
-  M5/M6 case + participant-config persistence path when the user
-  eventually creates the run. No new "draft" persistence mechanism is
-  needed for the draft's *content*.
+- The raw model extraction JSON, independent of the audit fields below
+  — once reviewed/edited by the human, its accepted content is
+  indistinguishable from, and persists via, the **existing** M5/M6 case
+  + participant-config persistence path when the user eventually
+  creates the run. No new "draft" persistence mechanism is needed for
+  the draft's *content*.
 
-**Persisted — corrected this pass (independent review): two tables,
-not one.** The original single `extraction_attempts` table, keyed only
-by the logical `extractionRequestId`, would lose or overwrite
-attempt-level evidence — a logical extraction can have **two** distinct
-provider attempts (Decision 8) with materially different outcomes
-(e.g. attempt #1 `INVALID_STRUCTURED_OUTPUT` with its own tokens/cost/
-provider id, attempt #2 a **different** successful result with its
-own). Both must remain independently, immutably auditable — attempt #2
-must never overwrite attempt #1's row. Locked minimum shape for a
-**future forward migration** (not created in this task):
+**Persisted: two tables, not one** (unchanged from the prior pass's
+correction — still needed, since a logical extraction can have two
+distinct provider attempts with materially different, independently
+auditable outcomes). **Corrected this pass (deeper independent
+review):** the attempt row's lifecycle and `setup_extractions`' own
+shape both needed further correction — see the annotations inline
+below.
 
 ```text
 setup_extractions                       -- ONE row per logical call
-  id                  = extractionRequestId
-  case_id             nullable (see below)
+  id                    = extractionRequestId
+  case_id               nullable (see below)
   source_type
-  prompt_version       ('package-extraction-v1')
+  request_fingerprint    -- NEW this pass, see Decision 15
+  prompt_version         ('package-extraction-v1')
   configured_model_id
-  final_status         (one of Decision 16's outcomes, once terminal)
+  final_status           (one of Decision 16's outcomes, once terminal)
   created_at
-  completed_at         nullable until terminal
+  completed_at           nullable until terminal
 
-setup_extraction_attempts                -- ONE immutable row per provider attempt
+setup_extraction_attempts                -- ONE row per provider-attempt SLOT, claimed before spend
   id
   extraction_request_id  FK -> setup_extractions.id
   attempt_number          1 | 2
-  canonical_model_id
-  provider_endpoint_tag
-  status                  (Decision 16 code, or success/incomplete/ambiguous)
-  estimated_cost_usd      (always known -- computed at that attempt's preflight)
-  actual_input_tokens     nullable until a successful response
+  status                  -- CLAIMED (see Decision 15) as its FIRST value,
+                           -- then transitions EXACTLY ONCE to one terminal
+                           -- value (a Decision 16 code, or success/
+                           -- incomplete/ambiguous) -- never "immutable
+                           -- from insertion", see below
+  canonical_model_id      -- fixed at claim time, before the provider call
+  provider_endpoint_tag   -- fixed at claim time
+  estimated_cost_usd      -- fixed at claim time (that attempt's preflight)
+  actual_input_tokens     nullable -- see Decision 14: recorded whenever
+                           -- the provider supplies it, not only on
+                           -- application-level success
   actual_output_tokens    nullable
   actual_cost_usd         nullable
   latency_ms              nullable
   provider_request_id     nullable
   error_code              nullable
-  created_at
+  created_at              -- claim time
+  completed_at            nullable until terminal
 
   UNIQUE (extraction_request_id, attempt_number)
 ```
 
-`setup_extractions` is the logical-call record `POST
-/api/setup-extractions` creates; `setup_extraction_attempts` gets one
-new **immutable, insert-only** row per provider attempt (never
-updated/overwritten once written) — attempt #1's row remains exactly as
-it was after attempt #2 is created. The `UNIQUE(extraction_request_id,
-attempt_number)` constraint is also the server-authoritative mechanism
-Decision 15's retry-idempotency guard relies on. The attempt's
-relationship to a `cases` row is an open implementation detail (Open
-Decisions, below) — extraction typically happens *before* a case
-exists, so `setup_extractions.case_id` may need to stand alone
-(nullable, possibly back-filled later) rather than requiring a case to
-already exist.
+**Corrected this pass: "immutable, insert-only" was the wrong
+description of the attempt lifecycle, and conflicted with the atomic
+pre-spend claim this pass introduces (Decision 15).** An attempt row
+cannot be inserted *after* a successful provider call and also be
+"claimed before spend" — claiming necessarily means the row exists
+(in a non-terminal state) before the provider is ever called. The
+corrected, precise contract:
+
+- **Identity/authorization fields are fixed at claim time and never
+  rewritten**: `attempt_number`, `canonical_model_id`,
+  `provider_endpoint_tag`, `estimated_cost_usd` (the exact route/pricing
+  snapshot that authorized this attempt to proceed) are written once,
+  at claim, and read-only thereafter.
+- **`status` starts at `CLAIMED` and transitions exactly once**, to
+  exactly one terminal value, when the provider call (or its absence —
+  e.g. a preflight-stage failure that never reached the provider)
+  resolves.
+- **Once terminal, the row is immutable** — this is where "immutable"
+  correctly applies: after the one status transition, nothing about
+  that attempt's row is ever rewritten again.
+- **Attempt #2 is a different row, never an overwrite of attempt #1's
+  row** — this part of the prior pass's correction is unchanged and
+  still exactly right.
+
+The `UNIQUE(extraction_request_id, attempt_number)` constraint remains
+the server-authoritative mechanism preventing a duplicate attempt row —
+but this pass corrects *when* it must be enforced: the constraint must
+back the **claim insert itself** (Decision 15), not merely a
+"who gets recorded" bookkeeping step. The attempt's relationship to a
+`cases` row is an open implementation detail (Open Decisions, below) —
+extraction typically happens *before* a case exists, so
+`setup_extractions.case_id` may need to stand alone (nullable,
+possibly back-filled later) rather than requiring a case to already
+exist.
 
 ## Decision 14 — Telemetry / audit fields
 
 Mirrors M7's own anti-fabrication discipline exactly: unknown telemetry
 stays `null`; nothing is ever a fabricated zero. Field set is exactly
 Decision 13's two-table shape — `setup_extractions` carries the
-logical-call identity/status; each `setup_extraction_attempts` row
-carries that specific attempt's model/endpoint/cost/token/latency/
-provider-id/error evidence, immutably. The warning list (bounded, ≤40
-entries, using Decision 5/6's closed code/field enums — never raw free
-text) is recorded per attempt, since different attempts of the same
-logical call can produce different warnings.
+logical-call identity (including `request_fingerprint`, Decision 15)
+and terminal status; each `setup_extraction_attempts` row carries that
+specific attempt's claimed identity plus its terminal
+model/endpoint/cost/token/latency/provider-id/error evidence. The
+warning list (bounded, ≤40 entries, using Decision 5/6's closed
+code/field enums — never raw free text) is recorded per attempt, since
+different attempts of the same logical call can produce different
+warnings.
 
-## Decision 15 — Idempotency and retry authority: server-derived, never client-declared
+**Corrected this pass (independent review): actual token/cost/provider-id
+telemetry must never be phrased as "only known on a successful
+extraction."** A provider request can return successfully — and incur
+real, billable usage/cost — even when the application subsequently
+rejects the response's structured-output shape as
+`INVALID_STRUCTURED_OUTPUT`. The precise rule: `actual_input_tokens`/
+`actual_output_tokens`/`actual_cost_usd`/`provider_request_id` are
+recorded on that attempt's row whenever the **provider itself supplied
+them** (i.e. a response was received at all), independent of whether
+the application-level extraction result is `success`,
+`EXTRACTION_INCOMPLETE`/`EXTRACTION_AMBIGUOUS`, or
+`INVALID_STRUCTURED_OUTPUT`. They remain `null` only when the provider
+call itself never returned a usable response (timeout, network
+failure, a non-2xx before any body was parseable) — never "null until
+success."
+
+## Decision 15 — Idempotency, retry input, semantic fingerprint, and atomic pre-spend claim
 
 Extraction idempotency is a distinct concern from `POST /api/runs`'s
-case+seven-participant freeze idempotency — never conflated.
+case+seven-participant freeze idempotency — never conflated. This
+decision is substantially rewritten this pass (deeper independent
+review found three compounding gaps in the prior version, corrected
+together since they interact): the retry endpoint was contradictorily
+specified as bodiless while retention policy forbids storing the
+dossier server-side; nothing proved a retried/replayed request was
+semantically the *same* logical extraction; and the `UNIQUE` constraint
+alone does not prevent a race if the provider call happens before the
+attempt is claimed.
 
-**Corrected this pass (independent review): the client must never be
-trusted to declare its own attempt number.** The original design
-accepted a client-supplied `attemptNumber: 1 | 2` in the request body —
-a malicious or buggy client could submit `attemptNumber: 2` on its
-first-ever request, or replay `attemptNumber: 2` an unbounded number of
-times, and nothing server-side authoritatively prevented it. The server
-alone determines, from **persisted state**
-(`setup_extraction_attempts`, Decision 13), whether a second provider
-attempt is permitted.
+### Retry input — corrected this pass (independent review)
 
-Locked contract:
+The prior version required the retry endpoint to accept no body while
+also stating raw dossier bytes and normalized dossier text are never
+persisted — contradictory, since attempt #2 needs the same dossier
+content to construct its request and the server has nowhere to read it
+back from. **Resolved by having the client resend the source on
+retry**, exactly like the initial call — the retention policy is
+unchanged (still nothing dossier-derived is persisted; Decision 13
+stands):
 
-- The client generates a fresh `extractionRequestId` (UUID) for each
-  new logical extraction call and calls the **initial** endpoint
-  (Decision 19). This can only ever create **attempt #1** — the server
-  never reads or trusts any client-supplied attempt number.
-- A retry is a **separate, explicit** endpoint call (Decision 19),
-  named by the existing `extractionRequestId`, carrying no attempt
-  number at all. The server:
-  1. loads `setup_extractions`/`setup_extraction_attempts` for that id;
-  2. requires exactly one existing attempt, with a **retryable**
-     terminal status (Decision 8's `RETRYABLE_CATEGORIES` or
-     `INVALID_STRUCTURED_OUTPUT`) — otherwise the retry request is
-     rejected (`409`-class: no attempt to retry, already succeeded, or
-     the existing attempt was terminally non-retryable);
-  3. re-runs Decision 9's retry-budget guard;
-  4. only then creates attempt #2, via an insert relying on
-     `UNIQUE(extraction_request_id, attempt_number)` to guarantee
-     exactly one row can ever be created for `attempt_number = 2` —
-     **simultaneous duplicate retry calls cannot both succeed**; the
-     database uniqueness constraint, not application logic alone,
-     enforces the boundary.
+```ts
+POST /api/setup-extractions/{extractionRequestId}/retry
+{
+  source:
+    | { kind: "text"; text: string }
+    | { kind: "file"; filename: string; contentBase64: string };
+}
+```
+
+The server deterministically re-validates, re-normalizes, and (for a
+`.pdf`) re-extracts this resent source exactly as the initial call
+does, before any provider call — the same deterministic pipeline,
+never a shortcut. The resent source's normalized form must reproduce
+the **same semantic fingerprint** (below) as the logical extraction's
+original request — a client resending a *different* dossier under the
+same `extractionRequestId` is not a retry of the same logical call and
+must be rejected, not silently treated as one.
+
+### Semantic fingerprint — new this pass (independent review)
+
+`setup_extractions` gains `request_fingerprint`, computed
+server-side using the repository's existing idempotency-fingerprint
+discipline (`netlify/server/runs.ts`'s `computeRequestFingerprint`
+pattern — a SHA-256 hex digest over canonical, deterministically
+normalized fields, never raw arbitrary content) over, at minimum:
+
+- the deterministically normalized dossier text (hashed, not stored —
+  Decision 13's no-retention policy is unaffected: only the fingerprint
+  persists, never the content it was computed from);
+- `source.kind` where semantically relevant (a `.pdf` and a `.txt`
+  that happen to normalize to identical text are still the same
+  logical request once normalized — `kind` is included only if a
+  future implementation decision finds it materially changes
+  extraction semantics; the normalized text is the dominant input
+  either way);
+- `PACKAGE_EXTRACTION_PROMPT_VERSION`;
+- the configured extraction model identity (`PACKAGE_EXTRACTION_MODEL_ID`
+  or whatever application-owned extraction configuration changes call
+  semantics).
+
+**Privacy implication, stated honestly:** the fingerprint is a
+one-way hash of normalized content plus small fixed application
+configuration — it does not, by itself, reveal dossier content, but
+(like any content hash) it *could* in principle be used to confirm a
+guess at specific known content via a dictionary/rainbow-table-style
+attack if an attacker already had many candidate dossiers to test
+against a leaked fingerprint. This is an accepted, disclosed residual
+risk of the fingerprint approach itself (identical in kind to
+`POST /api/runs`'s existing `request_fingerprint` column, not a new
+category of exposure this ADR introduces) — no raw or reversible
+dossier content persists.
+
+Locked semantics:
+
+- **Initial endpoint**, same `extractionRequestId` + same fingerprint
+  → idempotent replay: return the existing logical extraction's current
+  state, no new provider call.
+- **Initial endpoint**, same `extractionRequestId` + a *different*
+  fingerprint → `409 IDEMPOTENCY_CONFLICT`, **zero provider calls** —
+  mirrors `POST /api/runs`'s existing conflict behavior for a reused
+  `client_request_id` with different semantic content exactly.
+- **Retry endpoint**, resent source normalizes to a fingerprint that
+  does **not** match the logical extraction's stored
+  `request_fingerprint` → `409 IDEMPOTENCY_CONFLICT`, zero provider
+  calls — the retry is rejected as not-the-same-logical-call, not
+  silently accepted as a new attempt of something else.
+
+### Atomic pre-spend claim — new this pass (independent review)
+
+**Corrected this pass: `UNIQUE(extraction_request_id, attempt_number)`
+alone is not sufficient if the provider call happens before the
+attempt row is inserted/claimed.** Two concurrent requests could both
+pass a read-only eligibility check, both call the provider (both
+spend), and only then race on the unique insert — one loses the
+insert, but both already spent. **Locked invariant: no OpenRouter/
+provider call may begin until that specific provider attempt has been
+atomically claimed in the database** — claim-then-spend, never
+spend-then-claim.
+
+Mechanism (a server-authoritative atomic operation — an RPC/transaction
+consistent with the project's existing Supabase freeze/idempotency
+discipline, e.g. `docs/adr/0002-participant-configuration-freeze.md`'s
+`freeze_participant_configuration` pattern: preconditions checked and
+the claiming insert performed together, inside one atomic operation,
+with a caught `unique_violation` — not application-code-level
+check-then-insert):
+
+1. The caller (the initial-endpoint handler for `attempt_number = 1`,
+   or the retry-endpoint handler for `attempt_number = 2`) resolves the
+   route/pricing snapshot it intends to use (Decision 10) and computes
+   that attempt's `estimated_cost_usd` **before** attempting the claim.
+2. The claim operation, atomically:
+   - for `attempt_number = 1`: creates `setup_extractions` (with
+     `request_fingerprint`) if it does not already exist for this
+     `extractionRequestId` (or verifies the fingerprint matches an
+     existing one — mismatch aborts with `IDEMPOTENCY_CONFLICT` before
+     any insert), then inserts the `attempt_number = 1` row with
+     `status = 'CLAIMED'` and the fixed identity/pricing fields above;
+   - for `attempt_number = 2`: verifies attempt #1 exists, is
+     **terminal**, and is **retryable** (Decision 8); verifies the
+     fingerprint match (above); re-runs Decision 9's retry-budget guard
+     using attempt #1's real recorded spend; only then inserts the
+     `attempt_number = 2` row with `status = 'CLAIMED'`;
+   - relies on `UNIQUE(extraction_request_id, attempt_number)` to make
+     the claiming insert itself the race-safe boundary: if a
+     concurrent caller's claim already committed for the same
+     `(extraction_request_id, attempt_number)`, this insert fails with
+     `unique_violation`, caught and treated as "lost the claim," never
+     as an application error.
+3. **Only the caller that successfully wins the claim may proceed to
+   call the provider.** A caller that loses the claim (or observes an
+   already-`CLAIMED`/terminal row for that attempt number) returns the
+   existing attempt's current state — `RUNNING`/`CLAIMED` if still in
+   flight, or its terminal result if already resolved — and makes
+   **zero** provider calls itself.
+4. After the provider call resolves (success, or any failure category),
+   the same caller that won the claim — identified by owning that
+   specific attempt row — writes the **one** permitted status
+   transition from `CLAIMED` to a terminal value, plus whatever
+   telemetry the provider supplied (Decision 14). This is an `UPDATE`
+   of a row this request alone owns (via the claim it already won),
+   not a new insert — no further race is possible for that attempt
+   number, since the `UNIQUE` constraint already guarantees only one
+   claim could ever have succeeded.
+
+### Ambiguous claim / Function failure — new this pass (independent review)
+
+If a Function invocation dies after successfully claiming an attempt
+(step 2 above) but before writing its terminal result (step 4), that
+attempt row is left in `CLAIMED`/`RUNNING` indefinitely. Locked minimum
+safe behavior, **fail closed rather than silently retrying**:
+
+- A duplicate request for the same attempt (a client retry of its own
+  in-flight call, or a concurrent request) that observes a
+  `CLAIMED`/`RUNNING` row returns that in-progress/unknown state — it
+  never attempts a second provider call using the same attempt number.
+- **Retry eligibility (Decision 8) requires attempt #1 to be
+  *terminally* classified** — a `CLAIMED`/`RUNNING` row, however old,
+  does **not** count as "terminal and retryable." A stuck `RUNNING`
+  attempt #1 therefore blocks the retry endpoint entirely until it is
+  reconciled — this is intentional fail-closed behavior, not a defect.
+- **Stale-claim reconciliation is explicitly deferred, not solved in
+  this planning pass.** A future, separately reviewed mechanism (e.g. a
+  reconciliation job that checks the provider's own request-id status,
+  or a bounded staleness timeout after which a `CLAIMED` row is
+  reclassified to a stable terminal `TIMEOUT`-like state) is needed
+  before this can be considered production-complete — recorded as an
+  Open Decision below, not silently assumed solved.
+- Unknown billing telemetry from an unresolved `CLAIMED` attempt
+  remains `null` — never fabricated as zero, never assumed successful
+  or failed without evidence.
+
+### Idempotency summary
+
 - **Maximum provider attempts per logical call: 2** — enforced
   structurally (there is no third endpoint call this contract defines,
   and `attempt_number` has no valid value beyond 2).
 - An accidental exact-duplicate submission to the **initial** endpoint
   (double-click, a client network retry re-sending the identical
-  `extractionRequestId`) is idempotent: a request whose id already has
-  an existing attempt returns that attempt's existing status/result
-  rather than starting a second billable call — mirroring `POST
-  /api/runs`'s `client_request_id` unique-constraint pattern exactly,
-  now realized via the same `UNIQUE(extraction_request_id,
-  attempt_number)` constraint (a duplicate initial call cannot create a
-  second `attempt_number = 1` row either).
+  `extractionRequestId` and the same source) is idempotent via the
+  fingerprint-matched claim above — mirroring `POST /api/runs`'s
+  `client_request_id` unique-constraint pattern exactly, now realized
+  through the same atomic claim mechanism.
 - A dossier edit, or an explicit "start over," always generates a new
   `extractionRequestId` — a genuinely new, separately billable logical
   call, never silently merged with a prior one.
@@ -959,7 +1278,14 @@ New Case
   -> Smart Import (a third import method, alongside existing
      Charge-Sheet-only text import and strict Tribunal Package import)
   -> Upload / Paste dossier
-  -> [client-side type/size check] -> Extract (shows estimated cost, requires confirmation)
+  -> [client-side type/size check]
+  -> read-only preflight quote (POST /api/setup-extractions/preflight,
+     NEW this pass, Decision 9/19) -- shows eligibility, resolved model/
+     endpoint, conservative maximum cost, zero spend
+  -> explicit "Confirm & Extract" (only now does the billable initial
+     POST fire -- the browser's earlier quote is never trusted as
+     authoritative; the server reruns the same guard immediately before
+     spend, Decision 9)
   -> Extracting (progress state)
   -> Extraction Review (staged preview)
        - unresolved fields visibly highlighted (from warnings, Decision 6)
@@ -968,8 +1294,9 @@ New Case
        - source filename/type visible
        - extraction model/version visible at a secondary/collapsible
          audit-detail level (not primary UI real estate)
-       - estimated cost (pre-attempt) and actual cost (post-attempt)
-         shown, clearly separate from the future Tribunal run cost
+       - estimated cost (from the preflight quote) and actual cost
+         (post-attempt) shown, clearly separate from the future
+         Tribunal run cost
        - "Apply extracted draft" / "Cancel" (Decision 12)
   -> existing setup Review (unchanged M5/M6 screen, now populated)
   -> existing normal edit/validation (unchanged)
@@ -979,25 +1306,59 @@ New Case
 Failure state: the exact Decision 16 error code surfaced in
 user-facing language, with a "Retry" affordance when the failure is
 retryable (Decision 8) and a clear "edit and try again" path otherwise.
-No automatic navigation into deliberation at any point.
+A Retry resubmits the same dossier content the user already
+provided (Decision 15) — the UI does not need to prompt the user to
+re-upload/re-paste; it resends what it already has client-side. No
+automatic navigation into deliberation at any point.
 
 ## Decision 19 — API contract
 
 ```text
-POST /api/setup-extractions                          -- initial attempt only
-POST /api/setup-extractions/{extractionRequestId}/retry  -- explicit retry only, no request body needed beyond the id in the path
+POST /api/setup-extractions/preflight                    -- read-only quote, zero provider calls -- NEW this pass
+POST /api/setup-extractions                               -- billable, initial attempt only
+POST /api/setup-extractions/{extractionRequestId}/retry   -- billable, explicit retry only
 ```
 
-Two endpoints, corrected this pass (independent review, Decision 15) —
-the retry is a **separate, explicit** resource action, not a field on
-the initial request, so the server (never the client) determines
-attempt eligibility from persisted state.
+**Three endpoints — corrected this pass (independent review) to add
+the read-only quote endpoint (Decision 9) and to fix the retry
+endpoint's body (Decision 15).** The retry is a **separate, explicit**
+resource action, not a field on the initial request, so the server
+(never the client) determines attempt eligibility from persisted
+state.
 
 Chosen over `/api/extractions` for consistency with the existing
 `setup`/`TribunalSetupDraft` naming already used throughout
 `src/schemas/tribunalSetup.ts`.
 
-Initial request (JSON body, matching the existing Netlify Function
+**Preflight request** (new this pass) — identical `source` shape to the
+initial request, no `extractionRequestId` (a quote is not itself a
+logical call and creates no persisted state):
+
+```ts
+{
+  source:
+    | { kind: "text"; text: string }
+    | { kind: "file"; filename: string; contentBase64: string };
+}
+```
+
+Preflight response — sanitized, informational only, no
+`createChatCompletion`/provider-inference call made:
+
+```ts
+{
+  eligible: boolean;
+  configuredModelId: string | null;
+  canonicalModelId: string | null;
+  providerEndpointTag: string | null;   // exact resolved endpoint, audit display only
+  conservativeMaxCostUsd: string;       // Decimal string, Decision 9's two-attempt worst case
+  hardCeilingUsd: "0.50";
+  blockedReasonCodes: <Decision 16 codes>[];
+  pricingObservedAt: string | null;     // ISO timestamp, ADR 0003 Decision 9 semantics -- never fabricated
+}
+```
+
+**Initial request** (JSON body, matching the existing Netlify Function
 JSON-body convention this repository already uses for imports/runs —
 no multipart parsing introduced):
 
@@ -1010,14 +1371,33 @@ no multipart parsing introduced):
 }
 ```
 
-Retry request: no body required beyond the `extractionRequestId` path
-parameter already identifying the logical call; the server derives
-`attempt_number = 2` itself (Decision 15) after validating the existing
-attempt #1 is in a retryable terminal state.
+**Retry request — corrected this pass (independent review, Decision
+15): the source must be resent, not omitted.** The prior version
+required no body at all, which was impossible under the
+never-persist-dossier-content policy — attempt #2 needs the same
+content to construct its request, and the server has nowhere to read
+it back from:
+
+```ts
+POST /api/setup-extractions/{extractionRequestId}/retry
+{
+  source:
+    | { kind: "text"; text: string }
+    | { kind: "file"; filename: string; contentBase64: string };
+}
+```
+
+The server re-validates/re-normalizes/re-extracts the resent source
+exactly as the initial call does, and requires it to reproduce the
+logical extraction's stored semantic fingerprint (Decision 15) before
+proceeding — the client cannot retry with different content. The
+server derives `attempt_number = 2` itself after validating the
+existing attempt #1 is in a **terminal**, retryable state (Decision
+15) — never a client-declared attempt number.
 
 Response (200, mirroring `runPreflight`'s pattern of a body-level
 status rather than always using HTTP error codes for domain-level
-outcomes), identical shape from both endpoints:
+outcomes), identical shape from both billable endpoints:
 
 ```ts
 {
@@ -1034,8 +1414,9 @@ outcomes), identical shape from both endpoints:
 ```
 
 400 for request-shape validation failures (missing/malformed fields);
-409-class for a retry call with no eligible attempt to retry
-(Decision 15); 502 for `PROVIDER_UNAVAILABLE`, mirroring
+409-class (`IDEMPOTENCY_CONFLICT`) for a fingerprint mismatch on either
+billable endpoint (Decision 15), or a retry call with no eligible
+attempt to retry; 502 for `PROVIDER_UNAVAILABLE`, mirroring
 `preflightErrorResponse`'s existing `ServerConfigError`/`ProviderError`
 → 502 mapping exactly.
 
@@ -1145,15 +1526,54 @@ the real network" discipline exactly):
   attempt_number)` enforced, not merely assumed).
 - **Output-cap/schema boundary — new this pass (independent review,
   Decision 11)**: a fixture at the exact formally-computed worst-case
-  schema shape (all fields maxed, 3-byte characters) is representable
-  within `EXTRACTION_OUTPUT_CAP_TOKENS`; a test proving the *previous*
+  schema shape, using only `safeExtractionText`-legal characters (all
+  fields maxed, 3-byte-UTF-8 characters), is representable within
+  `EXTRACTION_OUTPUT_CAP_TOKENS`; a test proving the *previous*
   12,000-token cap would have rejected that same valid fixture (the
-  regression this correction fixes).
+  regression this correction fixes); a test proving a raw C0 control
+  character (e.g. `\x01`) and a lone/unpaired surrogate are both
+  rejected by `safeExtractionText`, demonstrating why the 3-byte bound
+  is now actually true.
+- **Retry input / semantic fingerprint — new this pass (deeper
+  independent review, Decision 15)**: a retry call with a `source` that
+  normalizes to the *same* fingerprint as the stored logical
+  extraction succeeds; a retry call whose resent `source` normalizes
+  to a *different* fingerprint is rejected with
+  `409 IDEMPOTENCY_CONFLICT` and makes zero provider calls; an initial
+  call reusing an `extractionRequestId` with matching content is an
+  idempotent replay; an initial call reusing an `extractionRequestId`
+  with different content is rejected the same way.
+- **Atomic claim / concurrency — new this pass (deeper independent
+  review, Decision 15)**: two simulated concurrent initial requests for
+  the same `extractionRequestId` result in exactly one provider call
+  (the loser observes the winner's claimed/terminal state and never
+  calls the provider itself); the same for two concurrent retries of
+  the same logical extraction; a test asserting the claim insert
+  happens (and can be observed as `CLAIMED`) *before* the fake
+  provider is ever invoked, not after.
+- **Ambiguous claim / stale `CLAIMED` — new this pass (deeper
+  independent review, Decision 15)**: an attempt stuck in
+  `CLAIMED`/`RUNNING` (simulating a Function that died mid-attempt)
+  blocks the retry endpoint (fails closed, not treated as
+  "terminal and retryable"); a duplicate request against that same
+  attempt returns the in-progress state and makes no provider call.
+- **Preflight endpoint — new this pass (deeper independent review,
+  Decision 9/19)**: `POST /api/setup-extractions/preflight` makes zero
+  `createChatCompletion` calls under any fixture; its response shape
+  matches what Decision 19 defines; a test confirming the billable
+  initial endpoint reruns its own authoritative budget guard even when
+  called with a stale/mismatched prior quote (never trusting the
+  browser's earlier preflight response as authoritative).
+- **Attempt telemetry on application-level failure — new this pass
+  (deeper independent review, Decision 14)**: a fake-provider response
+  that succeeds at the HTTP/usage level but fails schema validation
+  (`INVALID_STRUCTURED_OUTPUT`) still records non-null actual
+  tokens/cost/provider-request-id on that attempt's row.
 
 New test files/locations (planned, not created): `netlify/server/
 extraction/` mirroring `netlify/server/openrouter/`'s existing
 per-concern file layout (schema, pdf extraction, economics,
-idempotency, the API handler).
+idempotency, atomic-claim/concurrency, the API handlers).
 
 ## Decision 23 — Live gate policy: timed to the future implementation PR, not this planning PR
 
@@ -1242,9 +1662,8 @@ not unresolved design questions.
 4. `pdfjs-dist`'s current exact version/security posture — verify at
    dependency-addition time, per `AGENTS.md`'s standing
    dependency-addition rule.
-5. **New this pass (disclosed tradeoff, Decision 11):** how many
-   real-catalog OpenRouter models — especially genuinely free/cheap
-   ones — actually support `max_completion_tokens >=
+5. How many real-catalog OpenRouter models — especially genuinely
+   free/cheap ones — actually support `max_completion_tokens >=
    EXTRACTION_OUTPUT_CAP_TOKENS` (65,000). This is an empirical
    question the live-gate smoke (Decision 23) and real `GET
    /api/models` discovery will answer; if the real-catalog eligible-route
@@ -1252,7 +1671,32 @@ not unresolved design questions.
    for a future, separately reviewed correction — not something this
    ADR can resolve without live data, and not silently worked around by
    quietly lowering the output cap back toward an unproven "realistic"
-   guess.
+   guess. (Plausible candidates were cited during review as illustrative
+   examples, Decision 11 — capability is not treated as wholly unknown
+   at the model level — but exact live eligibility remains this
+   implementation/live-metadata gate, not something this planning-only
+   task independently reverified.)
+6. **New this pass (deferred, Decision 15): stale-`CLAIMED`-attempt
+   reconciliation.** If a Function invocation dies after claiming a
+   provider attempt but before writing its terminal result, that
+   attempt row remains `CLAIMED`/`RUNNING` indefinitely under this
+   plan's fail-closed design — it correctly blocks further action
+   (never licenses another provider call, never counts as "terminal and
+   retryable" for a subsequent retry) but nothing in this ADR yet
+   reconciles it back to a stable terminal state so the user isn't
+   permanently stuck. A future, separately reviewed mechanism (e.g. a
+   provider-request-id status check, or a bounded staleness timeout
+   that reclassifies an old `CLAIMED` row to a stable `TIMEOUT`-like
+   terminal state) is needed before this is production-complete. Fail
+   closed is the correct interim behavior, not a placeholder for
+   "solved" — this item is genuinely open, not merely deferred detail.
+7. **New this pass:** whether `source.kind` should be included in the
+   semantic fingerprint (Decision 15) at all, given the normalized text
+   is the dominant, already-included input and two different source
+   kinds could legitimately normalize to identical text — an
+   implementation-time judgment call within the fingerprint design
+   Decision 15 already locks, not a decision this ADR needs to force
+   now.
 
 **Resolved this pass (previously open, now grounded in reverified
 current evidence):** the exact Netlify Function synchronous-execution
