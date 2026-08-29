@@ -20,7 +20,6 @@ import {
   ImportApiError,
   importPersonalityFile
 } from "../services/importApi";
-import { ModelSelect } from "./ModelSelect";
 
 export function ParticipantCard({ participant }: { participant: Participant }) {
   const { state, dispatch } = useSetup();
@@ -168,18 +167,18 @@ export function ParticipantCard({ participant }: { participant: Participant }) {
             {isImporting ? "Importing..." : "Import Personality"}
           </Button>
           {state.executionMode === "separate" ? (
-            <ModelSelect
-              id={`${participant.id}-model`}
-              label={`${participant.label} mock model`}
-              onChange={(modelId) =>
-                dispatch({
-                  type: "setParticipantModel",
-                  participantId: participant.id,
-                  modelId
-                })
-              }
-              value={config.modelId}
-            />
+            // Independent audit correction (Issue #17 blocker 1/2):
+            // Separate-Model execution is M9 scope and its radio is
+            // disabled in ExecutionModeControl, so this branch is
+            // unreachable via the real UI today -- kept as a visible
+            // placeholder (not a real per-participant model selector,
+            // which would need its own real-catalog wiring) rather than
+            // silently deleted, since the underlying reducer action
+            // remains for M9 to build on.
+            <Typography color="text.secondary" variant="body2">
+              Per-participant model selection is available in a future
+              milestone (M9).
+            </Typography>
           ) : null}
         </Stack>
       </CardContent>

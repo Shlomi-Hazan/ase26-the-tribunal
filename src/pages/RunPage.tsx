@@ -229,27 +229,89 @@ function ParticipantRow({
   );
 }
 
+// Independent audit correction (Issue #17 blocker 6): a run marked
+// COMPLETED must actually carry a complete, valid result before any of
+// it is rendered -- a non-null majority verdict, exactly four non-empty
+// advocate speeches, and exactly three valid judge verdicts with
+// non-empty reasoning. This never trusts `run.status === "COMPLETED"`
+// alone; it independently re-verifies the data that status claims to
+// describe, exactly the way a failed integrity check must never fall
+// back to a fabricated default (never `?? "NOT_GUILTY"`, never `?? ""`).
+type ResultIntegrityCheck =
+  | { valid: true }
+  | { valid: false; reason: string };
+
+function checkResultIntegrity(run: StoredRun): ResultIntegrityCheck {
+  if (run.majorityVerdict !== "GUILTY" && run.majorityVerdict !== "NOT_GUILTY") {
+    return { valid: false, reason: "The stored majority verdict is missing or invalid." };
+  }
+
+  const speeches = advocateParticipants.map((advocate) =>
+    run.participants.find((entry) => entry.participantId === advocate.id)
+  );
+
+  if (speeches.some((participant) => !participant?.speech || participant.speech.trim().length === 0)) {
+    return { valid: false, reason: "One or more advocate speeches are missing." };
+  }
+
+  const verdicts = judgeParticipants.map((judge) =>
+    run.participants.find((entry) => entry.participantId === judge.id)
+  );
+
+  if (
+    verdicts.some(
+      (participant) =>
+        (participant?.verdict !== "GUILTY" && participant?.verdict !== "NOT_GUILTY") ||
+        !participant?.reasoning ||
+        participant.reasoning.trim().length === 0
+    )
+  ) {
+    return { valid: false, reason: "One or more judge verdicts or reasonings are missing." };
+  }
+
+  return { valid: true };
+}
+
 function CompletedResult({ run }: { run: StoredRun }) {
+  const integrity = checkResultIntegrity(run);
+
+  if (!integrity.valid) {
+    return (
+      <Stack spacing={4}>
+        <PageHeader
+          description="This completed run's stored result is incomplete or corrupted -- it is not displayed as a verdict."
+          eyebrow="Result Data Integrity Error"
+          title="This result cannot be safely displayed"
+        />
+        <Alert severity="error">{integrity.reason}</Alert>
+      </Stack>
+    );
+  }
+
   const votes = judgeParticipants.map((judge) => {
-    const participant = run.participants.find((entry) => entry.participantId === judge.id);
+    // Safe: checkResultIntegrity already proved every judge has a valid
+    // verdict/non-empty reasoning above.
+    const participant = run.participants.find((entry) => entry.participantId === judge.id)!;
 
     return {
       judge: judge.label,
-      verdict: participant?.verdict ?? "NOT_GUILTY",
-      model: participant?.modelId ?? "",
-      personality: participant?.personality ?? "",
-      reasoning: participant?.reasoning ?? ""
+      verdict: participant.verdict as "GUILTY" | "NOT_GUILTY",
+      model: participant.modelId,
+      personality: participant.personality,
+      reasoning: participant.reasoning as string
     };
   });
   const speeches = advocateParticipants.map((advocate) => {
-    const participant = run.participants.find((entry) => entry.participantId === advocate.id);
+    // Safe: checkResultIntegrity already proved every advocate has a
+    // non-empty speech above.
+    const participant = run.participants.find((entry) => entry.participantId === advocate.id)!;
 
     return {
       participant: advocate.label,
       side: advocate.side ?? "PRO",
-      model: participant?.modelId ?? "",
-      personality: participant?.personality ?? "",
-      speech: participant?.speech ?? ""
+      model: participant.modelId,
+      personality: participant.personality,
+      speech: participant.speech as string
     };
   });
 

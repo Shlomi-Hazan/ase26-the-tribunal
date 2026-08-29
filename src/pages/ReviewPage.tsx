@@ -8,13 +8,14 @@ import {
   Stack,
   Typography
 } from "@mui/material";
-import { useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Link as RouterLink, useNavigate } from "react-router-dom";
 import { EconomicsSummary } from "../components/EconomicsSummary";
 import { OpenRouterConnect } from "../components/OpenRouterConnect";
 import { PageHeader } from "../components/PageHeader";
 import { SetupStepper } from "../components/SetupStepper";
 import { hasUserOpenRouterKey } from "../services/openRouterCredential";
+import { useEligibleModels } from "../features/case-setup/useEligibleModels";
 import {
   areAdvocatePersonalitiesValid,
   areJudgePersonalitiesValid,
@@ -24,7 +25,7 @@ import {
   type SetupState
 } from "../features/case-setup/setupState";
 import { useSetup } from "../features/case-setup/useSetup";
-import { allParticipants, mockModels } from "../mocks/tribunalMockData";
+import { allParticipants } from "../mocks/tribunalMockData";
 import { CaseApiError, saveCase, type StoredCase } from "../services/caseApi";
 import {
   convene,
@@ -55,19 +56,36 @@ export function ReviewPage() {
   // this is bookkeeping, not something that should trigger a re-render.
   const clientRequestIdRef = useRef<string | null>(null);
   const requestSnapshotRef = useRef<string | null>(null);
-  const sharedModel = mockModels.find((model) => model.id === state.sharedModelId);
+  // Independent audit correction (Issue #17 blocker 1): the real
+  // eligible catalog, not mock/tribunalMockData. Also passes the
+  // auto-select callback -- a setup can reach Review directly (e.g.
+  // after a Smart Import apply) without ExecutionModeControl (rendered
+  // only on Advocates/Judges) ever having mounted, so Review must be
+  // able to auto-select on its own too, not merely display whatever was
+  // already chosen elsewhere.
+  const handleAutoSelectSharedModel = useCallback(
+    (modelId: string) => dispatch({ type: "setSharedModel", modelId }),
+    [dispatch]
+  );
+  const { models: eligibleModels } = useEligibleModels(state.sharedModelId, handleAutoSelectSharedModel);
+  const sharedModel = eligibleModels.find((model) => model.id === state.sharedModelId);
   const chargeSheetValid = isChargeSheetValid(state.chargeSheet);
   const advocatesValid = areAdvocatePersonalitiesValid(state);
   const judgesValid = areJudgePersonalitiesValid(state);
+  const hasRealModelSelected = state.executionMode === "shared" && state.sharedModelId.trim().length > 0;
   // M5 persists only the canonical case (Defendant/Act/Exact Question plus
   // source metadata). Participant configuration is not persisted/frozen
   // until M6, so Save Case must not require seven valid participants.
   const canSaveCase = chargeSheetValid;
-  const canConvene = isMockSetupReady(state);
+  // Independent audit correction (Issue #17 blocker 1): Convene must not
+  // proceed without a real selected model -- isMockSetupReady itself
+  // doesn't know about the live catalog, so this is checked here too.
+  const canConvene = isMockSetupReady(state) && hasRealModelSelected;
   const blockedReasons = [
     !chargeSheetValid ? "Charge Sheet fields must be complete and valid." : "",
     !advocatesValid ? "All four advocate personalities must be valid." : "",
-    !judgesValid ? "All three judge personalities must be valid." : ""
+    !judgesValid ? "All three judge personalities must be valid." : "",
+    !hasRealModelSelected ? "A real eligible Shared model must be selected." : ""
   ].filter(Boolean);
 
   async function handleSaveCase() {
@@ -205,7 +223,7 @@ export function ReviewPage() {
             </Typography>
             {state.executionMode === "shared" ? (
               <Typography>
-                Shared mock model: {sharedModel?.displayName ?? state.sharedModelId}
+                Shared model: {sharedModel?.name ?? (state.sharedModelId || "Not selected yet")}
               </Typography>
             ) : null}
             <Box
@@ -216,10 +234,6 @@ export function ReviewPage() {
               }}
             >
               {allParticipants.map((participant) => {
-                const model = mockModels.find(
-                  (item) => item.id === state.participants[participant.id].modelId
-                );
-
                 return (
                   <Box
                     key={participant.id}
@@ -237,10 +251,7 @@ export function ReviewPage() {
                       {participant.side ? `${participant.side} advocate` : "Judge"}
                     </Typography>
                     <Typography color="text.secondary" variant="body2">
-                      Model:{" "}
-                      {state.executionMode === "shared"
-                        ? sharedModel?.displayName
-                        : model?.displayName}
+                      Model: {sharedModel?.name ?? (state.sharedModelId || "Not selected yet")}
                     </Typography>
                     <Typography color="text.secondary" variant="body2">
                       Profile name:{" "}
@@ -274,20 +285,27 @@ export function ReviewPage() {
       <Card>
         <CardContent>
           <Typography component="h2" variant="h5">
-            Mock economics preflight
+            Economics
           </Typography>
           <Typography sx={{ mt: 1 }}>
             Expected logical calls: <strong>7</strong>
           </Typography>
           <Typography>Retry policy: max one retry per participant</Typography>
           <Typography>Hard policy: $5.00 maximum</Typography>
-          <Typography color="success.main" sx={{ fontWeight: 800 }}>
-            Eligible in this mock scenario
-          </Typography>
-          <Typography color="text.secondary" variant="body2">
-            Mock conservative estimate: $0.42. This is fixture data, not live
-            OpenRouter pricing or billing.
-          </Typography>
+          {sharedModel ? (
+            <>
+              <Typography color="success.main" sx={{ fontWeight: 800 }}>
+                {sharedModel.priceTier} tier
+              </Typography>
+              <Typography color="text.secondary" variant="body2">
+                {`Conservative full-Tribunal estimate for this route: $${sharedModel.conservativeFullTribunalEstimateUsd} (discovery estimate; the authoritative preflight runs again, using your connected credential, when you Convene).`}
+              </Typography>
+            </>
+          ) : (
+            <Typography color="text.secondary" variant="body2">
+              Select a Shared model above to see its conservative estimate.
+            </Typography>
+          )}
         </CardContent>
       </Card>
       <EconomicsSummary />

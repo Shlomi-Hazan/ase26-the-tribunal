@@ -107,7 +107,14 @@ export type SetupContextValue = {
   dispatch: React.Dispatch<SetupAction>;
 };
 
-const defaultModelId = mockModels[0].id;
+// Independent audit correction (Issue #17 blocker 1): Shared Mode's
+// starting model is deliberately empty, never a mock catalog id --
+// ExecutionModeControl auto-selects the first REAL eligible model once
+// GET /api/models loads. isMockSetupReady (below) does not gate on this
+// -- ReviewPage's own canConvene additionally requires a non-empty
+// sharedModelId, since setupState has no network access of its own to
+// validate against the real catalog.
+const defaultModelId = "";
 
 const initialParticipants = allParticipants.reduce(
   (configs, participant, index) => ({
