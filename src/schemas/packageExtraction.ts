@@ -319,7 +319,24 @@ export const packageExtractionSchema = packageExtractionShapeSchema.superRefine(
 
     for (const path of REQUIRED_FIELD_PATHS) {
       if (resolveFieldValue(data, path) === null && !warningsByField.has(path)) {
-        const [, containerKey, ...rest] = path.split(".");
+        // Corrected this pass (second independent pre-live re-audit,
+        // Section 11): the leading empty slot in the original
+        // `[, containerKey, ...rest]` destructuring skipped
+        // `path.split(".")`'s FIRST element (the actual container key,
+        // "chargeSheet"/"participants") and assigned `containerKey` from
+        // the SECOND element instead -- e.g. for
+        // "chargeSheet.defendant", containerKey became "defendant", not
+        // "chargeSheet"; for "participants.PRO_1.personality",
+        // containerKey became "PRO_1", not "participants", and `rest`
+        // was off by one throughout. Validation itself still correctly
+        // failed either way (this only affects the reported Zod issue
+        // PATH, never whether the issue is raised) -- but the reported
+        // path pointed at the wrong/nonexistent field
+        // (["participants", undefined, undefined] for a Charge Sheet
+        // field; ["participants", "personality", undefined] for a
+        // participant field), which is exactly the kind of detail a
+        // client displaying per-field errors depends on.
+        const [containerKey, ...rest] = path.split(".");
         const zodPath: (string | number)[] =
           containerKey === "chargeSheet"
             ? ["chargeSheet", rest[0]]

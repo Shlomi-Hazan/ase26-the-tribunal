@@ -303,6 +303,53 @@ describe("packageExtractionSchema -- server-authoritative relational/null semant
     expect(packageExtractionSchema.safeParse(draft).success).toBe(false);
   });
 
+  // Second independent pre-live re-audit, Section 11: the Zod issue
+  // path for a required-field-left-null-with-no-warning failure was
+  // computed via `const [, containerKey, ...rest] = path.split(".")`,
+  // which skipped the FIRST split segment (the actual container key) and
+  // was off-by-one throughout -- validation still correctly failed
+  // either way, but the reported `path` pointed at the wrong (or a
+  // nonexistent) field. These assert the exact array, not merely
+  // success/failure.
+  it("reports the exact Zod issue path for an unexplained null Charge Sheet field: [\"chargeSheet\", \"defendant\"]", () => {
+    const draft = fullyPopulatedDraft();
+
+    draft.chargeSheet.defendant = null;
+
+    const result = packageExtractionSchema.safeParse(draft);
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const issue = result.error.issues.find(
+        (candidate) => candidate.path[0] === "chargeSheet" && candidate.path[1] === "defendant"
+      );
+
+      expect(issue).toBeDefined();
+      expect(issue?.path).toEqual(["chargeSheet", "defendant"]);
+    }
+  });
+
+  it("reports the exact Zod issue path for an unexplained null participant field: [\"participants\", \"PRO_1\", \"personality\"]", () => {
+    const draft = fullyPopulatedDraft();
+
+    draft.participants.PRO_1.personality = null;
+
+    const result = packageExtractionSchema.safeParse(draft);
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const issue = result.error.issues.find(
+        (candidate) =>
+          candidate.path[0] === "participants" &&
+          candidate.path[1] === "PRO_1" &&
+          candidate.path[2] === "personality"
+      );
+
+      expect(issue).toBeDefined();
+      expect(issue?.path).toEqual(["participants", "PRO_1", "personality"]);
+    }
+  });
+
   it("re-validation of a persisted validated_result applies the exact same relational rules (replay path parity)", () => {
     // Simulates loading a persisted validated_result whose relational
     // invariant was corrupted after the fact (e.g. storage drift) --
