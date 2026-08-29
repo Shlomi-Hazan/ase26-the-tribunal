@@ -67,6 +67,24 @@ If a secret is ever committed or publicly exposed, treat it as compromised and *
 
 ---
 
+### 3.1 Operator metadata credential vs. user runtime inference credential (corrected this pass — product/economics decision)
+
+**The developer/operator must spend $0 on runtime model inference and must not fund production users.** `OPENROUTER_API_KEY` above is retained, but its scope is narrowed:
+
+- **Operator metadata credential** (`OPENROUTER_API_KEY`, server env var, unchanged): acceptable for zero-cost metadata/model-discovery/preflight requests only — `POST /api/setup-extractions/preflight` and, in this pass, the paid endpoints' own internal eligibility re-check (both make zero `createChatCompletion` calls). Still never exposed to the browser, still never sent to the model, still `verify-client-bundle.mjs`'s forbidden-identifier check.
+- **User runtime inference credential** (new: header `X-User-OpenRouter-Key`): required by every endpoint capable of calling `createChatCompletion` — currently `POST /api/setup-extractions` and `POST /api/setup-extractions/{id}/retry`. Absent → `OPENROUTER_NOT_CONNECTED`, zero claim, zero persistence, zero spend. **Never** falls back to `OPENROUTER_API_KEY`/`process.env` — those two Netlify Functions do not read the operator credential at all.
+- The user's credential is:
+  - held **only** in the browser tab's `sessionStorage` — never `localStorage`, never a cookie, never sent to Supabase, never written to any table or audit row;
+  - never logged (no `console.log`/error message ever includes it);
+  - never placed in a URL or query parameter — attached exclusively as an HTTP header on the two completion-capable requests;
+  - never echoed back in any server response;
+  - cleared by an explicit user "Disconnect" action or when the browser tab session ends.
+- This is a **payment/inference-authorization boundary**, not an authentication system — it introduces no login, no Supabase user table, no private per-user ownership. §18/§1 above ("V1 has no accounts") is unchanged.
+- V1 ships a minimal "paste your key" mechanism. The documented upgrade path is OpenRouter's own OAuth + PKCE flow (`openrouter.ai/docs/use-cases/oauth-pkce`), which reuses the same per-request-header, never-persisted-server-side architecture — only how the key first reaches the browser changes. Not implemented in this pass.
+- Full detail: `docs/economics.md` Sec 22.1; the request-level contract: `netlify/server/extraction/userOpenRouterKey.ts` / `src/services/openRouterCredential.ts`.
+
+---
+
 ## 4. Browser / Database Boundary
 
 V1 browser code does not directly access Supabase data.

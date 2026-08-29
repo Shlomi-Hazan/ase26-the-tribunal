@@ -2873,6 +2873,36 @@ Its own required properties are unchanged by this correction:
 - **Not performed by this planning task**, and not performable by it —
   the implementation this smoke would exercise does not yet exist.
 
+**Corrected this pass (product/economics decision, discovered during the
+M7A live gate itself): the developer/operator must spend $0 on runtime
+model inference.** This decision's original wording assumed the smoke
+would run against the operator's own `OPENROUTER_API_KEY` — that
+assumption is retracted. `docs/economics.md` Sec 22.1 is now
+authoritative for the payer model; the summary:
+
+- The mandatory real paid extraction smoke described above may **only**
+  be performed once an explicit user supplies their own OpenRouter
+  credential (the BYOK correction: `X-User-OpenRouter-Key`, held
+  client-side only, never the operator's key) — **never** using the
+  developer/operator's own key, in development, at any live gate, or in
+  production.
+- Real DEV Supabase migration application, real database RPC
+  verification, real OpenRouter **metadata**/eligibility verification
+  (zero-cost, still acceptable on the operator's key per Sec 22.1), and
+  real zero-completion preflight remain required pre-merge evidence for
+  the M7A implementation PR, unchanged.
+- A **real paid completion** using the developer/operator's key is
+  **removed** from the M7A implementation PR's mandatory pre-merge
+  evidence. In its place: complete `FakeExtractionProvider` end-to-end
+  inference tests (unchanged, already required), proof the paid
+  endpoints reject a missing user credential with zero claim/spend
+  (`OPENROUTER_NOT_CONNECTED`), and proof a supplied user credential is
+  request-scoped and never persisted.
+- The first real paid end-to-end extraction happens only when an actual
+  user connects their own OpenRouter credential through the shipped
+  BYOK UI — an ordinary production/demo use of the feature, not a
+  developer-authorized pre-merge gate event.
+
 ## Decision 24 — Cognified-software accounting
 
 The setup extraction call is cognified software — real model reasoning

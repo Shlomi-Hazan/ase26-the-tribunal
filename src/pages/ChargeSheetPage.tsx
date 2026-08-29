@@ -230,6 +230,13 @@ export function ChargeSheetPage() {
                 ? "Importing..."
                 : "Import Full Tribunal Package"}
             </Button>
+            <Button
+              disabled={Boolean(importing)}
+              onClick={() => navigate("/new/smart-import")}
+              variant="outlined"
+            >
+              Smart Import (free-form dossier)
+            </Button>
           </Stack>
           <Box>
             <Button onClick={handleContinue} variant="contained">

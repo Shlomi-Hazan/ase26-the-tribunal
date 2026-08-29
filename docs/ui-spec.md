@@ -145,12 +145,23 @@ with `[SECTION]`/`FIELD:` markers. Full contract:
 ```text
 New Case
   -> Smart Import
+  -> Connect OpenRouter (paste-your-key BYOK panel, corrected this pass
+     -- product/economics decision: the developer/operator spends $0 on
+     runtime inference; extraction is charged to the USER's own
+     OpenRouter account. Visible immediately, connectable any time
+     before Confirm & Extract; "Check Eligibility & Cost" below needs no
+     connection at all, since it makes zero completion calls. Full
+     detail: docs/economics.md Sec 22.1, SECURITY.md Sec 3.1.)
   -> Upload / Paste dossier
   -> [client-side type/size check]
-  -> read-only quote (zero spend -- shows eligibility/estimated cost)
-  -> explicit "Confirm & Extract" (this is where spend can occur; the
-     server re-checks eligibility/budget fresh, never trusting the
-     quote shown above)
+  -> read-only quote (zero spend -- shows eligibility/estimated cost;
+     works with or without a connected OpenRouter credential)
+  -> explicit "Confirm & Extract" (disabled until OpenRouter is
+     connected; this is where spend can occur, charged to the
+     connected user's own account -- the server re-checks
+     eligibility/budget fresh, never trusting the quote shown above,
+     and independently rejects a missing credential with
+     OPENROUTER_NOT_CONNECTED regardless of what the UI shows)
   -> Extracting
   -> Extraction Review (staged preview -- does not touch the active draft)
        - unresolved/ambiguous fields visibly highlighted

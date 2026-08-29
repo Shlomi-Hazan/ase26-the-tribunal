@@ -16,7 +16,8 @@
     "test:watch": "vitest",
     "build": "vite build",
     "verify:client-bundle": "node scripts/verify-client-bundle.mjs",
-    "verify": "npm run lint && npm run typecheck && npm run test && npm run build && npm run verify:client-bundle"
+    "verify:netlify-functions-packaging": "node scripts/verify-netlify-functions-packaging.mjs",
+    "verify": "npm run lint && npm run typecheck && npm run test && npm run build && npm run verify:client-bundle && npm run verify:netlify-functions-packaging"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",
@@ -25,6 +26,7 @@
     "@netlify/functions": "^6.0.0",
     "@supabase/supabase-js": "^2.112.4",
     "decimal.js": "^10.6.0",
+    "pdfjs-dist": "6.2.108",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-router-dom": "^7.18.2",
