@@ -13,10 +13,19 @@ import { handleSetupExtractionsRetryRequest } from "../setup-extractions-retry";
 
 const CONFIGURED_MODEL_ID = "vendor/extraction-model";
 
+// User-funded OpenRouter BYOK correction: a clearly-fake, test-only
+// placeholder credential -- never a real OpenRouter key. Every EXISTING
+// test in this file represents a user who has already connected (the
+// default), matching "existing fake-provider tests remain the default
+// development path." Dedicated tests below override `headers: {}` (or
+// omit the header) to exercise the OPENROUTER_NOT_CONNECTED path
+// specifically.
+const FAKE_CONNECTED_HEADERS = { "x-user-openrouter-key": "sk-or-v1-test-fake-user-key" };
+
 function fakeEvent(overrides: Partial<HandlerEvent>): HandlerEvent {
   return {
     httpMethod: "POST",
-    headers: {},
+    headers: FAKE_CONNECTED_HEADERS,
     queryStringParameters: {},
     body: null,
     ...overrides
@@ -150,5 +159,110 @@ describe("POST /api/setup-extractions/:id/retry handler", () => {
 
     const body = JSON.parse(result.body) as { errorCode: string };
     expect(body.errorCode).toBe("IDEMPOTENCY_CONFLICT");
+  });
+});
+
+// User-funded OpenRouter BYOK correction: every completion-capable
+// endpoint requires an explicit per-request user OpenRouter credential
+// -- absence must fail with a stable OPENROUTER_NOT_CONNECTED, zero
+// claim, zero completion, zero persistence, and must never fall back to
+// any other credential.
+describe("OpenRouter BYOK credential gate (user-funded correction)", () => {
+  it("POST /api/setup-extractions without the header: OPENROUTER_NOT_CONNECTED, zero claim, zero completion", async () => {
+    const deps = makeDeps();
+    const provider = deps.provider as FakeExtractionProvider;
+    const extractionRequestId = randomUUID();
+
+    const result = await handleSetupExtractionsRequest(
+      fakeEvent({
+        headers: {},
+        body: JSON.stringify({
+          extractionRequestId,
+          source: { kind: "text", text: "Dossier text." }
+        })
+      }),
+      deps
+    );
+
+    expect(result.statusCode).toBe(400);
+    const body = JSON.parse(result.body) as { status: string; errorCode: string };
+    expect(body.status).toBe("blocked");
+    expect(body.errorCode).toBe("OPENROUTER_NOT_CONNECTED");
+
+    // Zero completion, zero claim: the fake provider was never touched,
+    // and no attempt/extraction row was ever created.
+    expect(provider.createChatCompletionCallCount).toBe(0);
+    expect(await deps.repository.getAttempt(extractionRequestId, 1)).toBeNull();
+    expect(await deps.repository.getExtraction(extractionRequestId)).toBeNull();
+  });
+
+  it("POST /api/setup-extractions/:id/retry without the header: OPENROUTER_NOT_CONNECTED, zero completion", async () => {
+    const deps = makeDeps();
+    const provider = deps.provider as FakeExtractionProvider;
+
+    const result = await handleSetupExtractionsRetryRequest(
+      fakeEvent({
+        headers: {},
+        queryStringParameters: { id: randomUUID() },
+        body: JSON.stringify({ source: { kind: "text", text: "x" } })
+      }),
+      deps
+    );
+
+    expect(result.statusCode).toBe(400);
+    const body = JSON.parse(result.body) as { status: string; errorCode: string };
+    expect(body.status).toBe("blocked");
+    expect(body.errorCode).toBe("OPENROUTER_NOT_CONNECTED");
+    expect(provider.createChatCompletionCallCount).toBe(0);
+  });
+
+  it("a blank/whitespace-only header is treated as not connected, not a real credential", async () => {
+    const result = await handleSetupExtractionsRequest(
+      fakeEvent({
+        headers: { "x-user-openrouter-key": "   " },
+        body: JSON.stringify({
+          extractionRequestId: randomUUID(),
+          source: { kind: "text", text: "x" }
+        })
+      }),
+      makeDeps()
+    );
+
+    expect(result.statusCode).toBe(400);
+    const body = JSON.parse(result.body) as { errorCode: string };
+    expect(body.errorCode).toBe("OPENROUTER_NOT_CONNECTED");
+  });
+
+  it("header lookup is case-insensitive (a real HTTP client may send any casing)", async () => {
+    const result = await handleSetupExtractionsRequest(
+      fakeEvent({
+        headers: { "X-User-OpenRouter-Key": "sk-or-v1-test-fake-user-key" },
+        body: JSON.stringify({
+          extractionRequestId: randomUUID(),
+          source: { kind: "text", text: "Dossier text." }
+        })
+      }),
+      makeDeps()
+    );
+
+    expect(result.statusCode).toBe(200);
+  });
+
+  it("preflight remains usable with zero header and makes zero completion calls either way", async () => {
+    const deps = makeDeps();
+    const provider = deps.provider as FakeExtractionProvider;
+
+    const result = await handleSetupExtractionsPreflightRequest(
+      fakeEvent({
+        headers: {},
+        body: JSON.stringify({ source: { kind: "text", text: "Dossier text." } })
+      }),
+      deps
+    );
+
+    expect(result.statusCode).toBe(200);
+    const body = JSON.parse(result.body) as { eligible: boolean };
+    expect(body.eligible).toBe(true);
+    expect(provider.createChatCompletionCallCount).toBe(0);
   });
 });

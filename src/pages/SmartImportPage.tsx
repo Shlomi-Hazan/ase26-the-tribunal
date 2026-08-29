@@ -17,9 +17,11 @@ import {
 } from "@mui/material";
 import { type ChangeEvent, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { OpenRouterConnect } from "../components/OpenRouterConnect";
 import { PageHeader } from "../components/PageHeader";
 import { SetupStepper } from "../components/SetupStepper";
 import { useSetup } from "../features/case-setup/useSetup";
+import { hasUserOpenRouterKey } from "../services/openRouterCredential";
 import {
   packageSeatToParticipantId,
   packageSeats,
@@ -188,6 +190,12 @@ export function SmartImportPage() {
   const [attemptOne, setAttemptOne] = useState<ExtractionAttemptSummary | null>(null);
   const [attemptTwo, setAttemptTwo] = useState<ExtractionAttemptSummary | null>(null);
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
+  // User-funded OpenRouter BYOK correction: Confirm & Extract/Retry/
+  // Recover all can trigger a real createChatCompletion call, so all
+  // three are gated on this. Initialized from sessionStorage so a
+  // connection made earlier in this tab session is respected across a
+  // remount (e.g. navigating away and back).
+  const [openRouterConnected, setOpenRouterConnected] = useState(() => hasUserOpenRouterKey());
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const busy = phase === "preflighting" || phase === "applying" || pendingAction !== null;
@@ -493,6 +501,10 @@ export function SmartImportPage() {
         </Alert>
       ) : null}
 
+      {phase !== "review" ? (
+        <OpenRouterConnect connected={openRouterConnected} onConnectedChange={setOpenRouterConnected} />
+      ) : null}
+
       {error ? <Alert severity="error">{error}</Alert> : null}
 
       {phase === "idle" || phase === "preflighting" ? (
@@ -571,17 +583,21 @@ export function SmartImportPage() {
 
             <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
               {showConfirmAction ? (
-                <Button disabled={busy || !quote.eligible} onClick={handleConfirmExtract} variant="contained">
+                <Button
+                  disabled={busy || !quote.eligible || !openRouterConnected}
+                  onClick={handleConfirmExtract}
+                  variant="contained"
+                >
                   {pendingAction === "confirm" ? <CircularProgress size={20} /> : "Confirm & Extract"}
                 </Button>
               ) : null}
               {showRetryAction ? (
-                <Button disabled={busy} onClick={handleRetry} variant="contained">
+                <Button disabled={busy || !openRouterConnected} onClick={handleRetry} variant="contained">
                   {pendingAction === "retry" ? <CircularProgress size={20} /> : "Retry"}
                 </Button>
               ) : null}
               {showRecoverAction ? (
-                <Button disabled={busy} onClick={handleRecover} variant="contained">
+                <Button disabled={busy || !openRouterConnected} onClick={handleRecover} variant="contained">
                   {pendingAction === "recover" ? (
                     <CircularProgress size={20} />
                   ) : phase === "in_progress" ? (
@@ -595,6 +611,17 @@ export function SmartImportPage() {
                 Cancel
               </Button>
             </Stack>
+            {/* User-funded OpenRouter BYOK correction: Confirm & Extract
+                cannot perform a completion-capable request without a
+                connected user key (server-side enforced independently
+                too -- OPENROUTER_NOT_CONNECTED, see
+                netlify/server/extraction/userOpenRouterKey.ts). */}
+            {(showConfirmAction || showRetryAction || showRecoverAction) && !openRouterConnected ? (
+              <Typography color="text.secondary" variant="body2">
+                Connect your OpenRouter account above before continuing -- extraction inference
+                is billed to your own account.
+              </Typography>
+            ) : null}
             {phase === "in_progress" ? (
               <Typography color="text.secondary" variant="body2">
                 This extraction is still in progress on the server. Checking status replays

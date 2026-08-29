@@ -837,3 +837,63 @@ see `docs/adr/0004-smart-package-extraction.md` for full detail):**
   for the $5.00 ceiling.
 
 No unbounded extraction call is permitted.
+
+### 22.1 Payer model — user-funded runtime inference (product/economics correction)
+
+**Corrected this pass (product/economics decision, prompted by the M7A
+live gate itself): the developer/operator must spend $0 on runtime
+model inference.** Every locked figure above ($0.50 extraction ceiling,
+$5.00 seven-call Tribunal ceiling, the conservative preflight/retry
+math) is entirely unchanged — this correction is about **who pays**,
+never about how much or how the guardrails compute.
+
+- **Development**: automated tests inject `FakeExtractionProvider` (M7A)
+  / the fake OpenRouter provider (M7) exclusively — no test in this
+  repository, and no CI run, ever makes a real OpenRouter call. Zero-cost
+  metadata/model-discovery/preflight requests against the real
+  OpenRouter API remain available during development on the operator's
+  own key, since they cost nothing regardless of whose credential asks
+  for them.
+- **Production/demo**: a **paid** call —
+  `POST /api/setup-extractions` and `POST /api/setup-extractions/{id}/retry`,
+  the only two endpoints capable of calling `createChatCompletion` —
+  requires an explicit per-request user OpenRouter credential (header
+  `X-User-OpenRouter-Key`). Absent, the server responds
+  `OPENROUTER_NOT_CONNECTED` with zero claim, zero persistence, zero
+  spend, and **never** falls back to the operator's own
+  `OPENROUTER_API_KEY` — that env var is not even read by either of
+  those two Netlify Functions anymore. The read-only, non-billable
+  `POST /api/setup-extractions/preflight` quote is deliberately exempt
+  (it makes zero completion calls either way) and keeps using the
+  operator's own metadata credential for both preflight and, in this
+  pass, the paid endpoints' own internal eligibility re-check too —
+  simplest way to make "never the operator key for spend" structurally
+  true rather than merely conventionally true. A future production
+  design can move metadata onto the connected user credential as well
+  (trivial, since the same per-request plumbing already exists), but
+  V1 does not require it.
+- **V1 submission mechanism ("bring your own key")**: the user pastes
+  their own OpenRouter API key into a small Smart Import connect panel;
+  it is held only in that browser tab's `sessionStorage` (never
+  `localStorage`, never sent to Supabase, never logged), attached as a
+  request header on the two paid calls only, and cleared by an explicit
+  Disconnect action or when the tab session ends. **Future preferred
+  UX**: OpenRouter's own OAuth + PKCE flow
+  (`openrouter.ai/docs/use-cases/oauth-pkce`) — out of scope for this
+  pass, but the same "per-request credential, never persisted
+  server-side" architecture this correction establishes is exactly what
+  that upgrade would reuse; only how the key first arrives in the
+  browser changes.
+- **Cost visibility unchanged**: the user still sees the existing
+  conservative preflight quote (§10 above, unchanged) before Confirm &
+  Extract is even enabled — connecting a credential does not bypass or
+  shortcut that confirmation step.
+- **No accounts introduced**: this is a payment/inference-authorization
+  boundary only, not a login system. V1 remains single-tenant with no
+  Supabase user authentication and no private ownership model (§18
+  above, `SECURITY.md` §3.1) — the credential lives in the browser for
+  the current tab session and nowhere else.
+- **M8 reuse**: the same per-request credential handoff is designed to
+  extend directly to M8's seven advocate/judge calls — one connected
+  user credential funds that entire frozen run, never the operator's.
+  Not implemented in this pass.

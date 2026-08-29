@@ -2,6 +2,7 @@
 // importApi.ts's ImportApiError/fetch pattern.
 
 import type { PackageExtractionResult } from "../schemas/packageExtraction";
+import { withUserOpenRouterKeyHeader } from "./openRouterCredential";
 
 export type DossierSourcePayload =
   | { kind: "text"; text: string }
@@ -92,13 +93,19 @@ export async function requestExtractionPreflight(
   return payload;
 }
 
+// User-funded OpenRouter BYOK correction: this is the only completion-
+// capable call besides retryExtraction below -- attaches the user's own
+// connected OpenRouter credential (never the operator's) as a header.
+// requestExtractionPreflight above deliberately does NOT attach it: it
+// makes zero createChatCompletion calls, so it remains usable before
+// connecting (Section 5/Section 6 of the correction task).
 export async function submitExtraction(
   extractionRequestId: string,
   source: DossierSourcePayload
 ): Promise<ExtractionResponse> {
   const response = await fetch("/api/setup-extractions", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: withUserOpenRouterKeyHeader({ "content-type": "application/json" }),
     body: JSON.stringify({ extractionRequestId, source })
   });
 
@@ -113,7 +120,7 @@ export async function retryExtraction(
     `/api/setup-extractions/${encodeURIComponent(extractionRequestId)}/retry`,
     {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: withUserOpenRouterKeyHeader({ "content-type": "application/json" }),
       body: JSON.stringify({ source })
     }
   );

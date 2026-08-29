@@ -13,11 +13,30 @@ import { renderWithAppProviders } from "../test/renderWithAppProviders";
 import { AppRoutes } from "../app/App";
 import { packageSeats } from "../schemas/tribunalSetup";
 import { RETRYABLE_ERROR_CODES, SMART_IMPORT_PROVENANCE_MARKER } from "./smartImportConstants";
-// Server-only module -- safe to import here because vitest test files are
-// never part of the Vite app entry graph that `npm run build` bundles
-// into dist/, so this import cannot leak into the client bundle (see
-// scripts/verify-client-bundle.mjs, which only scans dist/).
+import { getUserOpenRouterKey, USER_OPENROUTER_KEY_HEADER } from "../services/openRouterCredential";
+// Server-only modules -- safe to import here because vitest test files
+// are never part of the Vite app entry graph that `npm run build`
+// bundles into dist/, so this import cannot leak into the client
+// bundle (see scripts/verify-client-bundle.mjs, which only scans
+// dist/).
 import { isRetryableExtractionFailure } from "../../netlify/server/extraction/errors";
+import { USER_OPENROUTER_KEY_HEADER as SERVER_USER_OPENROUTER_KEY_HEADER } from "../../netlify/server/extraction/userOpenRouterKey";
+
+// User-funded OpenRouter BYOK correction: a clearly-fake, test-only
+// placeholder credential -- never a real OpenRouter key.
+const FAKE_USER_OPENROUTER_KEY = "sk-or-v1-test-fake-user-key";
+
+// Connects through the REAL UI (types into the field, clicks Connect)
+// rather than writing directly to sessionStorage -- the component's own
+// `openRouterConnected` React state is only ever updated via that
+// button's onConnectedChange callback, exactly like a real user, so
+// bypassing the UI here would leave the button state stale/disabled
+// even though the credential was technically stored (a real gap this
+// exact mismatch caught during test-writing).
+async function connectOpenRouter(user: ReturnType<typeof userEvent.setup>) {
+  await user.type(screen.getByLabelText(/openrouter api key/i), FAKE_USER_OPENROUTER_KEY);
+  await user.click(screen.getByRole("button", { name: /^connect$/i }));
+}
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -98,7 +117,20 @@ function inProgress() {
   };
 }
 
-async function reachQuote(user: ReturnType<typeof userEvent.setup>) {
+// Connects a fake OpenRouter credential by default -- every EXISTING
+// test that proceeds to click Confirm & Extract represents an
+// already-connected user (matching "existing fake-provider tests
+// remain the default development path"). Dedicated tests below verify
+// the NOT-connected gating itself, calling reachQuote without
+// connecting first.
+async function reachQuote(
+  user: ReturnType<typeof userEvent.setup>,
+  { connect = true }: { connect?: boolean } = {}
+) {
+  if (connect) {
+    await connectOpenRouter(user);
+  }
+
   await user.type(screen.getByLabelText(/paste dossier text/i), "A case dossier.");
   await user.click(screen.getByRole("button", { name: /check eligibility & cost/i }));
   await waitFor(() => screen.getByRole("button", { name: /confirm & extract/i }));
@@ -106,6 +138,7 @@ async function reachQuote(user: ReturnType<typeof userEvent.setup>) {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  sessionStorage.clear();
 });
 
 describe("Smart Import", () => {
@@ -481,5 +514,118 @@ describe("Smart Import", () => {
     for (const code of serverRetryableCodes) {
       expect(RETRYABLE_ERROR_CODES.has(code)).toBe(isRetryableExtractionFailure(code));
     }
+  });
+});
+
+// User-funded OpenRouter BYOK correction: the developer/operator must
+// spend $0 on runtime model inference -- Confirm & Extract (and
+// Retry/Recover) cannot perform a completion-capable request without a
+// connected user OpenRouter credential, and that credential is never
+// persisted anywhere but this tab's sessionStorage.
+describe("OpenRouter connection (user-funded BYOK correction)", () => {
+  it("preflight (Check Eligibility & Cost) works with ZERO connection -- it makes zero completion calls either way", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse(eligiblePreflight()));
+
+    renderWithAppProviders(<AppRoutes />, "/new/smart-import");
+
+    // Deliberately does NOT call connectOpenRouter() -- reachQuote's
+    // own default already proves this, but this test isolates and
+    // names the requirement explicitly.
+    await reachQuote(user, { connect: false });
+
+    expect(screen.getByText(/estimated maximum cost/i)).toBeInTheDocument();
+  });
+
+  it("Confirm & Extract is disabled until OpenRouter is connected, with an explanatory hint", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse(eligiblePreflight()));
+
+    renderWithAppProviders(<AppRoutes />, "/new/smart-import");
+
+    await reachQuote(user, { connect: false });
+
+    expect(screen.getByRole("button", { name: /confirm & extract/i })).toBeDisabled();
+    expect(screen.getByText(/connect your openrouter account above/i)).toBeInTheDocument();
+  });
+
+  it("pasting a key and clicking Connect enables Confirm & Extract and attaches the header on submit", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    fetchSpy.mockResolvedValueOnce(jsonResponse(eligiblePreflight()));
+    fetchSpy.mockResolvedValueOnce(jsonResponse(successExtraction()));
+
+    renderWithAppProviders(<AppRoutes />, "/new/smart-import");
+
+    await reachQuote(user, { connect: false });
+    expect(screen.getByRole("button", { name: /confirm & extract/i })).toBeDisabled();
+
+    await user.type(screen.getByLabelText(/openrouter api key/i), FAKE_USER_OPENROUTER_KEY);
+    await user.click(screen.getByRole("button", { name: /^connect$/i }));
+
+    expect(screen.getByText(/connected/i)).toBeInTheDocument();
+    // "do not display the full key again after connection" -- only a
+    // masked suffix, never the real value, anywhere in the DOM.
+    expect(screen.queryByText(FAKE_USER_OPENROUTER_KEY)).not.toBeInTheDocument();
+
+    expect(screen.getByRole("button", { name: /confirm & extract/i })).not.toBeDisabled();
+    await user.click(screen.getByRole("button", { name: /confirm & extract/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/extraction review/i)).toBeInTheDocument();
+    });
+
+    const submitCall = fetchSpy.mock.calls[1];
+    const submitHeaders = submitCall[1]?.headers as Record<string, string>;
+
+    expect(submitHeaders[USER_OPENROUTER_KEY_HEADER]).toBe(FAKE_USER_OPENROUTER_KEY);
+  });
+
+  it("preflight never sends the user's OpenRouter header, even when connected", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    fetchSpy.mockResolvedValueOnce(jsonResponse(eligiblePreflight()));
+
+    renderWithAppProviders(<AppRoutes />, "/new/smart-import");
+
+    await reachQuote(user); // connects by default
+
+    const preflightCall = fetchSpy.mock.calls[0];
+    const preflightHeaders = (preflightCall[1]?.headers ?? {}) as Record<string, string>;
+
+    expect(preflightHeaders[USER_OPENROUTER_KEY_HEADER]).toBeUndefined();
+  });
+
+  it("Disconnect clears the credential and re-disables Confirm & Extract", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse(eligiblePreflight()));
+
+    renderWithAppProviders(<AppRoutes />, "/new/smart-import");
+
+    await reachQuote(user); // connected by default
+    expect(screen.getByRole("button", { name: /confirm & extract/i })).not.toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: /disconnect/i }));
+
+    expect(getUserOpenRouterKey()).toBeNull();
+    expect(screen.getByRole("button", { name: /confirm & extract/i })).toBeDisabled();
+  });
+
+  it("the connected credential is held in sessionStorage only -- never localStorage", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse(eligiblePreflight()));
+
+    renderWithAppProviders(<AppRoutes />, "/new/smart-import");
+
+    await reachQuote(user);
+
+    expect(sessionStorage.length).toBeGreaterThan(0);
+    expect(localStorage.length).toBe(0);
+  });
+
+  it("the client's X-User-OpenRouter-Key header name stays in sync with the server's authoritative userOpenRouterKey.ts (anti-drift)", () => {
+    expect(USER_OPENROUTER_KEY_HEADER).toBe(SERVER_USER_OPENROUTER_KEY_HEADER);
   });
 });
