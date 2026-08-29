@@ -18,6 +18,14 @@ export type ClaimAttemptInput = {
   providerEndpointTag: string;
   promptVersion: string;
   conservativeMaxCostUsd: string;
+  // Audit correction (Issue #17 blocker 4): the exact pricing snapshot
+  // authorizing this attempt, persisted at claim time. inputPricePerMillion
+  // is the cache-write-aware effective input price (never the raw,
+  // possibly-lower prompt rate).
+  inputPricePerMillion: string;
+  outputPricePerMillion: string;
+  requestPriceUsd: string;
+  pricingObservedAt: string;
 };
 
 export type TerminalizeAttemptInput = {
@@ -27,10 +35,20 @@ export type TerminalizeAttemptInput = {
     | "INVALID_STRUCTURED_OUTPUT"
     | "TIMEOUT"
     | "PROVIDER_UNAVAILABLE"
-    | "UNKNOWN_OUTCOME";
+    | "UNKNOWN_OUTCOME"
+    // Independent audit correction (Issue #17 blocker 5): schema-valid
+    // output whose usage/economics could not be reliably established --
+    // never accepted as SUCCESS, regardless of how well-formed the
+    // speech/verdict JSON itself was.
+    | "TELEMETRY_UNAVAILABLE";
   inputTokens: number | null;
   outputTokens: number | null;
   actualCostUsd: string | null;
+  // Audit correction (Issue #17 blockers 4/5): application-derived cost
+  // (native token counts x the claimed pricing snapshot) when the
+  // provider did not report usage.cost -- kept structurally distinct
+  // from actualCostUsd, never used to overwrite it.
+  derivedCostUsd: string | null;
   latencyMs: number | null;
   providerRequestId: string | null;
   errorCategory: string | null;
@@ -183,7 +201,11 @@ export class SupabaseTribunalExecutionRepository implements TribunalExecutionRep
       p_canonical_model_id: input.canonicalModelId,
       p_provider_endpoint_tag: input.providerEndpointTag,
       p_prompt_version: input.promptVersion,
-      p_conservative_max_cost_usd: input.conservativeMaxCostUsd
+      p_conservative_max_cost_usd: input.conservativeMaxCostUsd,
+      p_input_price_per_million: input.inputPricePerMillion,
+      p_output_price_per_million: input.outputPricePerMillion,
+      p_request_price_usd: input.requestPriceUsd,
+      p_pricing_observed_at: input.pricingObservedAt
     });
 
     if (error) {
@@ -202,6 +224,7 @@ export class SupabaseTribunalExecutionRepository implements TribunalExecutionRep
       p_input_tokens: input.inputTokens,
       p_output_tokens: input.outputTokens,
       p_actual_cost_usd: input.actualCostUsd,
+      p_derived_cost_usd: input.derivedCostUsd,
       p_latency_ms: input.latencyMs,
       p_provider_request_id: input.providerRequestId,
       p_error_category: input.errorCategory,
@@ -345,6 +368,7 @@ export class FakeTribunalExecutionRepository implements TribunalExecutionReposit
       inputTokens: null,
       outputTokens: null,
       actualCostUsd: null,
+      derivedCostUsd: null,
       latencyMs: null,
       providerRequestId: null,
       errorCategory: null,

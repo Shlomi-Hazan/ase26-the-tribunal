@@ -3,10 +3,9 @@
 // a key is supplied (the same M7A factory, not reimplemented), so these
 // tests mock global fetch itself -- distinguishing OpenRouter metadata
 // calls (openrouter.ai) from the one server-to-server Background
-// Function invocation (this deployment's own origin) by URL, exactly
-// like the real two different destinations.
+// Function invocation (this deployment's own trusted origin) by URL,
+// exactly like the real two different destinations.
 
-import type { HandlerEvent } from "@netlify/functions";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ADVOCATE_PROMPT_VERSION, JUDGE_PROMPT_VERSION } from "../../../src/prompts/versions";
 import { participantIds } from "../../../src/schemas/tribunalSetup";
@@ -20,6 +19,7 @@ import { USER_OPENROUTER_KEY_HEADER } from "../extraction/userOpenRouterKey";
 const RUN_ID = "11111111-1111-4111-8111-111111111111";
 const CASE_ID = "22222222-2222-4222-8222-222222222222";
 const MODEL_ID = "openai/gpt-5";
+const TRUSTED_BASE_URL = "https://the-tribunal-real-deployment.netlify.app";
 
 function baseRun(): PersistedRun {
   return {
@@ -139,12 +139,6 @@ function fakeCaseRepository(): CaseRepository {
   };
 }
 
-function fakeEvent(): HandlerEvent {
-  return {
-    headers: { host: "example.netlify.app", "x-forwarded-proto": "https" }
-  } as unknown as HandlerEvent;
-}
-
 // Empty model catalog -> resolveModelRoute finds zero candidate
 // endpoints for the run's participants -> ineligible. Used for the
 // blocked_budget case since a real run here has zero participants (the
@@ -169,7 +163,7 @@ describe("triggerExecutionIfEligible", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
-    const result = await triggerExecutionIfEligible(readyRun(), null, fakeEvent(), {
+    const result = await triggerExecutionIfEligible(readyRun(), null, {
       runRepository: fakeRunRepository(readyRun()),
       caseRepository: fakeCaseRepository(),
       tribunalRepository: new FakeTribunalExecutionRepository()
@@ -185,13 +179,32 @@ describe("triggerExecutionIfEligible", () => {
 
     const run = { ...readyRun(), status: "ADVOCATES_RUNNING" };
 
-    const result = await triggerExecutionIfEligible(run, "sk-or-v1-user-key", fakeEvent(), {
+    const result = await triggerExecutionIfEligible(run, "sk-or-v1-user-key", {
       runRepository: fakeRunRepository(run),
       caseRepository: fakeCaseRepository(),
       tribunalRepository: new FakeTribunalExecutionRepository()
     });
 
     expect(result.invoked).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // Blocker 2: M8 is Shared-Model only. A SEPARATE run must never reach
+  // the worker or make any provider call, even with a valid connected
+  // credential.
+  it("SEPARATE mode + valid credential -> zero worker invocation, zero OpenRouter call of any kind", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const run = { ...eligibleRun(), executionMode: "separate" as const };
+
+    const result = await triggerExecutionIfEligible(run, "sk-or-v1-user-key", {
+      runRepository: fakeRunRepository(run),
+      caseRepository: fakeCaseRepository(),
+      tribunalRepository: new FakeTribunalExecutionRepository()
+    });
+
+    expect(result).toEqual({ invoked: false, reason: "separate_mode_not_enabled" });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -206,7 +219,7 @@ describe("triggerExecutionIfEligible", () => {
     const repository = new FakeTribunalExecutionRepository();
     repository.setRunStatus(RUN_ID, "READY");
 
-    const result = await triggerExecutionIfEligible(run, "sk-or-v1-user-key", fakeEvent(), {
+    const result = await triggerExecutionIfEligible(run, "sk-or-v1-user-key", {
       runRepository: fakeRunRepository(run),
       caseRepository: fakeCaseRepository(),
       tribunalRepository: repository
@@ -216,7 +229,7 @@ describe("triggerExecutionIfEligible", () => {
     expect(repository.runStatus.get(RUN_ID)).toBe("BLOCKED_BUDGET");
   });
 
-  it("eligible run -> invoked, and the worker invocation carries the internal secret + the user's own key (never the operator's) as headers, runId in the body", async () => {
+  it("eligible run -> invoked, and the worker invocation carries the internal secret + the user's own key (never the operator's) as headers, runId in the body, destination from trusted config", async () => {
     vi.stubEnv("INTERNAL_FUNCTION_SECRET", "test-internal-secret");
 
     const fetchMock = vi.fn().mockImplementation((url: string) => {
@@ -234,10 +247,11 @@ describe("triggerExecutionIfEligible", () => {
     const repository = new FakeTribunalExecutionRepository();
     repository.setRunStatus(RUN_ID, "READY");
 
-    const result = await triggerExecutionIfEligible(run, "sk-or-v1-the-users-own-key", fakeEvent(), {
+    const result = await triggerExecutionIfEligible(run, "sk-or-v1-the-users-own-key", {
       runRepository: fakeRunRepository(run),
       caseRepository: fakeCaseRepository(),
-      tribunalRepository: repository
+      tribunalRepository: repository,
+      backgroundFunctionBaseUrl: TRUSTED_BASE_URL
     });
 
     expect(result).toEqual({ invoked: true });
@@ -250,10 +264,53 @@ describe("triggerExecutionIfEligible", () => {
     const [url, init] = workerCall as [string, RequestInit];
     const headers = init.headers as Record<string, string>;
 
-    expect(url).toBe("https://example.netlify.app/.netlify/functions/tribunal-execute-background");
+    expect(url).toBe(`${TRUSTED_BASE_URL}/.netlify/functions/tribunal-execute-background`);
     expect(headers[INTERNAL_FUNCTION_SECRET_HEADER]).toBe("test-internal-secret");
     expect(headers[USER_OPENROUTER_KEY_HEADER]).toBe("sk-or-v1-the-users-own-key");
     expect(JSON.parse(init.body as string)).toEqual({ runId: RUN_ID });
+  });
+
+  // Blocker 7 regression: the destination must come from trusted
+  // server-side config (process.env.URL / the injected override), never
+  // from any caller-supplied request data. There is no code path in
+  // triggerExecutionIfEligible's signature that even accepts a Host or
+  // X-Forwarded-Proto value anymore -- this test proves the resolved
+  // destination is controlled entirely by server config, by showing an
+  // "attacker" value has no way to reach the URL: the function accepts
+  // no request/event parameter at all, only the explicit trusted
+  // deps.backgroundFunctionBaseUrl override (or, when omitted, the real
+  // readBackgroundFunctionBaseUrl() env accessor).
+  it("attacker-controlled request data cannot influence the worker destination -- only trusted server config can", async () => {
+    vi.stubEnv("INTERNAL_FUNCTION_SECRET", "test-internal-secret");
+    vi.stubEnv("URL", "https://attacker-cannot-set-this-env-var.example");
+
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      const openRouterResponse = eligibleOpenRouterResponse(url);
+
+      return Promise.resolve(openRouterResponse ?? new Response("{}", { status: 202 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const run = eligibleRun();
+    const repository = new FakeTribunalExecutionRepository();
+    repository.setRunStatus(RUN_ID, "READY");
+
+    // No event/Host/X-Forwarded-Proto parameter exists in this call at
+    // all -- the destination can only ever come from deps or real env.
+    await triggerExecutionIfEligible(run, "sk-or-v1-user-key", {
+      runRepository: fakeRunRepository(run),
+      caseRepository: fakeCaseRepository(),
+      tribunalRepository: repository
+    });
+
+    const workerCall = fetchMock.mock.calls.find(
+      (call) => !(call[0] as string).includes("openrouter.ai")
+    );
+    const [url] = workerCall as [string, RequestInit];
+
+    expect(url).toBe(
+      "https://attacker-cannot-set-this-env-var.example/.netlify/functions/tribunal-execute-background"
+    );
   });
 
   it("missing INTERNAL_FUNCTION_SECRET server config -> invocation_failed, no worker call attempted", async () => {
@@ -270,7 +327,7 @@ describe("triggerExecutionIfEligible", () => {
     const repository = new FakeTribunalExecutionRepository();
     repository.setRunStatus(RUN_ID, "READY");
 
-    const result = await triggerExecutionIfEligible(run, "sk-or-v1-user-key", fakeEvent(), {
+    const result = await triggerExecutionIfEligible(run, "sk-or-v1-user-key", {
       runRepository: fakeRunRepository(run),
       caseRepository: fakeCaseRepository(),
       tribunalRepository: repository

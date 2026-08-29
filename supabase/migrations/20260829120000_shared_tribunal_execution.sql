@@ -63,8 +63,18 @@ create table public.model_call_attempts (
   input_tokens bigint null,
   output_tokens bigint null,
   total_tokens bigint null,
+  -- Audit correction (independent review, Issue #17 blocker 4): these
+  -- two columns persist the AUTHORITATIVE conservative pricing snapshot
+  -- used to authorize this exact attempt, written at claim time (before
+  -- the provider call), not derived after the fact.
+  -- input_price_per_million is explicitly the cache-write-aware
+  -- `effectiveInputPricePerToken * 1_000_000` (ADR 0003 Decision 7B) --
+  -- NEVER the raw, possibly-lower `promptPricePerToken` -- so a claimed
+  -- attempt's persisted input price is never understated relative to
+  -- what could actually be billed.
   input_price_per_million numeric null,
   output_price_per_million numeric null,
+  request_price_usd numeric null,
   actual_cost_usd numeric null,
   derived_cost_usd numeric null,
   pricing_observed_at timestamptz null,
@@ -87,7 +97,10 @@ create table public.model_call_attempts (
       'INVALID_STRUCTURED_OUTPUT',
       'TIMEOUT',
       'PROVIDER_UNAVAILABLE',
-      'UNKNOWN_OUTCOME'
+      'UNKNOWN_OUTCOME',
+      -- Independent audit correction (Issue #17 blocker 5): schema-valid
+      -- output whose usage/economics could not be reliably established.
+      'TELEMETRY_UNAVAILABLE'
     )
   )
 );
@@ -363,7 +376,15 @@ create function public.claim_tribunal_attempt(
   p_canonical_model_id text,
   p_provider_endpoint_tag text,
   p_prompt_version text,
-  p_conservative_max_cost_usd numeric
+  p_conservative_max_cost_usd numeric,
+  -- Audit correction (Issue #17 blocker 4): the exact pricing snapshot
+  -- authorizing THIS attempt, written now (before the provider call),
+  -- not reconstructed later. p_input_price_per_million is the
+  -- cache-write-aware effective input price, never the raw prompt rate.
+  p_input_price_per_million numeric,
+  p_output_price_per_million numeric,
+  p_request_price_usd numeric,
+  p_pricing_observed_at timestamptz
 )
 returns table (won_claim boolean, attempt_id uuid)
 language plpgsql
@@ -383,7 +404,11 @@ begin
       canonical_model_id,
       provider_endpoint_tag,
       prompt_version,
-      conservative_max_cost_usd
+      conservative_max_cost_usd,
+      input_price_per_million,
+      output_price_per_million,
+      request_price_usd,
+      pricing_observed_at
     )
     values (
       p_run_id,
@@ -394,7 +419,11 @@ begin
       p_canonical_model_id,
       p_provider_endpoint_tag,
       p_prompt_version,
-      p_conservative_max_cost_usd
+      p_conservative_max_cost_usd,
+      p_input_price_per_million,
+      p_output_price_per_million,
+      p_request_price_usd,
+      p_pricing_observed_at
     )
     returning attempt.id into v_attempt_id;
   exception
@@ -407,21 +436,27 @@ end;
 $$;
 
 revoke execute on function public.claim_tribunal_attempt(
-  uuid, uuid, smallint, text, text, text, text, numeric
+  uuid, uuid, smallint, text, text, text, text, numeric, numeric, numeric, numeric, timestamptz
 ) from public, anon, authenticated;
 grant execute on function public.claim_tribunal_attempt(
-  uuid, uuid, smallint, text, text, text, text, numeric
+  uuid, uuid, smallint, text, text, text, text, numeric, numeric, numeric, numeric, timestamptz
 ) to service_role;
 
 -- 4g. Terminalize a claimed attempt. Only ever moves a CLAIMED row to a
 -- terminal status -- a second call against an already-terminal row is a
 -- harmless no-op (zero rows updated), never overwrites a real outcome.
+-- p_actual_cost_usd is the provider-reported usage.cost, kept separate
+-- from p_derived_cost_usd (application-computed from native token
+-- counts + the claimed pricing snapshot when the provider did not
+-- report a cost) -- Issue #17 blocker 4/5: never overwrite one with the
+-- other.
 create function public.terminalize_tribunal_attempt(
   p_attempt_id uuid,
   p_status text,
   p_input_tokens bigint,
   p_output_tokens bigint,
   p_actual_cost_usd numeric,
+  p_derived_cost_usd numeric,
   p_latency_ms bigint,
   p_provider_request_id text,
   p_error_category text,
@@ -448,6 +483,7 @@ begin
         else p_input_tokens + p_output_tokens
       end,
       actual_cost_usd = p_actual_cost_usd,
+      derived_cost_usd = p_derived_cost_usd,
       latency_ms = p_latency_ms,
       provider_request_id = p_provider_request_id,
       error_category = p_error_category,
@@ -461,10 +497,10 @@ end;
 $$;
 
 revoke execute on function public.terminalize_tribunal_attempt(
-  uuid, text, bigint, bigint, numeric, bigint, text, text, text
+  uuid, text, bigint, bigint, numeric, numeric, bigint, text, text, text
 ) from public, anon, authenticated;
 grant execute on function public.terminalize_tribunal_attempt(
-  uuid, text, bigint, bigint, numeric, bigint, text, text, text
+  uuid, text, bigint, bigint, numeric, numeric, bigint, text, text, text
 ) to service_role;
 
 -- 4h. Persist one validated advocate speech. Idempotent: ON CONFLICT DO

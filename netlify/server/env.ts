@@ -121,3 +121,27 @@ export function readInternalFunctionSecretConfig(
 
   return result.data;
 }
+
+// Milestone 8 (independent audit correction, Issue #17 blocker 7): the
+// server-to-server Background Function invocation destination MUST come
+// from trusted server-side configuration, never from caller-supplied
+// request headers (Host/X-Forwarded-Proto) -- both
+// INTERNAL_FUNCTION_SECRET and the user's OpenRouter key are sent to
+// wherever this resolves, so an attacker-controlled Host could otherwise
+// redirect both secrets to a different origin. `URL` is Netlify's own
+// documented read-only runtime variable for "the main URL of the site"
+// -- populated automatically in every real Netlify context (production,
+// deploy previews, and `netlify dev`, which sets it to the local dev
+// server's own origin). No secret, so unlike the schemas above this is a
+// plain accessor with a documented local-fallback default, not a
+// throwing required-config check -- a missing value only arises outside
+// any real Netlify runtime (e.g. a bare `vitest run`), where the caller
+// is expected to inject an explicit override instead of relying on this
+// fallback at all.
+export function readBackgroundFunctionBaseUrl(
+  environment: ServerEnvironment = process.env
+): string {
+  const raw = (environment as Record<string, string | undefined>).URL;
+
+  return (raw && raw.trim().length > 0 ? raw : "http://localhost:8888").replace(/\/+$/, "");
+}

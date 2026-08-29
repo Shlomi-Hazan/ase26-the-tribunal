@@ -5,6 +5,7 @@
 // rather than a call-order queue, since all seven logical calls run
 // concurrently and interleave unpredictably).
 
+import Decimal from "decimal.js";
 import { describe, expect, it, vi } from "vitest";
 import { ADVOCATE_PROMPT_VERSION, JUDGE_PROMPT_VERSION } from "../../../src/prompts/versions";
 import { participantIds, type ParticipantId } from "../../../src/schemas/tribunalSetup";
@@ -14,7 +15,7 @@ import type { RawOpenRouterEndpoint, RawOpenRouterModel } from "../openrouter/sc
 import type { PreflightCase, PreflightRun, PreflightRunLoader } from "../openrouter/preflight";
 import type { PersistedRun } from "../runs";
 import { FakeTribunalExecutionRepository } from "./repository";
-import { executeTribunalRun, type RunLoader } from "./execution";
+import { executeTribunalRun, RuntimeBudgetGuard, type RunLoader } from "./execution";
 
 const MODEL_ID = "openai/gpt-5";
 const CASE = {
@@ -172,16 +173,33 @@ class ScriptedOpenRouterProvider implements OpenRouterProvider {
   }
 }
 
-function successResult(overrides: { speech?: string; verdict?: string; reasoning?: string } = {}): ProviderChatResult {
+function successResult(overrides: {
+  speech?: string;
+  verdict?: string;
+  reasoning?: string;
+  // Blocker 5 test support: "missing" omits usage entirely; "no-cost"
+  // includes native token counts but no usage.cost (forces a derived
+  // cost); "present" (default) is the normal case.
+  usage?: "present" | "missing" | "no-cost";
+  cost?: number;
+} = {}): ProviderChatResult {
   const content = overrides.verdict
     ? JSON.stringify({ verdict: overrides.verdict, reasoning: overrides.reasoning ?? "Reasoned verdict." })
     : JSON.stringify({ speech: overrides.speech ?? "A well-formed speech." });
+
+  const usageMode = overrides.usage ?? "present";
+  const usage =
+    usageMode === "missing"
+      ? undefined
+      : usageMode === "no-cost"
+        ? { prompt_tokens: 100, completion_tokens: 50 }
+        : { prompt_tokens: 100, completion_tokens: 50, cost: overrides.cost ?? 0.001 };
 
   return {
     raw: {
       id: "gen-test",
       choices: [{ message: { content } }],
-      usage: { prompt_tokens: 100, completion_tokens: 50, cost: 0.001 }
+      usage
     }
   } as ProviderChatResult;
 }
@@ -418,6 +436,17 @@ describe("executeTribunalRun", () => {
     expect(provider.createChatCompletionCallCount).toBe(0);
   });
 
+  it("SEPARATE-mode run -> separate_mode_not_enabled, zero completion calls (M8 is Shared-Model only, M9 scope)", async () => {
+    const run = { ...buildRun(), executionMode: "separate" as const };
+    const provider = new ScriptedOpenRouterProvider(eligibleFixture(), allEligibleScripts());
+    const { deps } = buildDeps(run, provider);
+
+    const outcome = await executeTribunalRun(run.id, deps);
+
+    expect(outcome).toEqual({ outcome: "separate_mode_not_enabled" });
+    expect(provider.createChatCompletionCallCount).toBe(0);
+  });
+
   it("no silent model/provider fallback: the exact configured model is used for every completion request", async () => {
     const run = buildRun();
     const provider = new ScriptedOpenRouterProvider(eligibleFixture(), allEligibleScripts());
@@ -451,5 +480,207 @@ describe("executeTribunalRun", () => {
     expect(failedAttempt?.inputTokens).toBeNull();
     expect(failedAttempt?.outputTokens).toBeNull();
     expect(failedAttempt?.actualCostUsd).toBeNull();
+  });
+
+  // ---------------------------------------------------------------
+  // Blocker 3 (independent audit correction): runtime $5 budget guard.
+  // ---------------------------------------------------------------
+
+  it("judge batch is blocked -- zero judge calls -- when advocate spend leaves insufficient safe exposure", async () => {
+    const run = buildRun();
+    const scripts = allEligibleScripts();
+    // Three ordinary cheap advocates, one expensive one -- total real
+    // advocate spend (< $5.00) does not itself exceed the ceiling, but
+    // leaves too little room for the judge batch's own conservative
+    // reserve (computed from this fixture's real per-token pricing).
+    scripts["advocate-pro-1"] = [successResult({ speech: "s1", cost: 4.9997 })];
+    scripts["advocate-pro-2"] = [successResult({ speech: "s2", cost: 0.0001 })];
+    scripts["advocate-con-1"] = [successResult({ speech: "s3", cost: 0.0001 })];
+    scripts["advocate-con-2"] = [successResult({ speech: "s4", cost: 0.0001 })];
+
+    const provider = new ScriptedOpenRouterProvider(eligibleFixture(), scripts);
+    const { deps, repository } = buildDeps(run, provider);
+
+    const outcome = await executeTribunalRun(run.id, deps);
+
+    expect(outcome).toEqual({ outcome: "failed", failureCode: "RUNTIME_BUDGET_EXCEEDED" });
+    expect(provider.calledParticipantIds.some((id) => id.startsWith("judge"))).toBe(false);
+    expect(repository.verdicts.size).toBe(0);
+  });
+
+  it("the runtime guard never authorizes more than $5.00 of real recorded spend across a run", async () => {
+    const run = buildRun();
+    const scripts = allEligibleScripts();
+    // Every participant reports a real cost individually under $5, but
+    // the sum across all seven would exceed it if unguarded.
+    for (const id of participantIds) {
+      scripts[id] = id.startsWith("advocate")
+        ? [successResult({ speech: `speech-${id}`, cost: 1.5 })]
+        : [successResult({ verdict: "GUILTY", reasoning: `reasoning-${id}`, cost: 1.5 })];
+    }
+
+    const provider = new ScriptedOpenRouterProvider(eligibleFixture(), scripts);
+    const { deps, repository } = buildDeps(run, provider);
+
+    await executeTribunalRun(run.id, deps);
+
+    let totalRecorded = new Decimal(0);
+    for (const attempt of repository.attempts.values()) {
+      if (attempt.actualCostUsd) {
+        totalRecorded = totalRecorded.plus(attempt.actualCostUsd);
+      }
+    }
+
+    // The guard blocks further spend once committed exceeds $5 -- the
+    // total ever actually incurred/recorded must never structurally
+    // exceed a small number of already-in-flight $1.50 attempts (never
+    // all seven's worth, which would be $10.50).
+    expect(totalRecorded.lte(new Decimal("5.00").plus("1.50"))).toBe(true);
+  });
+
+  // ---------------------------------------------------------------
+  // Blocker 4 (independent audit correction): attempt pricing snapshot.
+  // ---------------------------------------------------------------
+
+  it("persists the real attempt pricing snapshot (canonical model, endpoint, prompt version, effective input/output price, request fee, observed-at)", async () => {
+    const run = buildRun();
+    const provider = new ScriptedOpenRouterProvider(eligibleFixture(), allEligibleScripts());
+    const { deps, repository } = buildDeps(run, provider);
+
+    await executeTribunalRun(run.id, deps);
+
+    const attempt = [...repository.attempts.values()].find(
+      (a) => a.participantConfigId === "config-advocate-pro-1"
+    );
+
+    expect(attempt?.canonicalModelId).toBe(MODEL_ID);
+    expect(attempt?.providerEndpointTag).toBe("openai");
+    expect(attempt?.promptVersion).toBe(ADVOCATE_PROMPT_VERSION);
+    expect(attempt?.inputPricePerMillion).toBeTruthy();
+    expect(attempt?.outputPricePerMillion).toBeTruthy();
+    expect(attempt?.requestPriceUsd).toBeTruthy();
+    expect(attempt?.pricingObservedAt).toBeTruthy();
+  });
+
+  // ---------------------------------------------------------------
+  // Blocker 5 (independent audit correction): success requires
+  // auditable usage/economics.
+  // ---------------------------------------------------------------
+
+  it("valid advocate JSON with NO usage telemetry is never accepted as SUCCESS", async () => {
+    const run = buildRun();
+    const scripts = allEligibleScripts();
+    scripts["advocate-con-1"] = [
+      successResult({ speech: "Well-formed but untelemetered.", usage: "missing" }),
+      successResult({ speech: "Retry also untelemetered.", usage: "missing" })
+    ];
+
+    const provider = new ScriptedOpenRouterProvider(eligibleFixture(), scripts);
+    const { deps, repository } = buildDeps(run, provider);
+
+    const outcome = await executeTribunalRun(run.id, deps);
+
+    expect(outcome).toEqual({ outcome: "failed", failureCode: "ADVOCATE_TERMINAL_FAILURE" });
+    expect(repository.speeches.has("config-advocate-con-1")).toBe(false);
+
+    const attempts = [...repository.attempts.values()].filter(
+      (a) => a.participantConfigId === "config-advocate-con-1"
+    );
+
+    expect(attempts.every((a) => a.status === "TELEMETRY_UNAVAILABLE")).toBe(true);
+  });
+
+  it("valid output + native usage but no usage.cost -> derived cost is persisted and actual cost remains NULL", async () => {
+    const run = buildRun();
+    const scripts = allEligibleScripts();
+    scripts["advocate-pro-1"] = [successResult({ speech: "Costed only by derivation.", usage: "no-cost" })];
+
+    const provider = new ScriptedOpenRouterProvider(eligibleFixture(), scripts);
+    const { deps, repository } = buildDeps(run, provider);
+
+    const outcome = await executeTribunalRun(run.id, deps);
+
+    expect(outcome.outcome).toBe("completed");
+
+    const attempt = [...repository.attempts.values()].find(
+      (a) => a.participantConfigId === "config-advocate-pro-1"
+    );
+
+    expect(attempt?.status).toBe("SUCCESS");
+    expect(attempt?.actualCostUsd).toBeNull();
+    expect(attempt?.derivedCostUsd).toBeTruthy();
+    expect(new Decimal(attempt?.derivedCostUsd ?? "0").gt(0)).toBe(true);
+  });
+
+  it("a run cannot reach COMPLETED with unauditable (telemetry-missing) economics", async () => {
+    const run = buildRun();
+    const scripts = allEligibleScripts();
+    // Every attempt for this judge lacks usage entirely, both attempts.
+    scripts["judge-1"] = [
+      successResult({ verdict: "GUILTY", usage: "missing" }),
+      successResult({ verdict: "GUILTY", usage: "missing" })
+    ];
+
+    const provider = new ScriptedOpenRouterProvider(eligibleFixture(), scripts);
+    const { deps, repository } = buildDeps(run, provider);
+
+    const outcome = await executeTribunalRun(run.id, deps);
+
+    expect(outcome.outcome).not.toBe("completed");
+    expect(repository.completedRuns.has(run.id)).toBe(false);
+  });
+});
+
+describe("RuntimeBudgetGuard (Blocker 3 unit tests -- pure, deterministic arithmetic)", () => {
+  it("allows a reserve that fits under the hard ceiling", () => {
+    const guard = new RuntimeBudgetGuard(new Decimal("5.00"));
+
+    expect(guard.canAffordReserve(new Decimal("4.99"))).toBe(true);
+  });
+
+  it("refuses a reserve that would exceed the hard ceiling", () => {
+    const guard = new RuntimeBudgetGuard(new Decimal("5.00"));
+
+    expect(guard.canAffordReserve(new Decimal("5.01"))).toBe(false);
+  });
+
+  it("a retry is blocked once real committed spend leaves no room for even a tiny reserve", () => {
+    const guard = new RuntimeBudgetGuard(new Decimal("5.00"));
+
+    // Attempt #1 for some other participant already spent exactly the
+    // ceiling.
+    const withinBudget = guard.recordActualSpend(new Decimal("5.00"));
+
+    expect(withinBudget).toBe(true); // exactly at the ceiling is still affordable
+    // Requirement 3/4: the next attempt's retry reserve, however tiny,
+    // no longer fits -- DO NOT call OpenRouter.
+    expect(guard.canAffordReserve(new Decimal("0.0000001"))).toBe(false);
+  });
+
+  it("recordActualSpend returns false exactly when real spend crosses the ceiling -- a genuine runtime anomaly (Requirement 5)", () => {
+    const guard = new RuntimeBudgetGuard(new Decimal("5.00"));
+
+    expect(guard.recordActualSpend(new Decimal("3.00"))).toBe(true);
+    expect(guard.recordActualSpend(new Decimal("2.50"))).toBe(false); // 5.50 > 5.00
+
+    // Every subsequent check anywhere in the run now fails too --
+    // self-enforcing "zero not-yet-started calls."
+    expect(guard.canAffordReserve(new Decimal("0.00"))).toBe(false);
+  });
+
+  it("never authorizes a reserve whose cumulative total would exceed $5.00, regardless of how many small batches are checked", () => {
+    const guard = new RuntimeBudgetGuard(new Decimal("5.00"));
+    let authorizedTotal = new Decimal(0);
+
+    for (let i = 0; i < 100; i += 1) {
+      const reserve = new Decimal("0.10");
+
+      if (guard.canAffordReserve(reserve)) {
+        authorizedTotal = authorizedTotal.plus(reserve);
+        guard.recordActualSpend(reserve);
+      }
+    }
+
+    expect(authorizedTotal.lte(new Decimal("5.00"))).toBe(true);
   });
 });

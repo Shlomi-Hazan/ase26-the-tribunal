@@ -38,10 +38,13 @@ import { JUDGE_SYSTEM_PROMPT } from "../../../src/prompts/judge-system";
 import { buildFutureCompletionRequest } from "../openrouter/executionRequest";
 import type { OpenRouterProvider } from "../openrouter/provider";
 import { ProviderError, type ProviderErrorCategory } from "../openrouter/errors";
-import type { PricingSnapshot } from "../openrouter/pricing";
+import { toDecimalString, type PricingSnapshot } from "../openrouter/pricing";
 import type { ResolvedModelRoute } from "../openrouter/routeResolution";
 import {
   runPreflight,
+  MAX_RUN_COST_USD,
+  BUDGET_SAFETY_FACTOR,
+  MAX_PROVIDER_ATTEMPTS_PER_LOGICAL_CALL,
   type PreflightParticipantResult,
   type PreflightRunLoader
 } from "../openrouter/preflight";
@@ -53,6 +56,52 @@ import type {
   TerminalizeAttemptInput,
   TribunalExecutionRepository
 } from "./repository";
+
+// ---------------------------------------------------------------------
+// Runtime budget guard (Issue #17 independent audit correction, blocker
+// 3). Preflight (fresh, run at the top of executeTribunalRun) proves the
+// WORST-CASE conservative estimate for the whole run fits under the
+// $5.00 hard ceiling -- necessary, but SPEC.md Sec 16.2/docs/economics.md
+// Sec 11-12 also require a RUNTIME guard: real spend must be re-checked
+// before every subsequent batch of calls and before every retry, using
+// what has ACTUALLY happened so far, not only the original estimate.
+//
+// One instance per run execution, shared across both phases and every
+// logical call. `committedUsd` is the sum of REAL (actual or derived,
+// never estimated) cost of every attempt that has terminalized so far --
+// a monotonically increasing, always-accurate ledger. Every check
+// compares `committedUsd + <the new conservative reserve being
+// authorized>` against the hard ceiling; nothing is "consumed" or
+// double-counted, since committedUsd only ever grows from real,
+// already-incurred cost. This makes phase-batch checks (Requirement 1/2)
+// and per-attempt retry checks (Requirement 3/4) the exact same
+// operation at different call sites, and makes the anomaly case
+// (Requirement 5: an attempt's actual/derived cost alone pushes
+// committedUsd past the ceiling) self-enforcing -- every subsequent
+// check anywhere in the run will then also fail, since committedUsd
+// alone already exceeds the ceiling.
+// Exported for direct, deterministic unit tests (execution.test.ts) --
+// the class's own arithmetic is pure and synchronous, so testing it in
+// isolation avoids depending on concurrent-call interleaving timing that
+// a full executeTribunalRun integration test cannot fully control.
+export class RuntimeBudgetGuard {
+  private committedUsd = new Decimal(0);
+
+  constructor(private readonly hardCeilingUsd: Decimal) {}
+
+  canAffordReserve(reserveUsd: Decimal): boolean {
+    return this.committedUsd.plus(reserveUsd).lte(this.hardCeilingUsd);
+  }
+
+  // Returns false when this pushes total REAL spend over the ceiling --
+  // a genuine runtime budget anomaly (Requirement 5), never fabricated,
+  // always recorded regardless.
+  recordActualSpend(amountUsd: Decimal): boolean {
+    this.committedUsd = this.committedUsd.plus(amountUsd);
+
+    return this.committedUsd.lte(this.hardCeilingUsd);
+  }
+}
 
 export type RunLoader = { getById(id: string): Promise<PersistedRun | null> };
 
@@ -66,6 +115,7 @@ export type TribunalExecutionDeps = {
 
 export type ExecutionOutcome =
   | { outcome: "not_ready" }
+  | { outcome: "separate_mode_not_enabled" }
   | { outcome: "blocked_budget"; reasonCodes: string[] }
   | { outcome: "not_claimed" }
   | { outcome: "completed"; majorityVerdict: Verdict }
@@ -180,12 +230,31 @@ function mapProviderErrorToAttemptStatus(
   return error.category === "TIMEOUT" ? "TIMEOUT" : "PROVIDER_UNAVAILABLE";
 }
 
+// Independent audit correction (Issue #17 blocker 4): a Decimal-safe
+// derived cost from native token counts x the exact pricing snapshot
+// this attempt was claimed under -- used only when the provider did not
+// report usage.cost. effectiveInputPricePerToken is cache-write-aware
+// (ADR 0003 Decision 7B), never the raw prompt rate.
+function computeDerivedCostUsd(
+  pricing: PricingSnapshot,
+  inputTokens: number,
+  outputTokens: number
+): Decimal {
+  return pricing.effectiveInputPricePerToken
+    .times(inputTokens)
+    .plus(pricing.completionPricePerToken.times(outputTokens))
+    .plus(pricing.requestPriceUsd);
+}
+
 type AttemptEconomics = { inputTokens: number | null; outputTokens: number | null; costUsd: string | null };
 
 type LogicalCallOutcome =
   | { success: true; speech: string; economics: AttemptEconomics[] }
   | { success: true; verdict: Verdict; reasoning: string; economics: AttemptEconomics[] }
-  | { success: false; economics: AttemptEconomics[] };
+  // blockedByBudget: true only when the runtime budget guard refused an
+  // attempt before it was ever claimed/made (Requirement 4) -- zero
+  // OpenRouter call for that attempt, no attempt row created.
+  | { success: false; economics: AttemptEconomics[]; blockedByBudget: boolean };
 
 async function runLogicalCall(params: {
   runId: string;
@@ -199,16 +268,31 @@ async function runLogicalCall(params: {
   // includes the x2 retry reserve for both permitted attempts) -- audited
   // on every attempt row, never recomputed independently here.
   conservativeMaxCostUsd: string;
+  budgetGuard: RuntimeBudgetGuard;
   systemPrompt: string;
   userMessage: string;
   maxCompletionTokens: number;
   structuredOutput: { name: string; schema: Record<string, unknown> };
   deps: TribunalExecutionDeps;
 }): Promise<LogicalCallOutcome> {
-  const { runId, participantConfigId, role, promptVersion, route, deps } = params;
+  const { runId, participantConfigId, role, promptVersion, route, budgetGuard, deps } = params;
   const economics: AttemptEconomics[] = [];
+  // Both attempts' worst case was already reserved by the phase-level
+  // batch check before this logical call was ever launched; the runtime
+  // guard re-checked here per attempt (Requirement 3/4) uses this
+  // per-attempt share of that same figure.
+  const perAttemptReserveUsd = new Decimal(params.conservativeMaxCostUsd).dividedBy(
+    MAX_PROVIDER_ATTEMPTS_PER_LOGICAL_CALL
+  );
 
   for (let attemptNumber = 1; attemptNumber <= MAX_ATTEMPTS_PER_LOGICAL_CALL; attemptNumber += 1) {
+    // Requirement 3/4: re-validated against REAL spend so far,
+    // immediately before every attempt (including the first, for
+    // uniformity) -- DO NOT call OpenRouter if it would not fit.
+    if (!budgetGuard.canAffordReserve(perAttemptReserveUsd)) {
+      return { success: false, economics, blockedByBudget: true };
+    }
+
     const claim = await deps.repository.claimAttempt({
       runId,
       participantConfigId,
@@ -217,13 +301,23 @@ async function runLogicalCall(params: {
       canonicalModelId: route.canonicalModelId,
       providerEndpointTag: route.providerEndpointTag,
       promptVersion,
-      conservativeMaxCostUsd: params.conservativeMaxCostUsd
+      conservativeMaxCostUsd: params.conservativeMaxCostUsd,
+      // Independent audit correction (Issue #17 blocker 4): the exact
+      // pricing snapshot authorizing this attempt, persisted at claim
+      // time -- inputPricePerMillion is the cache-write-aware effective
+      // input price, never the raw, possibly-lower prompt rate.
+      inputPricePerMillion: toDecimalString(
+        route.pricing.effectiveInputPricePerToken.times(1_000_000)
+      ),
+      outputPricePerMillion: toDecimalString(route.pricing.completionPricePerMillion),
+      requestPriceUsd: toDecimalString(route.pricing.requestPriceUsd),
+      pricingObservedAt: route.pricing.observedAt
     } satisfies ClaimAttemptInput);
 
     if (!claim.wonClaim || !claim.attemptId) {
       // Lost the claim -- another owner already handling this exact
       // logical call/attempt (duplicate delivery). Zero completion calls.
-      return { success: false, economics };
+      return { success: false, economics, blockedByBudget: false };
     }
 
     const timedProvider = deps.createTimedProvider
@@ -246,7 +340,8 @@ async function runLogicalCall(params: {
     let errorMessage: string | null = null;
     let inputTokens: number | null = null;
     let outputTokens: number | null = null;
-    let costUsd: string | null = null;
+    let actualCostUsd: string | null = null;
+    let derivedCostUsd: string | null = null;
     let providerRequestId: string | null = null;
     let parsedSpeech: AdvocateSpeech | null = null;
     let parsedVerdict: JudgeVerdict | null = null;
@@ -257,43 +352,58 @@ async function runLogicalCall(params: {
 
       providerRequestId = result.raw.id ?? null;
 
-      if (result.raw.usage) {
-        inputTokens = result.raw.usage.prompt_tokens ?? null;
-        outputTokens = result.raw.usage.completion_tokens ?? null;
-        costUsd = result.raw.usage.cost !== undefined ? new Decimal(result.raw.usage.cost).toFixed() : null;
-      }
-
       const content = result.raw.choices[0]?.message.content ?? null;
       const parsedJson = content ? safeJsonParse(content) : undefined;
+      const schemaResult =
+        parsedJson === undefined
+          ? null
+          : role === "ADVOCATE"
+            ? advocateSpeechSchema.safeParse(parsedJson)
+            : judgeVerdictSchema.safeParse(parsedJson);
 
-      if (parsedJson === undefined) {
+      if (!schemaResult || !schemaResult.success) {
         terminalStatus = "INVALID_STRUCTURED_OUTPUT";
         errorCategory = "INVALID_STRUCTURED_OUTPUT";
-        errorMessage = "Provider returned no content or invalid JSON.";
+        errorMessage =
+          parsedJson === undefined
+            ? "Provider returned no content or invalid JSON."
+            : `${role === "ADVOCATE" ? "Advocate" : "Judge"} output failed schema validation.`;
         retryableFailure = true;
-      } else if (role === "ADVOCATE") {
-        const schemaResult = advocateSpeechSchema.safeParse(parsedJson);
-
-        if (schemaResult.success) {
-          parsedSpeech = schemaResult.data;
-          terminalStatus = "SUCCESS";
-        } else {
-          terminalStatus = "INVALID_STRUCTURED_OUTPUT";
-          errorCategory = "INVALID_STRUCTURED_OUTPUT";
-          errorMessage = "Advocate output failed schema validation.";
-          retryableFailure = true;
-        }
+      } else if (!result.raw.usage) {
+        // Independent audit correction (Issue #17 blocker 5): schema-valid
+        // output with NO usage telemetry at all cannot become SUCCESS --
+        // there is no reliable basis for input/output token counts, let
+        // alone cost. Retryable: a missing usage envelope on an
+        // otherwise-valid response is treated the same as any other
+        // incomplete-response case.
+        terminalStatus = "TELEMETRY_UNAVAILABLE";
+        errorCategory = "TELEMETRY_UNAVAILABLE";
+        errorMessage = "Provider response was valid but reported no usage telemetry.";
+        retryableFailure = true;
       } else {
-        const schemaResult = judgeVerdictSchema.safeParse(parsedJson);
+        // chatUsageSchema guarantees prompt_tokens/completion_tokens are
+        // present numbers whenever `usage` itself is present (schemas.ts)
+        // -- reliable native token counts are therefore already assured
+        // here; only usage.cost may still be legitimately absent.
+        inputTokens = result.raw.usage.prompt_tokens;
+        outputTokens = result.raw.usage.completion_tokens;
 
-        if (schemaResult.success) {
-          parsedVerdict = schemaResult.data;
-          terminalStatus = "SUCCESS";
+        if (result.raw.usage.cost !== undefined) {
+          actualCostUsd = new Decimal(result.raw.usage.cost).toFixed();
         } else {
-          terminalStatus = "INVALID_STRUCTURED_OUTPUT";
-          errorCategory = "INVALID_STRUCTURED_OUTPUT";
-          errorMessage = "Judge output failed schema validation.";
-          retryableFailure = true;
+          // Independent audit correction (Issue #17 blockers 4/5): cost
+          // is reliably derivable from native tokens + the claimed
+          // pricing snapshot -- persisted as derivedCostUsd, distinct
+          // from (and never overwriting) actualCostUsd, which stays null.
+          derivedCostUsd = computeDerivedCostUsd(route.pricing, inputTokens, outputTokens).toFixed();
+        }
+
+        terminalStatus = "SUCCESS";
+
+        if (role === "ADVOCATE") {
+          parsedSpeech = (schemaResult.data as AdvocateSpeech);
+        } else {
+          parsedVerdict = (schemaResult.data as JudgeVerdict);
         }
       }
     } catch (error) {
@@ -317,14 +427,25 @@ async function runLogicalCall(params: {
       status: terminalStatus,
       inputTokens,
       outputTokens,
-      actualCostUsd: costUsd,
+      actualCostUsd,
+      derivedCostUsd,
       latencyMs,
       providerRequestId,
       errorCategory,
       errorMessage
     });
 
+    const costUsd = actualCostUsd ?? derivedCostUsd;
+
     economics.push({ inputTokens, outputTokens, costUsd });
+
+    // Requirement 5: record real spend the instant it is known, whether
+    // this attempt succeeded or failed -- an anomaly here (real cost
+    // alone exceeds the ceiling) makes every subsequent budget check in
+    // this run fail too, self-enforcing "zero not-yet-started calls."
+    if (costUsd !== null) {
+      budgetGuard.recordActualSpend(new Decimal(costUsd));
+    }
 
     if (terminalStatus === "SUCCESS") {
       if (parsedSpeech) {
@@ -350,11 +471,11 @@ async function runLogicalCall(params: {
     // route/systemPrompt/userMessage/structuredOutput params, only the
     // attempt number advances.
     if (!retryableFailure || attemptNumber === MAX_ATTEMPTS_PER_LOGICAL_CALL) {
-      return { success: false, economics };
+      return { success: false, economics, blockedByBudget: false };
     }
   }
 
-  return { success: false, economics };
+  return { success: false, economics, blockedByBudget: false };
 }
 
 function safeJsonParse(text: string): unknown {
@@ -440,6 +561,18 @@ export async function executeTribunalRun(
     return { outcome: "not_ready" };
   }
 
+  // Blocker 2 (independent audit correction, Issue #17): M8 is
+  // Shared-Model only -- Separate-Model execution is M9 scope. The
+  // synchronous trigger (triggerExecution.ts) already refuses to invoke
+  // the worker for a SEPARATE run; this is defense in depth inside the
+  // worker itself, checked before any metadata/completion call, so no
+  // code path -- including a hypothetically misconfigured or directly
+  // invoked worker call -- can ever execute a SEPARATE run in this
+  // milestone.
+  if (run.executionMode !== "shared") {
+    return { outcome: "separate_mode_not_enabled" };
+  }
+
   // Step 2: fresh, zero-completion metadata + route resolution +
   // preflight -- reuses the exact same runPreflight() the standalone
   // /api/preflight endpoint calls. This is the sole execution-time
@@ -490,9 +623,36 @@ export async function executeTribunalRun(
 
   const chargeSheetForModel = [tribunalCase.defendant, tribunalCase.act, tribunalCase.exactQuestion].join("\n");
 
+  // Independent audit correction (Issue #17 blocker 3): one runtime
+  // budget guard, shared for the whole execution -- preflight proved the
+  // worst case fits, but real spend is re-checked before every batch and
+  // every retry (SPEC.md Sec 16.2).
+  const budgetGuard = new RuntimeBudgetGuard(MAX_RUN_COST_USD);
+
+  function batchReserveUsd(participantIds: ParticipantId[]): Decimal {
+    return participantIds
+      .map((id) => new Decimal(preflightByParticipant.get(id)?.conservativeParticipantCostUsd ?? "0"))
+      .reduce((sum, amount) => sum.plus(amount), new Decimal(0))
+      .times(BUDGET_SAFETY_FACTOR);
+  }
+
   // ---------------------------------------------------------------
   // Phase A: four advocates, one concurrent phase (SPEC.md Sec 9.1).
+  // Requirement 1: the complete concurrent advocate batch exposure is
+  // reserved/checked as ONE batch BEFORE Promise.allSettled launches any
+  // of the four calls -- never one participant at a time after calls
+  // already started.
   // ---------------------------------------------------------------
+  if (!budgetGuard.canAffordReserve(batchReserveUsd(ADVOCATE_ORDER))) {
+    await deps.repository.failRun(
+      runId,
+      "RUNTIME_BUDGET_EXCEEDED",
+      "The advocate phase's conservative batch exposure did not fit the remaining runtime budget."
+    );
+
+    return { outcome: "failed", failureCode: "RUNTIME_BUDGET_EXCEEDED" };
+  }
+
   const advocateEconomics: AttemptEconomics[][] = [];
   const advocateResults = await Promise.allSettled(
     ADVOCATE_ORDER.map(async (participantId) => {
@@ -501,7 +661,7 @@ export async function executeTribunalRun(
       const preflightParticipant = preflightByParticipant.get(participantId);
 
       if (!config || !route || !preflightParticipant?.conservativeParticipantCostUsd) {
-        return { success: false as const, economics: [] };
+        return { success: false as const, economics: [], blockedByBudget: false };
       }
 
       const side = SIDE_BY_PARTICIPANT_ID[participantId] as AdvocateSide;
@@ -513,6 +673,7 @@ export async function executeTribunalRun(
         promptVersion: config.promptVersion,
         route,
         conservativeMaxCostUsd: preflightParticipant.conservativeParticipantCostUsd,
+        budgetGuard,
         systemPrompt: buildAdvocateSystemPrompt(side),
         userMessage: buildAdvocateUserMessage(config.personality, chargeSheetForModel),
         maxCompletionTokens: 1000,
@@ -526,18 +687,25 @@ export async function executeTribunalRun(
 
   for (let index = 0; index < ADVOCATE_ORDER.length; index += 1) {
     const settled = advocateResults[index];
-    const outcome = settled.status === "fulfilled" ? settled.value : { success: false as const, economics: [] };
+    const outcome =
+      settled.status === "fulfilled"
+        ? settled.value
+        : { success: false as const, economics: [], blockedByBudget: false };
 
     advocateEconomics.push(outcome.economics);
 
     if (!outcome.success) {
+      const failureCode = outcome.blockedByBudget ? "ADVOCATE_RUNTIME_BUDGET_ANOMALY" : "ADVOCATE_TERMINAL_FAILURE";
+
       await deps.repository.failRun(
         runId,
-        "ADVOCATE_TERMINAL_FAILURE",
-        `Advocate ${ADVOCATE_ORDER[index]} did not produce a valid speech after the permitted retry.`
+        failureCode,
+        outcome.blockedByBudget
+          ? `Advocate ${ADVOCATE_ORDER[index]}'s retry was not economically safe under the runtime budget guard.`
+          : `Advocate ${ADVOCATE_ORDER[index]} did not produce a valid speech after the permitted retry.`
       );
 
-      return { outcome: "failed", failureCode: "ADVOCATE_TERMINAL_FAILURE" };
+      return { outcome: "failed", failureCode };
     }
 
     if ("speech" in outcome) {
@@ -565,7 +733,19 @@ export async function executeTribunalRun(
 
   // ---------------------------------------------------------------
   // Phase B: three judges, one concurrent phase (SPEC.md Sec 9.3).
+  // Requirement 2: known/derived advocate spend + the conservative
+  // complete judge batch reserve must fit BEFORE any judge call starts.
   // ---------------------------------------------------------------
+  if (!budgetGuard.canAffordReserve(batchReserveUsd(JUDGE_ORDER))) {
+    await deps.repository.failRun(
+      runId,
+      "RUNTIME_BUDGET_EXCEEDED",
+      "The judge phase's conservative batch exposure did not fit the remaining runtime budget after advocate spend."
+    );
+
+    return { outcome: "failed", failureCode: "RUNTIME_BUDGET_EXCEEDED" };
+  }
+
   const judgeEconomics: AttemptEconomics[][] = [];
   const judgeResults = await Promise.allSettled(
     JUDGE_ORDER.map(async (participantId) => {
@@ -574,7 +754,7 @@ export async function executeTribunalRun(
       const preflightParticipant = preflightByParticipant.get(participantId);
 
       if (!config || !route || !preflightParticipant?.conservativeParticipantCostUsd) {
-        return { success: false as const, economics: [] };
+        return { success: false as const, economics: [], blockedByBudget: false };
       }
 
       return runLogicalCall({
@@ -584,6 +764,7 @@ export async function executeTribunalRun(
         promptVersion: config.promptVersion,
         route,
         conservativeMaxCostUsd: preflightParticipant.conservativeParticipantCostUsd,
+        budgetGuard,
         systemPrompt: JUDGE_SYSTEM_PROMPT,
         userMessage: buildJudgeUserMessage(config.personality, chargeSheetForModel, speeches),
         maxCompletionTokens: 1200,
@@ -597,18 +778,25 @@ export async function executeTribunalRun(
 
   for (let index = 0; index < JUDGE_ORDER.length; index += 1) {
     const settled = judgeResults[index];
-    const outcome = settled.status === "fulfilled" ? settled.value : { success: false as const, economics: [] };
+    const outcome =
+      settled.status === "fulfilled"
+        ? settled.value
+        : { success: false as const, economics: [], blockedByBudget: false };
 
     judgeEconomics.push(outcome.economics);
 
     if (!outcome.success) {
+      const failureCode = outcome.blockedByBudget ? "JUDGE_RUNTIME_BUDGET_ANOMALY" : "JUDGE_TERMINAL_FAILURE";
+
       await deps.repository.failRun(
         runId,
-        "JUDGE_TERMINAL_FAILURE",
-        `${JUDGE_ORDER[index]} did not produce a valid verdict after the permitted retry.`
+        failureCode,
+        outcome.blockedByBudget
+          ? `${JUDGE_ORDER[index]}'s retry was not economically safe under the runtime budget guard.`
+          : `${JUDGE_ORDER[index]} did not produce a valid verdict after the permitted retry.`
       );
 
-      return { outcome: "failed", failureCode: "JUDGE_TERMINAL_FAILURE" };
+      return { outcome: "failed", failureCode };
     }
 
     if ("verdict" in outcome) {
@@ -645,7 +833,11 @@ export async function executeTribunalRun(
     }))
   };
 
-  await deps.repository.completeRun({
+  // Fail-closed correction (independent audit, Issue #17): check the RPC's
+  // own returned boolean rather than assuming success -- a false result
+  // (e.g. the run was no longer in JUDGES_RUNNING for some unexpected
+  // reason) must never be reported to the caller as "completed."
+  const completed = await deps.repository.completeRun({
     runId,
     majorityVerdict,
     totalInputTokens: totalAggregate.totalInputTokens,
@@ -657,6 +849,10 @@ export async function executeTribunalRun(
     schemaVersion: PROTOCOL_SCHEMA_VERSION,
     protocolJson: protocol
   });
+
+  if (!completed) {
+    return { outcome: "failed", failureCode: "RUN_STATE_UNEXPECTED" };
+  }
 
   return { outcome: "completed", majorityVerdict };
 }

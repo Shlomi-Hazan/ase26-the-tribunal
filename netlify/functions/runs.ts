@@ -55,7 +55,7 @@ export async function handleRunsRequest(
     const tribunalRepository = deps.tribunalRepository;
 
     const triggerResult = tribunalRepository
-      ? await triggerExecutionIfEligible(run, userOpenRouterKey, event, {
+      ? await triggerExecutionIfEligible(run, userOpenRouterKey, {
           runRepository: deps.runRepository,
           caseRepository: deps.caseRepository,
           tribunalRepository
