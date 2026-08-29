@@ -36,7 +36,8 @@ function eligiblePreflight() {
     perAttemptConservativeMaxCostUsd: "0.10",
     hardCeilingUsd: "0.50",
     blockedReasonCodes: [],
-    pricingObservedAt: "2026-01-01T00:00:00.000Z"
+    pricingObservedAt: "2026-01-01T00:00:00.000Z",
+    promptVersion: "package-extraction-v1"
   };
 }
 
@@ -56,7 +57,10 @@ function attemptSummary(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function successExtraction(warnings: { code: string; field: string | null }[] = []) {
+function successExtraction(
+  warnings: { code: string; field: string | null }[] = [],
+  attemptOverrides: Record<string, unknown> = {}
+) {
   return {
     status: warnings.length > 0 ? "needs_review" : "success",
     draft: {
@@ -74,7 +78,7 @@ function successExtraction(warnings: { code: string; field: string | null }[] = 
       warnings
     },
     warnings,
-    attempt: attemptSummary()
+    attempt: attemptSummary(attemptOverrides)
   };
 }
 
@@ -159,7 +163,7 @@ describe("Smart Import", () => {
       expect(screen.getByText(/extraction review/i)).toBeInTheDocument();
     });
     expect(screen.getByDisplayValue("Extracted Defendant")).toBeInTheDocument();
-    expect(screen.getByText(/actual cost.*\$0\.02/i)).toBeInTheDocument();
+    expect(screen.getByText(/attempt 1 actual.*\$0\.02/i)).toBeInTheDocument();
     expect(fetchSpy).toHaveBeenCalledWith(
       "/api/setup-extractions",
       expect.objectContaining({ method: "POST" })
@@ -215,6 +219,81 @@ describe("Smart Import", () => {
 
     expect(String(retryCall[0])).toBe(`/api/setup-extractions/${initialBody.extractionRequestId}/retry`);
     expect(retryCall[1]).toEqual(expect.objectContaining({ method: "POST" }));
+  });
+
+  // Second independent pre-live re-audit, Section 7: ADR 0004 Decision 9
+  // requires a running cumulative total across BOTH attempts, visible
+  // before AND after Retry -- attempt #1's own economics must not
+  // disappear once attempt #2 exists.
+  it("shows a running cumulative economics total across both attempts after a successful retry (Section 7)", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    fetchSpy.mockResolvedValueOnce(jsonResponse(eligiblePreflight()));
+    fetchSpy.mockResolvedValueOnce(jsonResponse(blocked("PROVIDER_UNAVAILABLE")));
+
+    renderWithAppProviders(<AppRoutes />, "/new/smart-import");
+
+    await reachQuote(user);
+    await user.click(screen.getByRole("button", { name: /confirm & extract/i }));
+
+    await waitFor(() => screen.getByRole("button", { name: /^retry$/i }));
+
+    // Before Retry: attempt #1's own conservative maximum (actual
+    // unknown -- never fabricated as zero) plus a clearly-labeled
+    // POTENTIAL attempt #2 figure and potential cumulative.
+    expect(screen.getByText(/attempt 1 conservative maximum.*\$0\.10/i)).toBeInTheDocument();
+    expect(screen.getByText(/attempt 2 potential conservative maximum.*\$0\.10/i)).toBeInTheDocument();
+    expect(screen.getByText(/potential cumulative.*\$0\.2 \/ \$0\.50/i)).toBeInTheDocument();
+
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse(
+        successExtraction([], {
+          attemptNumber: 2,
+          status: "SUCCESS",
+          actualCostUsd: "0.03",
+          errorCode: null
+        })
+      )
+    );
+    await user.click(screen.getByRole("button", { name: /^retry$/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/extraction review/i)).toBeInTheDocument();
+    });
+
+    // After Retry: BOTH attempts' real figures are visible together,
+    // and the cumulative total is no longer labeled "potential".
+    expect(screen.getByText(/attempt 1 conservative maximum.*\$0\.10/i)).toBeInTheDocument();
+    expect(screen.getByText(/attempt 2 actual.*\$0\.03/i)).toBeInTheDocument();
+    expect(screen.getByText(/^cumulative:.*\$0\.13 \/ \$0\.50/i)).toBeInTheDocument();
+    expect(screen.queryByText(/potential cumulative/i)).not.toBeInTheDocument();
+  });
+
+  // Second independent pre-live re-audit, Section 8: ADR 0004 Decision 18
+  // requires Extraction Review to show, at secondary audit-detail level,
+  // the source (filename/type) and the frozen prompt version -- neither
+  // was displayed (or even available from the API response) before.
+  it("Extraction Review shows the source, frozen prompt version, and model/endpoint audit detail (Section 8)", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    fetchSpy.mockResolvedValueOnce(jsonResponse(eligiblePreflight()));
+    fetchSpy.mockResolvedValueOnce(jsonResponse(successExtraction()));
+
+    renderWithAppProviders(<AppRoutes />, "/new/smart-import");
+
+    await reachQuote(user);
+    await user.click(screen.getByRole("button", { name: /confirm & extract/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/extraction review/i)).toBeInTheDocument();
+    });
+
+    expect(screen.getByText(/source: pasted text/i)).toBeInTheDocument();
+    expect(screen.getByText(/prompt version: package-extraction-v1/i)).toBeInTheDocument();
+    expect(screen.getByText(/vendor\/model-canonical/)).toBeInTheDocument();
+    expect(screen.getByText(/vendor\/model\/endpoint-a/)).toBeInTheDocument();
   });
 
   it("an explicit attempt #1 NON-retryable failure (e.g. MODEL_NOT_ELIGIBLE) never offers Retry and never calls the retry endpoint merely because an extraction id exists (Section 8)", async () => {

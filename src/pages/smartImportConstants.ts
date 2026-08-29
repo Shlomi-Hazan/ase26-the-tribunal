@@ -1,8 +1,11 @@
-// Milestone 7A -- Smart Import shared constants (kept in their own
-// module, not exported from SmartImportPage.tsx, so the page file only
-// ever exports its component -- react-refresh/only-export-components
+// Milestone 7A -- Smart Import shared constants/helpers (kept in their
+// own module, not exported from SmartImportPage.tsx, so the page file
+// only ever exports its component -- react-refresh/only-export-components
 // otherwise flags a mixed component+value export file, matching every
 // other page in src/pages/).
+
+import Decimal from "decimal.js";
+import type { ExtractionAttemptSummary } from "../services/extractionApi";
 
 // Mirrors netlify/server/extraction/errors.ts's RETRYABLE_EXTRACTION_CODES
 // exactly (server code cannot be imported into the client bundle -- see
@@ -29,3 +32,57 @@ export const RETRYABLE_ERROR_CODES = new Set([
 // formatPersonalitySource, which render the source-type label
 // unchanged, immediately followed by this marker in parentheses.
 export const SMART_IMPORT_PROVENANCE_MARKER = "AI Smart Import — not a literal file";
+
+// New this pass (second independent pre-live re-audit, Section 7): ADR
+// 0004 Decision 9 requires a running cumulative total (attempt #1
+// actual/conservative + attempt #2 estimate/actual) against the $0.50
+// logical-call ceiling, visible before AND after Retry. The prior
+// revision stored only the single most-recent `lastAttempt`, so
+// attempt #1's own economics silently disappeared the moment attempt #2
+// existed.
+
+// Never fabricates a cost as zero when unknown (ADR requirement): an
+// attempt that exists always has at least its conservative maximum as a
+// real, non-zero bound, even when the actual cost is not yet known
+// (e.g. the provider never returned usage telemetry).
+export function attemptDebitUsd(attempt: ExtractionAttemptSummary | null): string | null {
+  if (!attempt) {
+    return null;
+  }
+
+  return attempt.actualCostUsd ?? attempt.conservativeMaxCostUsd;
+}
+
+export type CumulativeExtractionEconomics = {
+  attempt1DebitUsd: string | null;
+  attempt2DebitUsd: string | null;
+  // true when attempt2DebitUsd is a PROJECTION (the quoted per-attempt
+  // conservative maximum for a retry that has not been claimed/run yet)
+  // rather than attempt #2's own real conservative/actual figure --
+  // the UI must label this "potential," never present it as fact.
+  attempt2IsPotential: boolean;
+  cumulativeDebitUsd: string | null;
+};
+
+export function computeCumulativeExtractionEconomics(
+  attemptOne: ExtractionAttemptSummary | null,
+  attemptTwo: ExtractionAttemptSummary | null,
+  quotedPerAttemptConservativeMaxCostUsd: string | null
+): CumulativeExtractionEconomics {
+  const attempt1DebitUsd = attemptDebitUsd(attemptOne);
+  const realAttempt2DebitUsd = attemptDebitUsd(attemptTwo);
+  const attempt2IsPotential = realAttempt2DebitUsd === null;
+  const attempt2DebitUsd = realAttempt2DebitUsd ?? quotedPerAttemptConservativeMaxCostUsd;
+
+  const cumulativeDebitUsd =
+    attempt1DebitUsd !== null && attempt2DebitUsd !== null
+      ? new Decimal(attempt1DebitUsd).plus(attempt2DebitUsd).toFixed()
+      : attempt1DebitUsd;
+
+  return {
+    attempt1DebitUsd,
+    attempt2DebitUsd,
+    attempt2IsPotential: attempt2IsPotential && attempt2DebitUsd !== null,
+    cumulativeDebitUsd
+  };
+}

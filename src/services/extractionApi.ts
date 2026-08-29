@@ -25,6 +25,11 @@ export type PreflightResponse = {
   hardCeilingUsd: string;
   blockedReasonCodes: string[];
   pricingObservedAt: string | null;
+  // New this pass (second independent pre-live re-audit, Section 8):
+  // ADR 0004 Decision 18 requires Extraction Review to show the frozen
+  // prompt version at secondary audit-detail level -- the prior
+  // response never exposed it at all.
+  promptVersion: string;
 };
 
 export type ExtractionAttemptSummary = {

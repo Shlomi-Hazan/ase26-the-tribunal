@@ -39,7 +39,11 @@ import {
   type ExtractionResponse,
   type PreflightResponse
 } from "../services/extractionApi";
-import { RETRYABLE_ERROR_CODES, SMART_IMPORT_PROVENANCE_MARKER } from "./smartImportConstants";
+import {
+  computeCumulativeExtractionEconomics,
+  RETRYABLE_ERROR_CODES,
+  SMART_IMPORT_PROVENANCE_MARKER
+} from "./smartImportConstants";
 
 // Corrected this pass (independent pre-live audit, Section 8): an
 // explicit client-side state machine distinguishing "no logical
@@ -176,11 +180,94 @@ export function SmartImportPage() {
   const [extractionId, setExtractionId] = useState<string | null>(null);
   const [rawResult, setRawResult] = useState<PackageExtractionResult | null>(null);
   const [editable, setEditable] = useState<EditableDraft | null>(null);
-  const [lastAttempt, setLastAttempt] = useState<ExtractionAttemptSummary | null>(null);
+  // Corrected this pass (second independent pre-live re-audit, Section
+  // 7): a single `lastAttempt` overwrote attempt #1's own economics the
+  // moment attempt #2 existed, defeating ADR Decision 9's required
+  // running cumulative total. Each attempt's own slot is now tracked
+  // independently and never cleared by the other.
+  const [attemptOne, setAttemptOne] = useState<ExtractionAttemptSummary | null>(null);
+  const [attemptTwo, setAttemptTwo] = useState<ExtractionAttemptSummary | null>(null);
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const busy = phase === "preflighting" || phase === "applying" || pendingAction !== null;
+
+  function recordAttempt(attempt: ExtractionAttemptSummary | null) {
+    if (!attempt) {
+      return;
+    }
+
+    if (attempt.attemptNumber === 1) {
+      setAttemptOne(attempt);
+    } else {
+      setAttemptTwo(attempt);
+    }
+  }
+
+  // Source detail for Extraction Review's secondary audit block (Section
+  // 8) -- derived directly from what THIS session already submitted, no
+  // extra server round trip needed.
+  const sourceLabel =
+    source?.kind === "file" ? `${source.filename}` : source?.kind === "text" ? "Pasted text" : null;
+
+  const economics = computeCumulativeExtractionEconomics(
+    attemptOne,
+    attemptTwo,
+    quote?.perAttemptConservativeMaxCostUsd ?? null
+  );
+
+  // Shared by both the Quote/Retry panel and Extraction Review (Section
+  // 7): attempt #1's own actual/conservative debit, attempt #2's real
+  // figure once it exists (or a clearly-labeled POTENTIAL projection
+  // from the quote before a retry has actually been claimed/run), and
+  // the running cumulative total against the fixed $0.50 ceiling.
+  function renderEconomicsSummary() {
+    if (!attemptOne) {
+      return null;
+    }
+
+    return (
+      <Stack sx={{ display: "flex", flexDirection: "row", flexWrap: "wrap", gap: 1 }}>
+        <Chip label={`Attempt 1: ${attemptOne.status}`} size="small" />
+        <Chip
+          label={
+            attemptOne.actualCostUsd !== null
+              ? `Attempt 1 actual: $${attemptOne.actualCostUsd}`
+              : `Attempt 1 conservative maximum: $${attemptOne.conservativeMaxCostUsd} (actual not yet known)`
+          }
+          size="small"
+          variant="outlined"
+        />
+        {attemptTwo ? (
+          <>
+            <Chip label={`Attempt 2: ${attemptTwo.status}`} size="small" />
+            <Chip
+              label={
+                attemptTwo.actualCostUsd !== null
+                  ? `Attempt 2 actual: $${attemptTwo.actualCostUsd}`
+                  : `Attempt 2 conservative maximum: $${attemptTwo.conservativeMaxCostUsd} (actual not yet known)`
+              }
+              size="small"
+              variant="outlined"
+            />
+          </>
+        ) : economics.attempt2IsPotential && economics.attempt2DebitUsd !== null ? (
+          <Chip
+            label={`Attempt 2 potential conservative maximum: $${economics.attempt2DebitUsd}`}
+            size="small"
+            variant="outlined"
+          />
+        ) : null}
+        {economics.cumulativeDebitUsd !== null && quote ? (
+          <Chip
+            color={economics.attempt2IsPotential ? "default" : "primary"}
+            label={`${economics.attempt2IsPotential ? "Potential cumulative" : "Cumulative"}: $${economics.cumulativeDebitUsd} / $${quote.hardCeilingUsd}`}
+            size="small"
+          />
+        ) : null}
+      </Stack>
+    );
+  }
 
   async function runPreflight(nextSource: DossierSourcePayload) {
     setError("");
@@ -228,7 +315,7 @@ export function SmartImportPage() {
   // failed against this exact bug before the fix).
   function handleResponse(action: LastAction, response: ExtractionResponse) {
     if (response.status === "blocked") {
-      setLastAttempt(response.attempt ?? null);
+      recordAttempt(response.attempt ?? null);
       setError(response.message);
       // Only an attempt #1 explicit terminal failure with a retryable
       // code offers Retry -- never merely because extractionId exists,
@@ -242,7 +329,7 @@ export function SmartImportPage() {
     }
 
     if (response.status === "in_progress") {
-      setLastAttempt(response.attempt ?? null);
+      recordAttempt(response.attempt ?? null);
       setError("");
       setPhase("in_progress");
       return;
@@ -256,7 +343,7 @@ export function SmartImportPage() {
 
     setRawResult(response.draft);
     setEditable(toEditableDraft(response.draft));
-    setLastAttempt(response.attempt ?? null);
+    recordAttempt(response.attempt ?? null);
     setError("");
     setPhase("review");
   }
@@ -480,20 +567,7 @@ export function SmartImportPage() {
                 This extraction is not currently eligible ({quote.blockedReasonCodes.join(", ")}).
               </Typography>
             )}
-            {lastAttempt ? (
-              <Stack sx={{ display: "flex", flexDirection: "row", flexWrap: "wrap", gap: 1 }}>
-                <Chip label={`Attempt ${lastAttempt.attemptNumber}: ${lastAttempt.status}`} size="small" />
-                <Chip
-                  label={
-                    lastAttempt.actualCostUsd !== null
-                      ? `Actual cost: $${lastAttempt.actualCostUsd}`
-                      : `Conservative maximum: $${lastAttempt.conservativeMaxCostUsd} (actual not yet known)`
-                  }
-                  size="small"
-                  variant="outlined"
-                />
-              </Stack>
-            ) : null}
+            {renderEconomicsSummary()}
 
             <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
               {showConfirmAction ? (
@@ -546,19 +620,25 @@ export function SmartImportPage() {
               Highlighted fields were unresolved or ambiguous -- edit them before applying.
             </Typography>
 
-            {lastAttempt ? (
-              <Stack sx={{ display: "flex", flexDirection: "row", flexWrap: "wrap", gap: 1 }}>
-                <Chip label={`Attempt ${lastAttempt.attemptNumber}: ${lastAttempt.status}`} size="small" />
-                <Chip
-                  label={
-                    lastAttempt.actualCostUsd !== null
-                      ? `Actual cost: $${lastAttempt.actualCostUsd}`
-                      : `Conservative maximum: $${lastAttempt.conservativeMaxCostUsd}`
-                  }
-                  size="small"
-                  variant="outlined"
-                />
-              </Stack>
+            {renderEconomicsSummary()}
+
+            {/* Corrected this pass (second independent pre-live re-audit,
+                Section 8): ADR 0004 Decision 18 requires Extraction Review
+                to show, at secondary audit-detail level, the source
+                filename/type, the frozen prompt version, and the
+                model/endpoint/economics detail -- previously absent
+                entirely (and PreflightResponse never even exposed
+                promptVersion, so it could not have been shown regardless
+                of what the UI tried to render). */}
+            {quote ? (
+              <Typography color="text.secondary" variant="body2">
+                Source: {sourceLabel ?? "unknown"} · Prompt version: {quote.promptVersion} · Model:{" "}
+                {quote.configuredModelId}
+                {quote.canonicalModelId && quote.canonicalModelId !== quote.configuredModelId
+                  ? ` (resolved: ${quote.canonicalModelId})`
+                  : ""}
+                {quote.providerEndpointTag ? ` — endpoint ${quote.providerEndpointTag}` : ""}
+              </Typography>
             ) : null}
 
             {documentLevelWarnings(rawResult).length > 0 ? (
