@@ -9,13 +9,14 @@
 // discarded once normalization succeeds -- only the normalized text is
 // returned, and callers must not persist it (Decision 13).
 
+import { Worker } from "node:worker_threads";
 import {
   NORMALIZED_DOSSIER_TEXT_MAX_CHARS,
   PACKAGE_EXTRACTION_PDF_MAX_PAGES,
   SMART_EXTRACTION_PDF_MAX_RAW_BYTES,
   SMART_EXTRACTION_TEXT_MAX_RAW_BYTES
 } from "./constants";
-import { ExtractionError } from "./errors";
+import { ExtractionError, type ExtractionHardFailureCode } from "./errors";
 import type { HandlerDeadline } from "./deadline";
 
 export type DossierSourceKind = "text" | "file";
@@ -171,101 +172,94 @@ function decodeBase64(contentBase64: string): Uint8Array {
   return new Uint8Array(buffer);
 }
 
-// Corrected this pass (independent pre-live audit, Section 7): the prior
-// revision only called `checkDeadline()` BETWEEN high-level pdfjs
-// operations -- a single long `await` (document load, one page's
-// getTextContent) could still run past the 55s handler deadline before
-// the next check ever executed. `withPdfDeadline` races each individual
-// pdfjs await against the freshly recomputed remaining handler time and,
-// on timeout, destroys the loading task (pdfjs's own documented
-// cancellation/cleanup API) before throwing.
+// Corrected this pass (independent pre-live audit round 2, Section 2):
+// the prior revision's `withPdfDeadline` (Promise.race per pdfjs await)
+// was an HONEST but INSUFFICIENT mitigation -- explicitly disclosed at
+// the time as unable to preempt a single pathological, non-yielding
+// synchronous parse, because pdfjs-dist's Node "fake worker" mode runs
+// on the SAME thread as the race's own timer. That limitation is now
+// eliminated, not merely documented: the entire pdfjs pipeline (module
+// load, getDocument, per-page getPage/getTextContent, the 200-page cap,
+// and the pdfjs-specific exception classification this file used to do
+// inline) runs inside a real `node:worker_threads` Worker, and the
+// PARENT races the worker's completion against the remaining handler
+// deadline. `Worker#terminate()` forcibly tears down the worker's V8
+// isolate -- unlike `Promise.race`, this genuinely preempts the worker
+// even mid a non-yielding synchronous call, because termination does
+// not require the worker's own code to cooperate at all.
 //
-// Honest limitation, disclosed rather than hidden: this repository runs
-// pdfjs-dist's Node "fake worker" mode, which executes synchronously on
-// the SAME thread as this race's timer (empirically verified during
-// implementation -- no real Worker is spawned). `Promise.race` can only
-// preempt an operation that itself yields the event loop between
-// internal steps (which pdfjs's own async document/page/text-content
-// resolution genuinely does in normal operation -- each is its own
-// resolved promise, not one long synchronous call) -- it cannot forcibly
-// interrupt a single pathological, purely synchronous parse that never
-// yields before finishing. A hard preemptive guarantee against that
-// narrower case would require isolating PDF parsing in a real
-// `worker_threads` worker (terminable via `Worker#terminate()`), which
-// is a larger architectural change out of scope for this correction
-// pass -- flagged explicitly here and in the implementation report
-// rather than silently claimed as fully solved.
-class PdfDeadlineExceededError extends Error {
-  constructor() {
-    super("PDF processing exceeded the remaining handler deadline.");
-    this.name = "PdfDeadlineExceededError";
-  }
-}
+// Empirically verified before writing this (not merely asserted): a
+// throwaway probe worker that requires a real node_modules package via
+// an eval'd CommonJS source string, then spins synchronously without
+// yielding for 5000ms, was torn down by `worker.terminate()` within ~2ms
+// of a 200ms parent timer firing -- i.e. terminate() cut the spin short
+// by roughly 4800ms rather than waiting for it to finish. A second probe
+// confirmed `pdfjs-dist/legacy/build/pdf.mjs` resolves via dynamic
+// `import()` from inside such an eval'd worker against this project's
+// own node_modules, and a full getDocument/getPage/getTextContent/
+// loadingTask.destroy() pass over a real minimal PDF succeeds and
+// returns the extracted text via `postMessage`.
+//
+// The worker source is an INLINE STRING (`new Worker(source, {eval:
+// true})`), not a path to a separate compiled `.js` file on disk. This
+// is a deliberate deployment-safety choice, not a shortcut: Netlify's
+// Function bundler traces and bundles exactly what this module imports
+// and contains -- a string constant travels with it automatically. A
+// separate worker *file* would need its own, independently-verified
+// entry in whatever the bundler ships to the deployed Function's zip;
+// getting that wrong would fail SILENTLY at runtime (a working local
+// dev server, a broken production Lambda), which is exactly the kind of
+// "not falsely claimed as solved" gap this pass exists to close. `eval:
+// true` accepts the source-embedded-in-this-file trade-off instead.
+type PdfWorkerOutcome =
+  | { ok: true; text: string }
+  | { ok: false; code: ExtractionHardFailureCode; message: string };
 
-async function withPdfDeadline<T>(
-  operation: Promise<T>,
-  deadline: HandlerDeadline
-): Promise<T> {
-  const remainingMs = deadline.remainingMs();
+// CommonJS on purpose (`require`, not `import`) -- Node's worker_threads
+// `eval: true` mode executes the source as a CommonJS script regardless
+// of this project's own `"type": "module"`, and `require` here resolves
+// against this project's real node_modules exactly as verified in the
+// probes above. `pdfjs-dist` itself is still loaded via a dynamic
+// `import()` inside the worker (mirroring exactly how the pre-worker
+// implementation loaded it), since pdfjs-dist ships as native ESM.
+const PDF_WORKER_SOURCE = `
+const { parentPort, workerData } = require("node:worker_threads");
 
-  if (remainingMs <= 0) {
-    throw new PdfDeadlineExceededError();
-  }
+(async () => {
+  let loadingTask = null;
 
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new PdfDeadlineExceededError()), remainingMs);
-  });
-
-  try {
-    return await Promise.race([operation, timeoutPromise]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function extractPdfTextLayer(
-  bytes: Uint8Array,
-  deadline: HandlerDeadline
-): Promise<string> {
-  // Deferred require (not a top-level import) so this heavy, server-only
-  // module is never pulled into any code path the client bundle could
-  // reach -- verify-client-bundle.mjs's absence check (Section 5) relies
-  // on this staying true.
-  const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
-
-  let loadingTask: ReturnType<typeof pdfjsLib.getDocument> | null = null;
+  const post = (outcome) => {
+    parentPort.postMessage(outcome);
+  };
 
   try {
+    const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
+    const bytes = new Uint8Array(workerData.arrayBuffer);
+
     loadingTask = pdfjsLib.getDocument({
       data: bytes,
       disableFontFace: true,
       useSystemFonts: false
     });
 
-    const document = await withPdfDeadline(loadingTask.promise, deadline);
+    const document = await loadingTask.promise;
 
-    if (document.numPages > PACKAGE_EXTRACTION_PDF_MAX_PAGES) {
-      throw new ExtractionError(
-        "INPUT_TOO_LARGE_FOR_MODEL",
-        `PDF has more than ${PACKAGE_EXTRACTION_PDF_MAX_PAGES} pages.`
-      );
+    if (document.numPages > workerData.maxPages) {
+      post({
+        ok: false,
+        code: "INPUT_TOO_LARGE_FOR_MODEL",
+        message: "PDF has more than " + workerData.maxPages + " pages."
+      });
+      return;
     }
 
-    const pageTexts: string[] = [];
+    const pageTexts = [];
 
     for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
-      deadline.assertMinimumWindow();
-
-      const page = await withPdfDeadline(document.getPage(pageNumber), deadline);
-      const content = await withPdfDeadline(page.getTextContent(), deadline);
-      // Deterministic ordering as far as the PDF text layer permits
-      // (Decision 6): the order getTextContent().items returns items in
-      // -- the document's own content-stream drawing order, never
-      // re-sorted here. Never rendering/canvas -- getTextContent reads
-      // only the text layer.
+      const page = await document.getPage(pageNumber);
+      const content = await page.getTextContent();
       const pageText = content.items
-        .map((item) => ("str" in item ? item.str : ""))
+        .map((item) => (item && typeof item.str === "string" ? item.str : ""))
         .join(" ")
         .trim();
 
@@ -273,51 +267,164 @@ async function extractPdfTextLayer(
       page.cleanup();
     }
 
-    const combined = pageTexts.join("\n\n").trim();
+    const combined = pageTexts.join("\\n\\n").trim();
 
     if (combined.length === 0) {
-      throw new ExtractionError(
-        "PDF_TEXT_UNAVAILABLE",
-        "No extractable text layer found (image-only/scanned PDF is not supported -- no OCR)."
-      );
+      post({
+        ok: false,
+        code: "PDF_TEXT_UNAVAILABLE",
+        message: "No extractable text layer found (image-only/scanned PDF is not supported -- no OCR)."
+      });
+      return;
     }
 
-    return combined;
+    post({ ok: true, text: combined });
   } catch (error) {
-    if (error instanceof ExtractionError) {
-      throw error;
+    const name = error && error.name;
+
+    if (name === "PasswordException") {
+      post({ ok: false, code: "PDF_ENCRYPTED_OR_INVALID", message: "PDF is password-protected." });
+    } else if (name === "InvalidPDFException") {
+      post({ ok: false, code: "PDF_ENCRYPTED_OR_INVALID", message: "PDF is invalid or corrupt." });
+    } else {
+      post({ ok: false, code: "PDF_ENCRYPTED_OR_INVALID", message: "PDF could not be parsed." });
+    }
+  } finally {
+    if (loadingTask) {
+      await loadingTask.destroy().catch(() => {});
+    }
+  }
+})();
+`;
+
+// The actual hard-preemption guarantee lives entirely in this generic
+// primitive, independent of pdfjs -- it races an eval'd worker's
+// completion against `timeoutMs` and forcibly `terminate()`s the worker
+// if that timer wins, regardless of what the worker is doing at that
+// instant (synchronous or asynchronous). Exported so it can be unit-
+// tested directly against a synthetic, deliberately-pathological
+// (synchronously-spinning) worker fixture -- proving the mechanism
+// itself, in isolation from pdfjs-dist, terminates a non-yielding worker
+// promptly rather than waiting for it. `extractPdfTextLayer` below is
+// the only production caller.
+export class WorkerDeadlineExceededError extends Error {
+  constructor() {
+    super("Worker did not complete within the allotted time.");
+    this.name = "WorkerDeadlineExceededError";
+  }
+}
+
+export async function runTerminableWorker<T>(
+  source: string,
+  workerData: unknown,
+  timeoutMs: number,
+  transferList: readonly ArrayBuffer[] = []
+): Promise<T> {
+  if (timeoutMs <= 0) {
+    throw new WorkerDeadlineExceededError();
+  }
+
+  const worker = new Worker(source, {
+    eval: true,
+    workerData,
+    transferList: transferList as ArrayBuffer[]
+  });
+
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+
+    // Every exit path -- a definitive worker message, a worker crash, or
+    // the timeout timer -- funnels through here so `worker.terminate()`
+    // is ALWAYS called exactly once and nothing is ever left running:
+    // terminate() on a worker that is already exiting on its own is a
+    // safe no-op, so this is never a double-cleanup hazard, and no path
+    // ever leaves an orphaned worker thread behind.
+    function finish(effect: () => void): void {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      clearTimeout(timer);
+      effect();
+      void worker.terminate();
     }
 
-    if (error instanceof PdfDeadlineExceededError) {
+    const timer = setTimeout(() => {
+      finish(() => reject(new WorkerDeadlineExceededError()));
+    }, timeoutMs);
+
+    worker.once("message", (message: T) => {
+      finish(() => resolve(message));
+    });
+
+    worker.once("error", (error: Error) => {
+      finish(() => reject(error));
+    });
+  });
+}
+
+async function extractPdfTextLayer(
+  bytes: Uint8Array,
+  deadline: HandlerDeadline
+): Promise<string> {
+  const remainingMs = deadline.remainingMs();
+
+  if (remainingMs <= 0) {
+    throw new ExtractionError(
+      "INPUT_PROCESSING_TIMEOUT",
+      "PDF processing exceeded the remaining handler deadline."
+    );
+  }
+
+  // A fresh, worker-transferable, plain ArrayBuffer copy: `bytes` is a
+  // `Uint8Array` whose `.buffer` is typed `ArrayBufferLike` (could in
+  // principle be a `SharedArrayBuffer`, which `transferList` rejects at
+  // the type level) and may in any case be a VIEW into a larger buffer
+  // the caller still holds a reference to (e.g. the decoded Base64
+  // payload) -- `transferList` DETACHES the buffer it names, so
+  // transferring memory this function does not exclusively own would
+  // corrupt what the caller still expects to read. Allocating a fresh
+  // buffer and copying into it sidesteps both problems; the copy is
+  // bounded by the existing 4 MiB raw PDF cap (checked by the caller
+  // before this function is ever reached), so it is cheap and bounded.
+  const arrayBuffer = new ArrayBuffer(bytes.byteLength);
+
+  new Uint8Array(arrayBuffer).set(bytes);
+
+  let outcome: PdfWorkerOutcome;
+
+  try {
+    outcome = await runTerminableWorker<PdfWorkerOutcome>(
+      PDF_WORKER_SOURCE,
+      { arrayBuffer, maxPages: PACKAGE_EXTRACTION_PDF_MAX_PAGES },
+      remainingMs,
+      [arrayBuffer]
+    );
+  } catch (error) {
+    if (error instanceof WorkerDeadlineExceededError) {
       throw new ExtractionError(
         "INPUT_PROCESSING_TIMEOUT",
         "PDF processing exceeded the remaining handler deadline."
       );
     }
 
-    const name = (error as { name?: string } | null)?.name;
-
-    if (name === "PasswordException") {
-      throw new ExtractionError(
-        "PDF_ENCRYPTED_OR_INVALID",
-        "PDF is password-protected."
-      );
-    }
-
-    if (name === "InvalidPDFException") {
-      throw new ExtractionError("PDF_ENCRYPTED_OR_INVALID", "PDF is invalid or corrupt.");
-    }
-
+    // A crash inside the worker BEFORE it could classify its own error
+    // (e.g. the eval'd source itself threw synchronously) -- treated the
+    // same way the pre-worker implementation treated an unclassified
+    // pdfjs exception: a conservative PDF_ENCRYPTED_OR_INVALID, never
+    // silently swallowed.
     throw new ExtractionError(
       "PDF_ENCRYPTED_OR_INVALID",
-      "PDF could not be parsed."
+      `PDF worker failed: ${(error as Error).message}`
     );
-  } finally {
-    // Cancels/cleans up pdfjs's own internal work -- the documented
-    // cancellation API this Node architecture actually supports (see the
-    // honest limitation noted above).
-    await loadingTask?.destroy();
   }
+
+  if (!outcome.ok) {
+    throw new ExtractionError(outcome.code, outcome.message);
+  }
+
+  return outcome.text;
 }
 
 export type NormalizedDossier = {

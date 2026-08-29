@@ -15,7 +15,9 @@ import {
 import {
   normalizeDossierText,
   resolveNormalizedDossier,
-  sanitizeDossierFilename
+  runTerminableWorker,
+  sanitizeDossierFilename,
+  WorkerDeadlineExceededError
 } from "./inputPipeline";
 
 // A deadline that is always ample -- most tests never approach it.
@@ -344,17 +346,24 @@ describe("resolveNormalizedDossier -- .pdf files (real pdfjs-dist text-layer ext
     ).rejects.toMatchObject({ code: "INPUT_PROCESSING_TIMEOUT" });
   });
 
-  it("bounds the PDF document-load await itself against the deadline (not only the between-pages check)", async () => {
-    // A deadline that reports ample time on the FIRST call
-    // (resolveNormalizedDossier's own entry check) but is already
-    // exhausted by the time withPdfDeadline checks it immediately before
-    // racing loadingTask.promise -- proving that specific await is
-    // itself deadline-bounded, not merely the checks between pages.
+  it("bounds extractPdfTextLayer's own pre-worker-spawn deadline check separately from the file-branch entry check (Section 2, corrected this pass -- withPdfDeadline/PdfDeadlineExceededError were removed entirely, replaced by a real worker_threads boundary; see the runTerminableWorker describe block below for the hard-preemption proof itself)", async () => {
+    // A deadline that reports ample time for the constructor AND the
+    // file-branch entry check (resolveNormalizedDossier's own
+    // `assertMinimumWindow()` before decodeBase64), but is already
+    // exhausted by extractPdfTextLayer's own `deadline.remainingMs()`
+    // check -- proving that check is a REAL, independent second gate,
+    // not merely a restatement of the entry check, and that a PDF whose
+    // deadline is exhausted between those two points never spawns a
+    // worker at all (zero worker creation cost paid for an already-lost
+    // budget).
     let calls = 0;
     const clock = () => {
       calls += 1;
 
-      return calls <= 1 ? 0 : 999_999_999;
+      // call 1: HandlerDeadline's constructor (startMs).
+      // call 2: resolveNormalizedDossier's file-branch entry check.
+      // call 3+: extractPdfTextLayer's own remainingMs() check.
+      return calls <= 2 ? 0 : 999_999_999;
     };
     const deadline = new HandlerDeadline(clock);
 
@@ -389,5 +398,75 @@ describe("resolveNormalizedDossier -- .pdf files (real pdfjs-dist text-layer ext
     );
 
     expect(result.normalizedText).toContain("Temp Fixture Text");
+  });
+});
+
+// Independent pre-live re-audit, Section 2: the prior correction pass's
+// `withPdfDeadline` (Promise.race) explicitly disclosed that it could
+// not preempt a single pathological, non-yielding synchronous pdfjs
+// parse. That limitation is eliminated here, not merely re-documented:
+// `runTerminableWorker` is the exact primitive `extractPdfTextLayer`
+// uses in production (same eval'd-worker-plus-timeout-plus-terminate
+// mechanism), exercised directly against a synthetic worker fixture
+// that deliberately spins synchronously without ever yielding --
+// independent of pdfjs-dist, so this proves the TERMINATION mechanism
+// itself, not merely that a particular PDF happens to parse quickly.
+describe("runTerminableWorker -- the hard-preemption primitive underneath extractPdfTextLayer", () => {
+  it("resolves with the worker's own posted message when it completes within the timeout", async () => {
+    const source = `
+      const { parentPort, workerData } = require("node:worker_threads");
+      parentPort.postMessage({ echoed: workerData.value });
+    `;
+
+    const result = await runTerminableWorker<{ echoed: number }>(source, { value: 42 }, 5000);
+
+    expect(result).toEqual({ echoed: 42 });
+  });
+
+  it("genuinely terminates a worker that spins synchronously without yielding, proving real preemption (not merely Promise.race) -- and does so without a 55-second real sleep", async () => {
+    // Deliberately synchronous and non-yielding: never awaits, never
+    // calls setTimeout/setImmediate/process.nextTick. A mechanism that
+    // could only preempt code between its own yield points (e.g.
+    // Promise.race alone, the prior revision's approach) could NOT stop
+    // this early -- only forcibly terminating the worker's own isolate
+    // can.
+    const spinWorkerSource = `
+      const { parentPort } = require("node:worker_threads");
+      const start = Date.now();
+      while (Date.now() - start < 2000) {
+        // intentionally empty: burn CPU without ever yielding
+      }
+      parentPort.postMessage({ spunFullDuration: true });
+    `;
+
+    const startedAt = Date.now();
+
+    await expect(runTerminableWorker(spinWorkerSource, {}, 30)).rejects.toBeInstanceOf(
+      WorkerDeadlineExceededError
+    );
+
+    const elapsedMs = Date.now() - startedAt;
+
+    // The spin itself would take ~2000ms if allowed to finish. A
+    // generous ceiling well under that -- but comfortably above the
+    // 30ms timeout, to allow for real worker startup/teardown
+    // scheduling overhead -- proves termination actually cut the spin
+    // short rather than this test having merely waited it out.
+    expect(elapsedMs).toBeLessThan(1000);
+  });
+
+  it("rejects immediately (WorkerDeadlineExceededError) when the timeout budget is already exhausted, spawning no worker", async () => {
+    await expect(
+      runTerminableWorker("require('node:worker_threads').parentPort.postMessage({});", {}, 0)
+    ).rejects.toBeInstanceOf(WorkerDeadlineExceededError);
+    await expect(
+      runTerminableWorker("require('node:worker_threads').parentPort.postMessage({});", {}, -5)
+    ).rejects.toBeInstanceOf(WorkerDeadlineExceededError);
+  });
+
+  it("propagates a worker crash (e.g. a syntax error in the eval'd source) as a rejection rather than hanging until the timeout", async () => {
+    const brokenSource = "this is not valid javascript {{{";
+
+    await expect(runTerminableWorker(brokenSource, {}, 5000)).rejects.toBeInstanceOf(Error);
   });
 });
