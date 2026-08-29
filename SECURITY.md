@@ -72,7 +72,7 @@ If a secret is ever committed or publicly exposed, treat it as compromised and *
 **The developer/operator must spend $0 on runtime model inference and must not fund production users.** `OPENROUTER_API_KEY` above is retained, but its scope is narrowed:
 
 - **Operator metadata credential** (`OPENROUTER_API_KEY`, server env var, unchanged): acceptable for zero-cost metadata/model-discovery/preflight requests only — `POST /api/setup-extractions/preflight` and, in this pass, the paid endpoints' own internal eligibility re-check (both make zero `createChatCompletion` calls). Still never exposed to the browser, still never sent to the model, still `verify-client-bundle.mjs`'s forbidden-identifier check.
-- **User runtime inference credential** (new: header `X-User-OpenRouter-Key`): required by every endpoint capable of calling `createChatCompletion` — currently `POST /api/setup-extractions` and `POST /api/setup-extractions/{id}/retry`. Absent → `OPENROUTER_NOT_CONNECTED`, zero claim, zero persistence, zero spend. **Never** falls back to `OPENROUTER_API_KEY`/`process.env` — those two Netlify Functions do not read the operator credential at all.
+- **User runtime inference credential** (new: header `X-User-OpenRouter-Key`): required by every endpoint capable of calling `createChatCompletion` — `POST /api/setup-extractions`, `POST /api/setup-extractions/{id}/retry` (M7A), and, as of **M8**, `POST /api/runs` (forwards it server-to-server, never persisted, to trigger the Tribunal Background Function) and the Background Function itself (`netlify/functions/tribunal-execute-background.ts`, protected by a separate `X-Internal-Function-Secret` the browser never receives — see §12 below). Absent → `OPENROUTER_NOT_CONNECTED`, zero claim, zero persistence, zero spend. **Never** falls back to `OPENROUTER_API_KEY`/`process.env` — none of these code paths read the operator credential at all. Unlike M7A's paid endpoints, M8's worker uses the user's own credential even for its own execution-time metadata re-check (`netlify/server/tribunal/execution.ts`), since every OpenRouter call it makes is on the direct path to a possible paid completion.
 - The user's credential is:
   - held **only** in the browser tab's `sessionStorage` — never `localStorage`, never a cookie, never sent to Supabase, never written to any table or audit row;
   - never logged (no `console.log`/error message ever includes it);
@@ -511,6 +511,20 @@ Require:
 Do not expose the internal secret or embed it in frontend source.
 
 A guessed run ID alone must not be enough to invoke paid work.
+
+**Implemented in M8** (`netlify/functions/tribunal-execute-background.ts`):
+authenticates `X-Internal-Function-Secret` via a constant-time comparison
+(`netlify/server/tribunal/internalSecret.ts`) before any other work —
+before parsing the body, before reading the user credential, before any
+database access. A missing/misconfigured server secret fails closed
+(zero execution), never falls open. The only caller is `POST /api/runs`
+(`netlify/server/tribunal/triggerExecution.ts`), which holds the secret
+server-side only and forwards it in one server-to-server request; the
+browser never receives it, matching the "no lease/queue" P0 requirement
+— a genuinely unexpected exception is caught last-resort and never
+escapes, but no retry/recovery system was built for a catastrophic
+mid-execution process death (documented limitation, `ARCHITECTURE.md`
+§7.4).
 
 ---
 

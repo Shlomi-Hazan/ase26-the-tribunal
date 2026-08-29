@@ -44,8 +44,8 @@ Do not begin later milestones by destabilizing incomplete earlier work.
 | 5 | Case Persistence & Import | ✅ Complete |
 | 6 | Participant Configuration | ✅ Complete |
 | 7 | OpenRouter Infrastructure | ✅ Complete |
-| 7A | Smart Tribunal Package Extraction | 🟡 Current |
-| 8 | Shared-Model Tribunal | ⬜ Planned |
+| 7A | Smart Tribunal Package Extraction | ✅ Complete |
+| 8 | Shared-Model Tribunal | 🟡 Current |
 | 9 | Separate-Model Tribunal | ⬜ Planned |
 | 10 | Protocol & Economics | ⬜ Planned |
 | 11 | Past Cases & Auditability | ⬜ Planned |
@@ -446,6 +446,23 @@ A free-form text or text-extractable PDF dossier can be converted into a reviewa
 ---
 
 # M8 — Shared-Model Tribunal
+
+Full planning contract: [Issue #17](https://github.com/Shlomi-Hazan/ase26-the-tribunal/issues/17)
+(execution order, atomic budget/claim state machine, BYOK Background
+Function handoff, corrected twice after independent review). This
+section's Goal/Scope/Verification/Exit condition are preserved unchanged
+below.
+
+**Corrected during implementation (independent review, Issue #17):**
+runtime inference is user-funded, reusing the M7A BYOK boundary
+unchanged (`docs/economics.md` §22.1) -- the developer/operator's
+`OPENROUTER_API_KEY` is never reachable by the execution path. The
+"one explicitly authorized low-cost/free end-to-end real run" mentioned
+below did **not** happen in the implementation pass: automated tests use
+`FakeOpenRouterProvider` exclusively, and the first real paid completion
+can only occur via an actual user's own connected credential, not the
+developer's. Execution-time preflight strictly precedes the atomic run
+claim (`ARCHITECTURE.md` §7.4).
 
 ## Goal
 

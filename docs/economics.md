@@ -893,7 +893,16 @@ never about how much or how the guardrails compute.
   Supabase user authentication and no private ownership model (§18
   above, `SECURITY.md` §3.1) — the credential lives in the browser for
   the current tab session and nowhere else.
-- **M8 reuse**: the same per-request credential handoff is designed to
-  extend directly to M8's seven advocate/judge calls — one connected
-  user credential funds that entire frozen run, never the operator's.
-  Not implemented in this pass.
+- **M8 reuse**: the same per-request credential handoff extends directly
+  to M8's seven advocate/judge calls — one connected user credential
+  funds that entire frozen run, never the operator's. **Implemented in
+  M8** (`ARCHITECTURE.md` §7.4's corrected executable order,
+  [Issue #17](https://github.com/Shlomi-Hazan/ase26-the-tribunal/issues/17)):
+  `POST /api/runs` forwards the header server-to-server to the
+  Background Function; the worker builds every provider (including its
+  own execution-time re-preflight) from that one credential, never
+  `readOpenRouterServerConfig()`/`OPENROUTER_API_KEY`. Unlike the M7A
+  extraction endpoints, M8's execution-time re-preflight also uses the
+  user's own credential rather than the operator's, since the worker has
+  no metadata-only exemption to make — every OpenRouter call it makes at
+  all is on the path to a possible paid completion.
