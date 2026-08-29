@@ -8,6 +8,17 @@ import {
   validateParticipantPersonality
 } from "./setupState";
 
+const FAKE_USER_OPENROUTER_KEY = "sk-or-v1-test-fake-user-key-case-setup";
+
+// Milestone 8 (user-funded BYOK): Convene is disabled until connected --
+// interacts with the real Connect UI, matching smartImport.test.tsx's own
+// connectOpenRouter helper (a direct sessionStorage write does not update
+// the component's React state).
+async function connectOpenRouter(user: ReturnType<typeof userEvent.setup>) {
+  await user.type(screen.getByLabelText(/openrouter api key/i), FAKE_USER_OPENROUTER_KEY);
+  await user.click(screen.getByRole("button", { name: /^connect$/i }));
+}
+
 const packageDraft = {
   chargeSheet: {
     defendant: "Imported Alex",
@@ -66,6 +77,7 @@ const packageDraft = {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  sessionStorage.clear();
 });
 
 describe("case setup workflow", () => {
@@ -707,13 +719,11 @@ describe("case setup workflow", () => {
     await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
     await user.click(screen.getByRole("link", { name: /continue to judges/i }));
     await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+    await connectOpenRouter(user);
     await user.click(screen.getByRole("button", { name: "Convene Tribunal" }));
 
     expect(
       await screen.findByText(/tribunal configuration frozen/i)
-    ).toBeVisible();
-    expect(
-      screen.getByText(/model execution is not enabled yet/i)
     ).toBeVisible();
     expect(
       screen.getByText(/33333333-3333-4333-8333-333333333333/)
@@ -761,6 +771,7 @@ describe("case setup workflow", () => {
     await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
     await user.click(screen.getByRole("link", { name: /continue to judges/i }));
     await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+    await connectOpenRouter(user);
 
     const conveneButton = screen.getByRole("button", { name: "Convene Tribunal" });
     await user.click(conveneButton);
@@ -821,6 +832,7 @@ describe("case setup workflow", () => {
     await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
     await user.click(screen.getByRole("link", { name: /continue to judges/i }));
     await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+    await connectOpenRouter(user);
 
     await user.click(screen.getByRole("button", { name: "Convene Tribunal" }));
     expect(
@@ -871,6 +883,7 @@ describe("case setup workflow", () => {
     await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
     await user.click(screen.getByRole("link", { name: /continue to judges/i }));
     await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+    await connectOpenRouter(user);
 
     await user.click(screen.getByRole("button", { name: "Convene Tribunal" }));
     expect(
@@ -949,6 +962,7 @@ describe("case setup workflow", () => {
     await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
     await user.click(screen.getByRole("link", { name: /continue to judges/i }));
     await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+    await connectOpenRouter(user);
     await user.click(screen.getByRole("button", { name: /save case/i }));
 
     expect(await screen.findByText(/case saved to past cases/i)).toBeVisible();
@@ -1011,6 +1025,7 @@ describe("case setup workflow", () => {
     await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
     await user.click(screen.getByRole("link", { name: /continue to judges/i }));
     await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+    await connectOpenRouter(user);
     await user.click(screen.getByRole("button", { name: /save case/i }));
 
     expect(await screen.findByText(/case saved to past cases/i)).toBeVisible();
@@ -1067,6 +1082,7 @@ describe("case setup workflow", () => {
     await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
     await user.click(screen.getByRole("link", { name: /continue to judges/i }));
     await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+    await connectOpenRouter(user);
     await user.click(screen.getByRole("button", { name: "Convene Tribunal" }));
 
     expect(
@@ -1105,6 +1121,7 @@ describe("case setup workflow", () => {
     await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
     await user.click(screen.getByRole("link", { name: /continue to judges/i }));
     await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+    await connectOpenRouter(user);
     await user.click(screen.getByRole("button", { name: "Convene Tribunal" }));
 
     expect(

@@ -9,10 +9,12 @@ import {
   Typography
 } from "@mui/material";
 import { useRef, useState } from "react";
-import { Link as RouterLink } from "react-router-dom";
+import { Link as RouterLink, useNavigate } from "react-router-dom";
 import { EconomicsSummary } from "../components/EconomicsSummary";
+import { OpenRouterConnect } from "../components/OpenRouterConnect";
 import { PageHeader } from "../components/PageHeader";
 import { SetupStepper } from "../components/SetupStepper";
+import { hasUserOpenRouterKey } from "../services/openRouterCredential";
 import {
   areAdvocatePersonalitiesValid,
   areJudgePersonalitiesValid,
@@ -34,12 +36,18 @@ import {
 
 export function ReviewPage() {
   const { state, dispatch } = useSetup();
+  const navigate = useNavigate();
   const [saveError, setSaveError] = useState("");
   const [savedCase, setSavedCase] = useState<StoredCase | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [conveneError, setConveneError] = useState("");
   const [conveneResult, setConveneResult] = useState<StoredRun | null>(null);
   const [isConvening, setIsConvening] = useState(false);
+  // Milestone 8 (user-funded BYOK): Convene is disabled until an
+  // OpenRouter credential is connected -- server-side enforcement
+  // (OPENROUTER_NOT_CONNECTED) is independent and authoritative
+  // regardless of this client-side gate.
+  const [openRouterConnected, setOpenRouterConnected] = useState(() => hasUserOpenRouterKey());
   // Milestone 6 client idempotency key lifecycle: stable across a retry of
   // the same semantic submission, refreshed only when the underlying
   // request actually changed (docs/adr/0002-participant-configuration-
@@ -89,8 +97,11 @@ export function ReviewPage() {
 
   async function handleConvene() {
     // Once accepted, retain the accepted run state instead of starting a
-    // fresh request -- Convene is not re-armed after success.
-    if (!canConvene || isConvening || conveneResult) {
+    // fresh request -- Convene is not re-armed after success. Milestone 8:
+    // also requires a connected OpenRouter credential -- the server's own
+    // OPENROUTER_NOT_CONNECTED gate is authoritative regardless, this is
+    // purely a UX short-circuit.
+    if (!canConvene || !openRouterConnected || isConvening || conveneResult) {
       return;
     }
 
@@ -115,7 +126,7 @@ export function ReviewPage() {
     setIsConvening(true);
 
     try {
-      const run = await convene({
+      const { run, executionTriggered } = await convene({
         clientRequestId: clientRequestIdRef.current,
         case: caseRequest,
         executionMode: state.executionMode,
@@ -127,6 +138,16 @@ export function ReviewPage() {
       }
 
       setConveneResult(run);
+
+      // Milestone 8: navigate to the real run page only when execution
+      // was actually triggered by this request (ARCHITECTURE.md Sec 12's
+      // /runs/:runId route). A BLOCKED_BUDGET run also has something
+      // useful to show there; any other non-trigger outcome (e.g. an
+      // unreachable worker invocation) stays on Review with the frozen
+      // run id visible instead of navigating to an unchanging blank page.
+      if (executionTriggered || run.status === "BLOCKED_BUDGET") {
+        navigate(`/runs/${run.id}`);
+      }
     } catch (error) {
       setConveneError(formatRunError(error));
     } finally {
@@ -270,6 +291,20 @@ export function ReviewPage() {
         </CardContent>
       </Card>
       <EconomicsSummary />
+      <Card>
+        <CardContent>
+          <Typography component="h2" sx={{ mb: 1 }} variant="h5">
+            Connect OpenRouter
+          </Typography>
+          <Typography color="text.secondary" sx={{ mb: 2 }} variant="body2">
+            Runtime model inference is user-funded: any charges from
+            convening the Tribunal go to your own connected OpenRouter
+            account, never the developer's. Convene is disabled until you
+            connect.
+          </Typography>
+          <OpenRouterConnect connected={openRouterConnected} onConnectedChange={setOpenRouterConnected} />
+        </CardContent>
+      </Card>
       {!canConvene ? (
         <Alert severity="error">
           <Stack spacing={1}>
@@ -315,7 +350,7 @@ export function ReviewPage() {
       {saveError ? <Alert severity="error">{saveError}</Alert> : null}
       {conveneResult ? (
         <Alert severity="success">
-          Tribunal configuration frozen. Model execution is not enabled yet.
+          Tribunal configuration frozen.
           {" "}
           <Typography color="text.secondary" component="span" variant="body2">
             Run ID: {conveneResult.id}
@@ -323,6 +358,11 @@ export function ReviewPage() {
         </Alert>
       ) : null}
       {conveneError ? <Alert severity="error">{conveneError}</Alert> : null}
+      {canConvene && !openRouterConnected ? (
+        <Typography color="text.secondary" variant="body2">
+          Connect OpenRouter above before convening the Tribunal.
+        </Typography>
+      ) : null}
       <Stack direction="row" spacing={2}>
         <Button component={RouterLink} to="/new/judges" variant="outlined">
           Back
@@ -335,7 +375,7 @@ export function ReviewPage() {
           {isSaving ? "Saving..." : "Save Case"}
         </Button>
         <Button
-          disabled={!canConvene || isConvening || Boolean(conveneResult)}
+          disabled={!canConvene || !openRouterConnected || isConvening || Boolean(conveneResult)}
           onClick={handleConvene}
           variant="contained"
         >
