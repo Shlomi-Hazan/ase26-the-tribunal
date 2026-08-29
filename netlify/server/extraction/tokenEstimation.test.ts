@@ -2,7 +2,12 @@
 // 9, 11; implementation-time decision D, Issue #15; corrected this pass,
 // independent pre-live audit, Section 11: the estimate now covers the
 // COMPLETE fixed request shape -- system prompt + user-message wrapper +
-// structured-output JSON Schema -- not the system prompt alone).
+// structured-output JSON Schema -- not the system prompt alone. Extended
+// again in the second independent pre-live re-audit, Section 6: the
+// structured-output byte count now covers the COMPLETE response_format
+// envelope -- type/json_schema.name/json_schema.strict/schema -- not the
+// bare schema object alone, matching what executionRequest.ts's
+// buildFutureCompletionRequest actually sends).
 
 import { describe, expect, it } from "vitest";
 import { PACKAGE_EXTRACTION_SYSTEM_PROMPT_V1 } from "../../../src/prompts/package-extraction/v1";
@@ -10,15 +15,32 @@ import { packageExtractionJsonSchema } from "../../../src/schemas/packageExtract
 import {
   buildDossierUserMessageContent,
   EXTRACTION_FIXED_PROMPT_OVERHEAD_TOKENS,
+  EXTRACTION_STRUCTURED_OUTPUT_NAME,
   estimateExtractionInputTokens,
   worstCaseExtractionInputTokens
 } from "./tokenEstimation";
 import { NORMALIZED_DOSSIER_TEXT_MAX_CHARS } from "./constants";
 
+// Mirrors executionRequest.ts's buildFutureCompletionRequest response_format
+// construction exactly -- the real bytes sent on the wire, not the bare
+// schema object alone.
+function realResponseFormatEnvelope(): Record<string, unknown> {
+  return {
+    type: "json_schema",
+    json_schema: {
+      name: EXTRACTION_STRUCTURED_OUTPUT_NAME,
+      strict: true,
+      schema: packageExtractionJsonSchema
+    }
+  };
+}
+
 function realFixedOverheadBytes(): number {
   const systemPromptBytes = new TextEncoder().encode(PACKAGE_EXTRACTION_SYSTEM_PROMPT_V1).length;
   const wrapperBytes = new TextEncoder().encode(buildDossierUserMessageContent("")).length;
-  const schemaBytes = new TextEncoder().encode(JSON.stringify(packageExtractionJsonSchema)).length;
+  const schemaBytes = new TextEncoder().encode(
+    JSON.stringify(realResponseFormatEnvelope())
+  ).length;
 
   return systemPromptBytes + wrapperBytes + schemaBytes;
 }
@@ -82,6 +104,24 @@ describe("estimateExtractionInputTokens", () => {
     // require it to be.
     expect(EXTRACTION_FIXED_PROMPT_OVERHEAD_TOKENS).toBeGreaterThanOrEqual(
       Math.ceil(schemaBytes / 2)
+    );
+  });
+
+  it("anti-drift (Section 6): the fixed response_format WRAPPER bytes (type/json_schema.name/strict keys) are included too, not merely the inner schema object", () => {
+    const bareSchemaBytes = new TextEncoder().encode(
+      JSON.stringify(packageExtractionJsonSchema)
+    ).length;
+    const fullEnvelopeBytes = new TextEncoder().encode(
+      JSON.stringify(realResponseFormatEnvelope())
+    ).length;
+
+    // The envelope strictly contains more bytes than the bare schema
+    // (the "type"/"json_schema"/"name"/"strict" keys and values are real,
+    // non-zero overhead) -- proving the estimator is not silently
+    // measuring the schema alone under a different-looking call.
+    expect(fullEnvelopeBytes).toBeGreaterThan(bareSchemaBytes);
+    expect(EXTRACTION_FIXED_PROMPT_OVERHEAD_TOKENS).toBeGreaterThanOrEqual(
+      Math.ceil(fullEnvelopeBytes / 2)
     );
   });
 });

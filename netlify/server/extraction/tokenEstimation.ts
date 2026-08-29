@@ -30,12 +30,36 @@ const DOSSIER_MESSAGE_WRAPPER_OVERHEAD_BYTES = new TextEncoder().encode(
   buildDossierUserMessageContent("")
 ).length;
 
-// The exact canonical (compact) serialized byte size of the
-// structured-output JSON Schema sent as `response_format.json_schema`
-// on every request (Decision 5) -- computed from the real schema object,
-// never estimated.
+// The exact literal `structuredOutput.name` service.ts's real
+// buildFutureCompletionRequest call passes -- a single shared constant so
+// the estimator below and the real request can never drift apart on this
+// value either (second independent pre-live re-audit, Section 6).
+export const EXTRACTION_STRUCTURED_OUTPUT_NAME = "package_extraction";
+
+// Corrected this pass (second independent pre-live re-audit, Section 6):
+// the prior estimate serialized ONLY the bare JSON Schema object -- but
+// executionRequest.ts's buildFutureCompletionRequest actually sends the
+// COMPLETE `response_format` envelope (`{type: "json_schema",
+// json_schema: {name, strict, schema}}`), not the schema alone. The
+// wrapper's own keys/literals are small but real, non-zero bytes the
+// model genuinely receives -- the conservative estimate must cover the
+// complete fixed request shape, not merely its largest piece.
+function buildStructuredOutputEnvelope(): Record<string, unknown> {
+  return {
+    type: "json_schema",
+    json_schema: {
+      name: EXTRACTION_STRUCTURED_OUTPUT_NAME,
+      strict: true,
+      schema: packageExtractionJsonSchema
+    }
+  };
+}
+
+// The exact canonical (compact) serialized byte size of the COMPLETE
+// `response_format` envelope sent on every request (Decision 5) --
+// computed from the real envelope shape, never estimated.
 const STRUCTURED_OUTPUT_SCHEMA_OVERHEAD_BYTES = new TextEncoder().encode(
-  JSON.stringify(packageExtractionJsonSchema)
+  JSON.stringify(buildStructuredOutputEnvelope())
 ).length;
 
 function currentSystemPromptBytes(): number {
