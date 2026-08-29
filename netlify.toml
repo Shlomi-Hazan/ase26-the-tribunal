@@ -3,6 +3,46 @@
   publish = "dist"
   functions = "netlify/functions"
 
+[functions]
+  # Milestone 7A deployment-packaging correction: pdfjs-dist is
+  # referenced only via a dynamic import() INSIDE AN EVAL'D
+  # node:worker_threads Worker source string
+  # (netlify/server/extraction/inputPipeline.ts's PDF_WORKER_SOURCE) --
+  # esbuild's static dependency tracing cannot discover a require/import
+  # written inside a string literal, so without this explicit directive
+  # pdfjs-dist could be silently omitted from the deployed Function
+  # artifact even though it resolves correctly in local dev. Per
+  # Netlify's documented Functions packaging contract
+  # (https://docs.netlify.com/build/functions/optional-configuration/),
+  # `external_node_modules` copies the named package's real
+  # node_modules contents into the bundled artifact unmodified, and is
+  # only honored when node_bundler is explicitly "esbuild". Both keys
+  # are documented ONLY at this global [functions] table level (no
+  # per-function scoping is offered for them) -- this table configures
+  # Netlify Functions packaging only and has no effect on the separate
+  # Vite client build (`npm run build` above / `dist/`), so pdfjs-dist
+  # still never reaches the browser bundle (verified by
+  # scripts/verify-client-bundle.mjs).
+  #
+  # Verified against the REAL packaging engine, not merely assumed:
+  # `netlify functions:build` (the CLI's own local-build subcommand)
+  # was tried first and did NOT apply this directive -- the resulting
+  # artifact had zero node_modules/pdfjs-dist despite the config being
+  # read correctly (confirmed via --debug). @netlify/zip-it-and-ship-it
+  # -- the actual packaging library `netlify build`/`netlify deploy`
+  # call internally, invoked directly with the equivalent config this
+  # netlify.toml table translates to -- DOES correctly copy the full
+  # pdfjs-dist@6.2.108 package (including legacy/build/pdf.mjs, the
+  # exact file the worker imports) into every setup-extractions*
+  # Function's own node_modules. A real Node worker_threads Worker,
+  # using this exact `require("node:worker_threads")` +
+  # `await import("pdfjs-dist/legacy/build/pdf.mjs")` pattern, run with
+  # its CWD inside that isolated packaged directory (no ancestor
+  # node_modules reachable), successfully resolved and loaded it. See
+  # PR #16 / Issue #15 for the recorded evidence and exact commands.
+  node_bundler = "esbuild"
+  external_node_modules = ["pdfjs-dist"]
+
 [dev]
   command = "npm run dev"
   targetPort = 5173

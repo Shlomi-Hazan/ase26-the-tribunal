@@ -16,7 +16,8 @@
     "test:watch": "vitest",
     "build": "vite build",
     "verify:client-bundle": "node scripts/verify-client-bundle.mjs",
-    "verify": "npm run lint && npm run typecheck && npm run test && npm run build && npm run verify:client-bundle"
+    "verify:netlify-functions-packaging": "node scripts/verify-netlify-functions-packaging.mjs",
+    "verify": "npm run lint && npm run typecheck && npm run test && npm run build && npm run verify:client-bundle && npm run verify:netlify-functions-packaging"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",
