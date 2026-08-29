@@ -22,6 +22,7 @@ import {
 } from "../../server/runs";
 import { ADVOCATE_PROMPT_VERSION, JUDGE_PROMPT_VERSION } from "../../../src/prompts/versions";
 import type { ParticipantId } from "../../../src/schemas/tribunalSetup";
+import { FakeTribunalExecutionRepository } from "../../server/tribunal/repository";
 import { handleRunByIdRequest } from "../run-by-id";
 import { handler as runsHandler, handleRunsRequest } from "../runs";
 
@@ -77,7 +78,16 @@ class FakeRunRepository implements RunRepository {
       executionMode: input.executionMode === "SHARED" ? "shared" : "separate",
       status: "READY",
       createdAt: "2026-08-26T10:05:00.000Z",
+      startedAt: null,
+      completedAt: null,
+      majorityVerdict: null,
+      failureCode: null,
+      failureMessage: null,
+      totalCostUsd: null,
+      advocateCostUsd: null,
+      judgeCostUsd: null,
       participants: input.participants.map((entry) => ({
+        id: randomUUID(),
         participantId: entry.participantId,
         role: ROLE_BY_PARTICIPANT_ID[entry.participantId],
         side: SIDE_BY_PARTICIPANT_ID[entry.participantId],
@@ -86,7 +96,11 @@ class FakeRunRepository implements RunRepository {
         personalitySource: entry.personalitySource,
         personalitySourceFilename: entry.personalitySourceFilename,
         modelId: entry.modelId,
-        promptVersion: "unassigned-pre-m7"
+        promptVersion: "unassigned-pre-m7",
+        attemptStatus: "PENDING",
+        speech: null,
+        verdict: null,
+        reasoning: null
       }))
     };
 
@@ -603,5 +617,30 @@ describe("run read function", () => {
 
     expect(response.statusCode).toBe(400);
     expect(JSON.parse(response.body ?? "").error).toBe("invalid_run");
+  });
+});
+
+describe("Milestone 8 -- execution trigger wiring on POST /api/runs", () => {
+  it("no X-User-OpenRouter-Key header -> freeze succeeds but zero execution is triggered, run stays READY", async () => {
+    const tribunalRepository = new FakeTribunalExecutionRepository();
+    const deps = {
+      caseRepository: new FakeIdempotentCaseRepository(),
+      runRepository: new FakeRunRepository(),
+      tribunalRepository
+    };
+
+    const response = await handleRunsRequest(
+      { httpMethod: "POST", headers: {}, body: validBody() } as unknown as HandlerEvent,
+      deps
+    );
+    const payload = JSON.parse(response.body ?? "");
+
+    expect(response.statusCode).toBe(201);
+    expect(payload.run.status).toBe("READY");
+    expect(payload.executionTriggered).toBe(false);
+    // The RPC-backed tribunal repository was never touched -- zero claim,
+    // zero budget-block call, exactly the OPENROUTER_NOT_CONNECTED
+    // contract already proven end-to-end for the extraction endpoints.
+    expect(tribunalRepository.runStatus.size).toBe(0);
   });
 });
