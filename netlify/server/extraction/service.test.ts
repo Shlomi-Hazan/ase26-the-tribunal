@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { RawOpenRouterEndpoint, RawOpenRouterModel } from "../openrouter/schemas";
 import { ProviderError } from "../openrouter/errors";
+import type { OpenRouterProvider } from "../openrouter/provider";
 import { packageSeats } from "../../../src/schemas/tribunalSetup";
 import { PACKAGE_EXTRACTION_PROMPT_VERSION } from "../../../src/prompts/versions";
 import { EXTRACTION_OUTPUT_CAP_TOKENS } from "./constants";
@@ -14,7 +15,8 @@ import { computeExtractionFingerprint } from "./fingerprint";
 import { normalizeDossierText } from "./inputPipeline";
 import { FakeExtractionProvider, fakeChatCompletionResult } from "./fakeProvider";
 import { FakeExtractionRepository } from "./fakeRepository";
-import { SlidingWindowRateLimiter } from "./rateLimit";
+import { ExtractionAttemptAlreadyClaimedError } from "./repository";
+import { buildDossierUserMessageContent } from "./tokenEstimation";
 import {
   runExtractionPreflight,
   submitExtractionRetry,
@@ -110,7 +112,6 @@ function makeDeps(overrides: Partial<ExtractionSourceDeps> = {}): {
   const deps: ExtractionSourceDeps = {
     provider,
     repository,
-    rateLimiter: new SlidingWindowRateLimiter(),
     sourceIp: "203.0.113.1",
     configuredModelId: CONFIGURED_MODEL_ID,
     promptVersion: PACKAGE_EXTRACTION_PROMPT_VERSION,
@@ -375,6 +376,169 @@ describe("concurrency -- atomic claim", () => {
     expect(provider.createChatCompletionCallCount).toBe(1);
     expect([first.statusCode, second.statusCode]).toEqual([200, 200]);
   });
+
+  // Second independent pre-live re-audit, Section 4: prior to this fix,
+  // safeBlock caught EVERY exception from repository.block(...)
+  // unconditionally -- including a genuine ExtractionIdempotencyConflictError
+  // -- and the caller whose block() call LOST the race always got back
+  // its own original (unrelated) pre-claim failure reason instead of the
+  // true 409 IDEMPOTENCY_CONFLICT. Forcing a shared pre-claim failure
+  // (MODEL_NOT_ELIGIBLE) for both concurrent requests routes both
+  // through safeBlockOrConflict/block(), exercising exactly the
+  // block()-level race rather than the claimAttemptOne()-level race the
+  // test above already covers.
+  it("two concurrent PRE-CLAIM-BLOCKED requests for the same new id with DIFFERENT dossiers: the loser gets 409 IDEMPOTENCY_CONFLICT, never its own masked failure reason, and the winner's row is never mutated by the loser", async () => {
+    const { provider, repository, deps } = makeDeps();
+
+    // Forces MODEL_NOT_ELIGIBLE for every request against this deps --
+    // both concurrent calls reach safeBlockOrConflict via the same
+    // pre-claim path, not the atomic claim path.
+    provider.listEndpointsResult = { [CONFIGURED_MODEL_ID]: [] };
+
+    const id = randomUUID();
+    const sourceA = textSource("Dossier A -- request A's own content.");
+    const sourceB = textSource("Dossier B -- a DIFFERENT request racing the same id.");
+
+    const [resultA, resultB] = await Promise.all([
+      submitInitialExtraction(id, sourceA, deps),
+      submitInitialExtraction(id, sourceB, deps)
+    ]);
+
+    const bodies = [resultA, resultB].map(
+      (result) => result.body as { errorCode: string }
+    );
+
+    // Exactly one of the two is the true idempotency conflict; the other
+    // is the ordinary MODEL_NOT_ELIGIBLE failure its own dossier hit --
+    // never both the same, and never a masked/mixed-up outcome.
+    const conflictCount = bodies.filter((body) => body.errorCode === "IDEMPOTENCY_CONFLICT").length;
+    const modelNotEligibleCount = bodies.filter(
+      (body) => body.errorCode === "MODEL_NOT_ELIGIBLE"
+    ).length;
+
+    expect(conflictCount).toBe(1);
+    expect(modelNotEligibleCount).toBe(1);
+    expect([resultA.statusCode, resultB.statusCode].sort()).toEqual([400, 409]);
+
+    // The persisted row belongs entirely to whichever request actually
+    // won -- its fingerprint was never overwritten/mixed by the loser.
+    const persisted = await repository.getExtraction(id);
+
+    expect(persisted).not.toBeNull();
+    expect(persisted?.finalStatus).toBe("MODEL_NOT_ELIGIBLE");
+    expect([
+      computeExtractionFingerprint({
+        normalizedDossierText: normalizeDossierText("Dossier A -- request A's own content."),
+        promptVersion: PACKAGE_EXTRACTION_PROMPT_VERSION,
+        configuredModelId: CONFIGURED_MODEL_ID
+      }),
+      computeExtractionFingerprint({
+        normalizedDossierText: normalizeDossierText("Dossier B -- a DIFFERENT request racing the same id."),
+        promptVersion: PACKAGE_EXTRACTION_PROMPT_VERSION,
+        configuredModelId: CONFIGURED_MODEL_ID
+      })
+    ]).toContain(persisted?.requestFingerprint);
+  });
+
+  // Second independent pre-live re-audit, Section 5: Request A wins
+  // attempt #1's claim (provider attempt in progress/completed). Request
+  // B started earlier, before A's row existed, with the SAME
+  // fingerprint, and only NOW (after A already claimed) reaches its own
+  // pre-claim block call. B must not overwrite A's already-established
+  // outcome merely because the fingerprints match -- block_setup_extraction
+  // (and its fake analogue) must refuse and signal the caller to resolve
+  // through the attempt/replay state machine instead.
+  it("a pre-claim block that arrives AFTER attempt #1 was already claimed for the same id/fingerprint never overwrites the claimed outcome", async () => {
+    const { repository, deps } = makeDeps();
+    const id = randomUUID();
+    const source = textSource("Already-claimed-by-the-time-B-arrives dossier.");
+
+    // Request A: wins the claim, attempt #1 succeeds.
+    const resultA = await submitInitialExtraction(id, source, deps);
+
+    expect(resultA.statusCode).toBe(200);
+
+    const claimedFingerprint = computeExtractionFingerprint({
+      normalizedDossierText: normalizeDossierText(source.text),
+      promptVersion: PACKAGE_EXTRACTION_PROMPT_VERSION,
+      configuredModelId: CONFIGURED_MODEL_ID
+    });
+
+    // Request B: arrives late, SAME fingerprint (so this is not an
+    // IDEMPOTENCY_CONFLICT case), but its own pre-claim guard failed --
+    // it does not yet know attempt #1 was already claimed.
+    await expect(
+      deps.repository.block({
+        extractionId: id,
+        sourceType: "PASTED_TEXT",
+        requestFingerprint: claimedFingerprint,
+        promptVersion: PACKAGE_EXTRACTION_PROMPT_VERSION,
+        configuredModelId: CONFIGURED_MODEL_ID,
+        status: "MODEL_NOT_ELIGIBLE",
+        expectedMaxAttemptNumber: 0
+      })
+    ).rejects.toBeInstanceOf(ExtractionAttemptAlreadyClaimedError);
+
+    // A's real outcome is untouched by B's failed, stale block attempt
+    // -- still SUCCESS (attempt #1's real terminal status), never
+    // overwritten by B's own MODEL_NOT_ELIGIBLE.
+    const persisted = await repository.getExtraction(id);
+
+    expect(persisted?.finalStatus).toBe("SUCCESS");
+
+    const attemptOne = await repository.getAttempt(id, 1);
+
+    expect(attemptOne?.status).toBe("SUCCESS");
+  });
+
+  // The mirror-image case: retry's OWN pre-claim block (attempt #1
+  // already exists BY DESIGN -- that is what makes it a retry) must
+  // remain allowed; expectedMaxAttemptNumber: 1 exists precisely so this
+  // legitimate case is never confused with the stale-block case above.
+  // Reuses the exact same "stored prompt_version the registry cannot
+  // resolve" simulation the pre-existing PROMPT_VERSION_UNAVAILABLE
+  // retry test already uses (below), proving the fix did not regress
+  // retry's own legitimate re-block.
+  it("retry's own pre-claim block, where attempt #1 legitimately already exists, is still allowed to finalize the row", async () => {
+    const { provider, repository, deps } = makeDeps();
+    const id = randomUUID();
+    const source = textSource("Retryable then permanently blocked dossier.");
+
+    provider.createChatCompletionError = new ProviderError("TIMEOUT", "simulated timeout");
+    const initial = await submitInitialExtraction(id, source, deps);
+
+    expect(initial.statusCode).toBe(400);
+    provider.createChatCompletionError = null;
+
+    const extraction = await repository.getExtraction(id);
+
+    if (extraction) {
+      const unresolvableVersion = "package-extraction-v999";
+      const consistentFingerprint = computeExtractionFingerprint({
+        normalizedDossierText: normalizeDossierText(source.text),
+        promptVersion: unresolvableVersion,
+        configuredModelId: extraction.configuredModelId
+      });
+
+      repository.extractions.set(id, {
+        ...extraction,
+        promptVersion: unresolvableVersion,
+        requestFingerprint: consistentFingerprint
+      });
+    }
+
+    const result = await submitExtractionRetry(id, source, deps);
+
+    expect(result.statusCode).toBe(400);
+    expect((result.body as { errorCode: string }).errorCode).toBe("PROMPT_VERSION_UNAVAILABLE");
+
+    // Retry's legitimate re-block DID finalize the row -- unlike the
+    // stale-block-loses case above, this call's expectedMaxAttemptNumber
+    // (1) correctly matches attempt #1 already existing.
+    const persisted = await repository.getExtraction(id);
+
+    expect(persisted?.finalStatus).toBe("PROMPT_VERSION_UNAVAILABLE");
+  });
 });
 
 describe("rate limiting (Decision 19)", () => {
@@ -415,6 +579,119 @@ describe("rate limiting (Decision 19)", () => {
     const replay = await submitInitialExtraction(id, source, deps);
 
     expect(replay.statusCode).toBe(200);
+  });
+
+  // Second independent pre-live re-audit, Section 3: prior to this
+  // fix, two concurrent requests for the SAME brand-new
+  // extractionRequestId could each observe "no row exists yet" (the row
+  // is only created by whichever wins claimAttemptOne, much later) and
+  // each independently consume a new-start admission slot for what is
+  // really ONE logical extraction -- silently eating a second slot a
+  // genuinely distinct request should have been able to use.
+  it("two concurrent initial requests for the SAME new id consume exactly one admission slot -- a subsequent genuinely-unique third id is still admitted, and only a fourth unique id is blocked", async () => {
+    const { provider, deps } = makeDeps();
+    const duplicateId = randomUUID();
+    const source = textSource("Concurrent duplicate dossier.");
+
+    const [first, second] = await Promise.all([
+      submitInitialExtraction(duplicateId, source, deps),
+      submitInitialExtraction(duplicateId, source, deps)
+    ]);
+
+    expect([first.statusCode, second.statusCode]).toEqual([200, 200]);
+    expect(provider.createChatCompletionCallCount).toBe(1);
+
+    // Two MORE genuinely unique ids -- if the concurrent duplicate above
+    // had incorrectly consumed two admission slots instead of one, the
+    // second of these would already be the (wrongly) fourth slot and get
+    // blocked here instead of below.
+    const uniqueSecond = await submitInitialExtraction(
+      randomUUID(),
+      textSource("unique 2"),
+      deps
+    );
+    const uniqueThird = await submitInitialExtraction(
+      randomUUID(),
+      textSource("unique 3"),
+      deps
+    );
+
+    expect(uniqueSecond.statusCode).toBe(200);
+    expect(uniqueThird.statusCode).toBe(200);
+
+    // Exactly the fourth UNIQUE admission slot (1 for the duplicate pair
+    // + 2 genuinely unique above + this one = 4th) is the one that's
+    // blocked -- proving the duplicate pair truly consumed only one slot,
+    // not two.
+    const uniqueFourth = await submitInitialExtraction(
+      randomUUID(),
+      textSource("unique 4"),
+      deps
+    );
+
+    expect(uniqueFourth.statusCode).toBe(429);
+    expect((uniqueFourth.body as { errorCode: string }).errorCode).toBe("RATE_LIMITED");
+  });
+
+  // Second independent pre-live re-audit, Section 9: preflight and
+  // retry now share the SAME authoritative Supabase-backed admission
+  // RPC as new-start, each under its own bucket namespace/threshold --
+  // no longer only the process-local SlidingWindowRateLimiter.
+  it("preflight is gated by its own authoritative admission bucket, independent of the new-start bucket", async () => {
+    const { provider, deps } = makeDeps();
+
+    provider.listModelsResult = [goodModel()];
+    provider.listEndpointsResult = { [CONFIGURED_MODEL_ID]: [goodEndpoint()] };
+
+    for (let index = 0; index < 20; index += 1) {
+      const result = await runExtractionPreflight(
+        { kind: "text", text: `preflight dossier ${index}` },
+        deps
+      );
+
+      expect(result.statusCode).toBe(200);
+    }
+
+    const blocked = await runExtractionPreflight(
+      { kind: "text", text: "one too many" },
+      deps
+    );
+
+    expect(blocked.statusCode).toBe(429);
+    expect((blocked.body as { errorCode: string }).errorCode).toBe("RATE_LIMITED");
+
+    // The separate new-start bucket is untouched by preflight's own
+    // exhaustion -- a genuinely new extraction can still start.
+    const stillAdmitted = await submitInitialExtraction(
+      randomUUID(),
+      textSource("unaffected by preflight's own limit"),
+      deps
+    );
+
+    expect(stillAdmitted.statusCode).toBe(200);
+  });
+
+  it("retry is gated by its own authoritative admission bucket, and a repeated retry call for the SAME id never consumes a second slot", async () => {
+    const { provider, deps } = makeDeps();
+    const id = randomUUID();
+    const source = textSource("Retry-bucket dossier.");
+
+    provider.createChatCompletionError = new ProviderError("TIMEOUT", "simulated timeout");
+    const initial = await submitInitialExtraction(id, source, deps);
+
+    expect(initial.statusCode).toBe(400);
+    provider.createChatCompletionError = null;
+
+    // Replaying the retry admission check for the SAME id repeatedly
+    // never exhausts the retry bucket on its own -- only genuinely
+    // distinct ids would.
+    for (let index = 0; index < 15; index += 1) {
+      await submitExtractionRetry(id, source, deps);
+    }
+
+    const result = await submitExtractionRetry(id, source, deps);
+
+    expect(result.statusCode).not.toBe(429);
   });
 });
 
@@ -599,6 +876,87 @@ describe("deadline handling (Decision 8, via the service layer)", () => {
     expect(attempt?.actualInputTokens).toBeNull();
     expect(attempt?.actualCostUsd).toBeNull();
   });
+
+  // Second independent pre-live re-audit, Section 10: a metadata
+  // provider's own timeout is DERIVED from the remaining handler
+  // deadline (createTimedMetadataProvider(deps.deadline.remainingMs()))
+  // -- when that deadline is genuinely exhausted, a resulting
+  // ProviderError TIMEOUT means the HANDLER budget ran out, not that
+  // pricing is merely unavailable. The prior revision collapsed this
+  // into the generic PRICING_UNAVAILABLE catch-all, losing that
+  // distinction entirely.
+  it("a metadata timeout whose own budget was the handler's exhausted deadline surfaces as INPUT_PROCESSING_TIMEOUT (not PRICING_UNAVAILABLE), with zero claim and zero completion", async () => {
+    const { provider, repository, deps: baseDeps } = makeDeps();
+    const id = randomUUID();
+
+    let clockCalls = 0;
+    const clock = () => {
+      clockCalls += 1;
+
+      // Ample time through the constructor and the input-pipeline's own
+      // deadline check; exhausted from the metadata fetch's own
+      // pre-network assertMinimumWindow() onward -- so by the time the
+      // catch block below reads remainingMs() again, it genuinely
+      // observes an exhausted window, not a stale/reused earlier value.
+      return clockCalls <= 2 ? 0 : 999_999_999;
+    };
+
+    const timedOutMetadataProvider: OpenRouterProvider = {
+      listModels: async () => {
+        throw new ProviderError("TIMEOUT", "metadata fetch exceeded the remaining handler deadline");
+      },
+      listEndpoints: async () => {
+        throw new ProviderError("TIMEOUT", "metadata fetch exceeded the remaining handler deadline");
+      },
+      createChatCompletion: async () => {
+        throw new Error("must never be called -- zero real/fake completions from a metadata-only timeout");
+      }
+    };
+
+    const deps = {
+      ...baseDeps,
+      deadlineClock: clock,
+      createTimedMetadataProvider: () => timedOutMetadataProvider
+    };
+
+    const result = await submitInitialExtraction(id, textSource("Metadata timeout dossier."), deps);
+
+    expect((result.body as { errorCode: string }).errorCode).toBe("INPUT_PROCESSING_TIMEOUT");
+    expect(provider.createChatCompletionCallCount).toBe(0);
+    expect(await repository.getAttempt(id, 1)).toBeNull();
+  });
+
+  // The mirror-image case: the SAME ProviderError TIMEOUT, but the
+  // handler deadline still has a healthy window remaining -- genuine
+  // provider-side slowness unrelated to this handler's own budget, which
+  // must NOT be reclassified as INPUT_PROCESSING_TIMEOUT.
+  it("a metadata timeout with a HEALTHY remaining deadline stays PRICING_UNAVAILABLE, never misclassified as a handler-budget timeout", async () => {
+    const { deps: baseDeps } = makeDeps();
+    const id = randomUUID();
+
+    const timedOutMetadataProvider: OpenRouterProvider = {
+      listModels: async () => {
+        throw new ProviderError("TIMEOUT", "the provider itself was slow, unrelated to our own deadline");
+      },
+      listEndpoints: async () => {
+        throw new ProviderError("TIMEOUT", "the provider itself was slow, unrelated to our own deadline");
+      },
+      createChatCompletion: async () => {
+        throw new Error("must never be called");
+      }
+    };
+
+    const deps = {
+      ...baseDeps,
+      // Never advances -- remainingMs() always reports the full budget.
+      deadlineClock: () => 0,
+      createTimedMetadataProvider: () => timedOutMetadataProvider
+    };
+
+    const result = await submitInitialExtraction(id, textSource("Healthy deadline dossier."), deps);
+
+    expect((result.body as { errorCode: string }).errorCode).toBe("PRICING_UNAVAILABLE");
+  });
 });
 
 describe("stale-claim reconciliation (Decision 13), via the service layer", () => {
@@ -694,6 +1052,51 @@ describe("prompt-injection dossier content (Decision 7)", () => {
     expect(userMessage?.content).toContain(injectionAttempt);
     expect(userMessage?.content).toContain("BEGIN DOSSIER");
     expect(request).not.toHaveProperty("tools");
+  });
+});
+
+// Second independent pre-live re-audit, Section 6: tokenEstimation.ts's
+// buildDossierUserMessageContent claimed to be the ONE canonical
+// serialization shared with the real request builder, but service.ts's
+// runAttempt actually hard-coded a SECOND, independent copy of the exact
+// same wrapper text -- the anti-drift claim was false. This test proves
+// the REAL request (via a genuine submitInitialExtraction call, through
+// the fake provider's captured request) is byte-for-byte the SAME string
+// buildDossierUserMessageContent produces -- not merely that two
+// separately-maintained literals happen to currently match.
+describe("dossier message builder sharing (second independent pre-live re-audit, Section 6)", () => {
+  it("the real request's user-message content is produced by calling buildDossierUserMessageContent itself, not a second hard-coded copy", async () => {
+    const { provider, deps } = makeDeps();
+    const id = randomUUID();
+    const dossierText = "The exact dossier text this specific test controls.";
+
+    await submitInitialExtraction(id, textSource(dossierText), deps);
+
+    const userMessage = provider.lastChatRequest?.messages.find(
+      (message) => message.role === "user"
+    );
+
+    expect(userMessage?.content).toBe(
+      buildDossierUserMessageContent(normalizeDossierText(dossierText))
+    );
+  });
+
+  it("anti-drift: a DIFFERENT dossier produces a DIFFERENT real request, byte-for-byte matching buildDossierUserMessageContent's output for THAT text -- not a fixed/cached string", async () => {
+    const { provider, deps } = makeDeps();
+    const id = randomUUID();
+    const dossierText = "A completely different dossier body, to prove this is not a fluke match.";
+
+    await submitInitialExtraction(id, textSource(dossierText), deps);
+
+    const userMessage = provider.lastChatRequest?.messages.find(
+      (message) => message.role === "user"
+    );
+
+    expect(userMessage?.content).toBe(
+      buildDossierUserMessageContent(normalizeDossierText(dossierText))
+    );
+    // Guards against a vacuous match on an empty/trivial wrapper.
+    expect(userMessage?.content).toContain(dossierText);
   });
 });
 

@@ -6,7 +6,6 @@ import { PACKAGE_EXTRACTION_PROMPT_VERSION } from "../../../src/prompts/versions
 import { EXTRACTION_OUTPUT_CAP_TOKENS } from "../../server/extraction/constants";
 import { FakeExtractionProvider, fakeChatCompletionResult } from "../../server/extraction/fakeProvider";
 import { FakeExtractionRepository } from "../../server/extraction/fakeRepository";
-import { SlidingWindowRateLimiter } from "../../server/extraction/rateLimit";
 import type { ExtractionSourceDeps } from "../../server/extraction/service";
 import { handleSetupExtractionsPreflightRequest } from "../setup-extractions-preflight";
 import { handleSetupExtractionsRequest } from "../setup-extractions";
@@ -65,7 +64,6 @@ function makeDeps(): ExtractionSourceDeps {
   return {
     provider,
     repository: new FakeExtractionRepository(),
-    rateLimiter: new SlidingWindowRateLimiter(),
     sourceIp: "203.0.113.9",
     configuredModelId: CONFIGURED_MODEL_ID,
     promptVersion: PACKAGE_EXTRACTION_PROMPT_VERSION

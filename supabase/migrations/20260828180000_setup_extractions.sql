@@ -541,13 +541,31 @@ grant execute on function public.terminalize_setup_extraction_attempt(
 -- new id inserts cleanly; an existing id is only updated idempotently
 -- if its stored semantic identity matches exactly, otherwise this
 -- raises idempotency_conflict and mutates nothing.
+--
+-- Corrected AGAIN this pass (second independent pre-live re-audit,
+-- Section 5): a same-fingerprint existing row alone is still not enough
+-- to allow the update. `p_max_existing_attempt_number` is the highest
+-- attempt number the CALLER expects to already exist: 0 from
+-- submitInitialExtraction's own pre-claim guards (valid only before any
+-- attempt has ever been claimed for this id), 1 from
+-- submitExtractionRetry's pre-claim guard (attempt #1 is GUARANTEED to
+-- already exist by the time retry runs -- that is precisely why it is a
+-- retry -- so retry's own legitimate re-block must remain allowed; only
+-- attempt #2 already existing would mean a concurrent retry raced
+-- ahead). If the ACTUAL highest existing attempt number for this id
+-- exceeds what the caller expected, a concurrent request already
+-- claimed further than this caller knew about when it computed its own
+-- (now stale) pre-claim failure -- mutate nothing and signal the caller
+-- to resolve through the normal attempt/replay state machine instead
+-- (mirrors the idempotency_conflict idiom exactly).
 create function public.block_setup_extraction(
   p_extraction_id uuid,
   p_source_type text,
   p_request_fingerprint text,
   p_prompt_version text,
   p_configured_model_id text,
-  p_status text
+  p_status text,
+  p_max_existing_attempt_number int
 )
 returns void
 language plpgsql
@@ -556,6 +574,7 @@ set search_path = ''
 as $$
 declare
   v_existing record;
+  v_max_attempt_number int;
 begin
   if p_status not in (
     'INPUT_INVALID', 'UNSUPPORTED_FILE_TYPE', 'FILE_TOO_LARGE',
@@ -564,6 +583,10 @@ begin
     'BLOCKED_BUDGET', 'INPUT_PROCESSING_TIMEOUT', 'PROMPT_VERSION_UNAVAILABLE'
   ) then
     raise exception 'invalid block status' using errcode = '22023';
+  end if;
+
+  if p_max_existing_attempt_number not in (0, 1) then
+    raise exception 'invalid max existing attempt number' using errcode = '22023';
   end if;
 
   begin
@@ -591,6 +614,14 @@ begin
     raise exception 'idempotency_conflict' using errcode = 'P0001', hint = 'idempotency_conflict';
   end if;
 
+  select coalesce(max(sea.attempt_number), 0) into v_max_attempt_number
+  from public.setup_extraction_attempts as sea
+  where sea.extraction_request_id = p_extraction_id;
+
+  if v_max_attempt_number > p_max_existing_attempt_number then
+    raise exception 'attempt_already_claimed' using errcode = 'P0001', hint = 'attempt_already_claimed';
+  end if;
+
   update public.setup_extractions as se
   set final_status = p_status, completed_at = now()
   where se.id = p_extraction_id;
@@ -598,10 +629,10 @@ end;
 $$;
 
 revoke execute on function public.block_setup_extraction(
-  uuid, text, text, text, text, text
+  uuid, text, text, text, text, text, int
 ) from public, anon, authenticated;
 grant execute on function public.block_setup_extraction(
-  uuid, text, text, text, text, text
+  uuid, text, text, text, text, text, int
 ) to service_role;
 
 -- ---------------------------------------------------------------------
@@ -620,15 +651,29 @@ grant execute on function public.block_setup_extraction(
 -- -- the application hashes the trusted source IP before it ever
 -- reaches this table (netlify/server/extraction/rateLimit.ts), so no
 -- raw IP address is stored here.
+--
+-- `extraction_request_id`, added in the second independent pre-live
+-- re-audit (Section 3): the client-generated logical extraction id, so
+-- the SAME logical request can never consume more than one admission
+-- slot no matter how many times (concurrently or sequentially) it asks
+-- to be admitted. NULL for callers with no such identity (preflight has
+-- no id at all yet) -- the unique constraint below treats every NULL as
+-- distinct from every other NULL (ordinary SQL NULL semantics), so
+-- preflight/retry callers that pass NULL are never spuriously
+-- deduplicated against each other; only two calls that share the SAME
+-- non-null (bucket, extraction_request_id) pair are ever deduplicated.
 -- ---------------------------------------------------------------------
 create table public.setup_extraction_admission_events (
   id uuid primary key default gen_random_uuid(),
   bucket text not null,
+  extraction_request_id uuid,
   created_at timestamptz not null default now(),
 
   constraint setup_extraction_admission_events_bucket_check check (
     char_length(bucket) between 1 and 200
-  )
+  ),
+  constraint setup_extraction_admission_events_bucket_request_unique
+    unique (bucket, extraction_request_id)
 );
 
 create index setup_extraction_admission_events_bucket_created_at_idx
@@ -648,8 +693,18 @@ grant select on table public.setup_extraction_admission_events to service_role;
 -- callers for DIFFERENT buckets never block each other. Old events for
 -- this bucket are pruned opportunistically on every call, so the table
 -- never grows unbounded per bucket.
+--
+-- Idempotent by (bucket, p_extraction_request_id) when the latter is
+-- non-null (Section 3): two concurrent callers admitting the SAME
+-- logical request never consume two slots -- the second caller,
+-- serialized behind the first by the advisory lock above, finds the
+-- first caller's already-inserted row and is simply admitted again,
+-- without inserting a second event or incrementing the count. A
+-- genuinely new p_extraction_request_id (or a null one, for
+-- preflight/retry's identity-less namespaces) is counted normally.
 create function public.check_and_record_admission(
   p_bucket text,
+  p_extraction_request_id uuid,
   p_window_seconds int,
   p_max_requests int
 )
@@ -660,6 +715,7 @@ set search_path = ''
 as $$
 declare
   v_count int;
+  v_already_admitted boolean;
 begin
   if p_bucket is null or char_length(p_bucket) < 1 or char_length(p_bucket) > 200 then
     raise exception 'invalid bucket' using errcode = '22023';
@@ -675,6 +731,19 @@ begin
   where e.bucket = p_bucket
     and e.created_at < now() - make_interval(secs => p_window_seconds);
 
+  if p_extraction_request_id is not null then
+    select exists(
+      select 1
+      from public.setup_extraction_admission_events as e
+      where e.bucket = p_bucket
+        and e.extraction_request_id = p_extraction_request_id
+    ) into v_already_admitted;
+
+    if v_already_admitted then
+      return true;
+    end if;
+  end if;
+
   select count(*) into v_count
   from public.setup_extraction_admission_events as e
   where e.bucket = p_bucket;
@@ -683,13 +752,14 @@ begin
     return false;
   end if;
 
-  insert into public.setup_extraction_admission_events (bucket) values (p_bucket);
+  insert into public.setup_extraction_admission_events (bucket, extraction_request_id)
+  values (p_bucket, p_extraction_request_id);
 
   return true;
 end;
 $$;
 
-revoke execute on function public.check_and_record_admission(text, int, int)
+revoke execute on function public.check_and_record_admission(text, uuid, int, int)
 from public, anon, authenticated;
-grant execute on function public.check_and_record_admission(text, int, int)
+grant execute on function public.check_and_record_admission(text, uuid, int, int)
 to service_role;

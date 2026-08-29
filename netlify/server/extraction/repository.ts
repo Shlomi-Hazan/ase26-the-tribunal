@@ -19,6 +19,20 @@ export class ExtractionIdempotencyConflictError extends Error {
   }
 }
 
+// New this pass (second independent pre-live re-audit, Section 5):
+// mapped from block_setup_extraction's `hint = 'attempt_already_claimed'`
+// -- a pre-claim block lost a race against a concurrent request for the
+// SAME logical id that already claimed (or completed) attempt #1.
+// final_status was NOT overwritten; the caller must resolve through the
+// normal attempt/replay state machine (loadAttemptOutcome) instead of
+// returning its own now-stale pre-claim failure reason.
+export class ExtractionAttemptAlreadyClaimedError extends Error {
+  constructor() {
+    super("An attempt was already claimed for this extraction request.");
+    this.name = "ExtractionAttemptAlreadyClaimedError";
+  }
+}
+
 export class ExtractionPersistenceError extends Error {
   constructor(message = "Extraction persistence failed.") {
     super(message);
@@ -108,6 +122,18 @@ export type BlockInput = {
   promptVersion: string;
   configuredModelId: string;
   status: string;
+  // Second independent pre-live re-audit, Section 5: the highest attempt
+  // number this pre-claim block EXPECTS to already exist for this
+  // logical id -- 0 for submitInitialExtraction's own pre-claim guards
+  // (which only ever run before any attempt has been claimed), 1 for
+  // submitExtractionRetry's pre-claim guard (attempt #1 is guaranteed to
+  // already exist by the time retry runs; only attempt #2 must not yet
+  // exist). If the ACTUAL highest existing attempt number exceeds this,
+  // a concurrent request already claimed further than this caller
+  // expected, and the block is no longer authoritative -- it mutates
+  // nothing and the caller resolves through the attempt/replay state
+  // machine instead.
+  expectedMaxAttemptNumber: 0 | 1;
 };
 
 export type ExtractionRepository = {
@@ -133,8 +159,18 @@ export type ExtractionRepository = {
   // runtimes. `bucket` is already a privacy-conscious, pre-hashed
   // representation of (namespace, source) -- this method never receives
   // a raw source IP.
+  //
+  // `extractionRequestId` (second independent pre-live re-audit, Section
+  // 3): the caller's logical request id, so the SAME logical request
+  // (e.g. two concurrent submissions of a brand-new extractionRequestId
+  // that raced ahead of any persisted row) can never consume more than
+  // one admission slot. Pass `null` for callers with no such identity
+  // (preflight, which runs before any id exists) -- every call now also
+  // doubles as the authoritative gate for preflight/retry (Section 9),
+  // each under its own bucket namespace and threshold, not only new-start.
   checkAndRecordAdmission(
     bucket: string,
+    extractionRequestId: string | null,
     windowSeconds: number,
     maxRequests: number
   ): Promise<boolean>;
@@ -361,12 +397,17 @@ export class SupabaseExtractionRepository implements ExtractionRepository {
       p_request_fingerprint: input.requestFingerprint,
       p_prompt_version: input.promptVersion,
       p_configured_model_id: input.configuredModelId,
-      p_status: input.status
+      p_status: input.status,
+      p_max_existing_attempt_number: input.expectedMaxAttemptNumber
     });
 
     if (error) {
       if (error.hint === "idempotency_conflict") {
         throw new ExtractionIdempotencyConflictError();
+      }
+
+      if (error.hint === "attempt_already_claimed") {
+        throw new ExtractionAttemptAlreadyClaimedError();
       }
 
       throw new ExtractionPersistenceError();
@@ -385,11 +426,13 @@ export class SupabaseExtractionRepository implements ExtractionRepository {
 
   async checkAndRecordAdmission(
     bucket: string,
+    extractionRequestId: string | null,
     windowSeconds: number,
     maxRequests: number
   ): Promise<boolean> {
     const { data, error } = await this.client.rpc("check_and_record_admission", {
       p_bucket: bucket,
+      p_extraction_request_id: extractionRequestId,
       p_window_seconds: windowSeconds,
       p_max_requests: maxRequests
     });

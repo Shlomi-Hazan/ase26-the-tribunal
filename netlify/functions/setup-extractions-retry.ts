@@ -9,7 +9,7 @@ import {
 import { RealOpenRouterProvider } from "../server/openrouter/provider";
 import { PACKAGE_EXTRACTION_PROMPT_VERSION } from "../../src/prompts/versions";
 import { sharedEndpointCache, sharedModelCache } from "../server/openrouter/sharedMetadataCache";
-import { sharedExtractionRateLimiter, trustedSourceIp } from "../server/extraction/rateLimit";
+import { trustedSourceIp } from "../server/extraction/rateLimit";
 import { createSupabaseExtractionRepository } from "../server/extraction/repository";
 import { submitExtractionRetry, type ExtractionSourceDeps } from "../server/extraction/service";
 
@@ -62,7 +62,6 @@ function buildRealDeps(): ExtractionSourceDeps {
     createTimedMetadataProvider: (timeoutMs) =>
       new RealOpenRouterProvider(openRouterConfig, undefined, timeoutMs),
     repository: createSupabaseExtractionRepository(),
-    rateLimiter: sharedExtractionRateLimiter,
     // No args -- trustedSourceIp() resolves the trusted platform IP via
     // getContext() itself (Section 5); never a caller-supplied header.
     sourceIp: trustedSourceIp(),

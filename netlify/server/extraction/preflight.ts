@@ -12,7 +12,7 @@ import {
   type Clock
 } from "../openrouter/cache";
 import { toDecimalString } from "../openrouter/pricing";
-import type { PreflightReasonCode } from "../openrouter/errors";
+import { ProviderError, type PreflightReasonCode } from "../openrouter/errors";
 import type { OpenRouterProvider } from "../openrouter/provider";
 import type { RawOpenRouterEndpoint, RawOpenRouterModel } from "../openrouter/schemas";
 import {
@@ -26,7 +26,8 @@ import type { HandlerDeadline } from "./deadline";
 import {
   EXTRACTION_BUDGET_SAFETY_FACTOR,
   EXTRACTION_HARD_CEILING_USD,
-  MAX_PACKAGE_EXTRACTION_ATTEMPTS_PER_LOGICAL_CALL
+  MAX_PACKAGE_EXTRACTION_ATTEMPTS_PER_LOGICAL_CALL,
+  PACKAGE_EXTRACTION_MIN_PROVIDER_WINDOW_MS
 } from "./constants";
 
 // Corrected this pass (independent pre-live audit, Section 2): attempt-
@@ -140,6 +141,33 @@ export async function evaluateExtractionEligibility(
     // PRICING_UNAVAILABLE catch-all below.
     if (error instanceof ExtractionError) {
       throw error;
+    }
+
+    // Corrected this pass (second independent pre-live re-audit, Section
+    // 10): `createTimedMetadataProvider(deps.deadline.remainingMs())`
+    // constructs a provider whose OWN abort timeout is EXACTLY the
+    // handler's remaining time at that call -- so a ProviderError
+    // TIMEOUT surfacing from it is not, in general, ordinary provider
+    // unavailability; when the handler's deadline window is genuinely
+    // exhausted (or effectively so) by the time this error is caught,
+    // it means the handler budget itself ran out, not that pricing is
+    // merely unavailable. Re-checking `remainingMs()` HERE (a fresh
+    // read, not reused from before the network call) is the same
+    // "recompute don't cache across an await" discipline
+    // HandlerDeadline's own docs require everywhere else. A TIMEOUT
+    // that still leaves a healthy window remaining is left as-is
+    // (genuine provider-side slowness, unrelated to this handler's own
+    // budget) -- falls through to the existing PRICING_UNAVAILABLE path
+    // below, unchanged.
+    if (
+      error instanceof ProviderError &&
+      error.category === "TIMEOUT" &&
+      deps.deadline.remainingMs() < PACKAGE_EXTRACTION_MIN_PROVIDER_WINDOW_MS
+    ) {
+      throw new ExtractionError(
+        "INPUT_PROCESSING_TIMEOUT",
+        "Insufficient time remained in the handler's soft deadline for a metadata fetch."
+      );
     }
 
     return {

@@ -12,6 +12,7 @@ import Decimal from "decimal.js";
 import type { ExtractionAttemptStatus } from "./errors";
 import { STALE_EXTRACTION_CLAIM_AFTER_MS } from "./constants";
 import {
+  ExtractionAttemptAlreadyClaimedError,
   ExtractionIdempotencyConflictError,
   type BlockInput,
   type ClaimAttemptOneInput,
@@ -33,7 +34,13 @@ const RETRYABLE_ATTEMPT_ONE_STATUSES: ReadonlySet<string> = new Set([
 export class FakeExtractionRepository implements ExtractionRepository {
   extractions = new Map<string, SetupExtractionRow>();
   attempts = new Map<string, SetupExtractionAttemptRow>(); // key: `${extractionId}:${attemptNumber}`
-  private readonly admissionEvents = new Map<string, number[]>(); // bucket -> timestamps
+  // bucket -> events, each carrying the (nullable) extraction request id
+  // it was admitted under -- mirrors the migration's
+  // setup_extraction_admission_events table exactly (Section 3).
+  private readonly admissionEvents = new Map<
+    string,
+    { timestamp: number; extractionRequestId: string | null }[]
+  >();
 
   constructor(private readonly clock: () => number = Date.now) {}
 
@@ -272,6 +279,24 @@ export class FakeExtractionRepository implements ExtractionRepository {
       throw new ExtractionIdempotencyConflictError();
     }
 
+    // Second independent pre-live re-audit, Section 5: a matching
+    // fingerprint alone does not make this pre-claim block authoritative
+    // -- a concurrent request for the SAME logical id may have already
+    // claimed further than THIS caller expected (0 for
+    // submitInitialExtraction's own pre-claim guards, 1 for retry's,
+    // since attempt #1 always legitimately already exists by the time
+    // retry runs). Mirrors block_setup_extraction's own
+    // attempt_already_claimed guard exactly.
+    const maxAttemptNumber = this.attempts.has(this.attemptKey(input.extractionId, 2))
+      ? 2
+      : this.attempts.has(this.attemptKey(input.extractionId, 1))
+        ? 1
+        : 0;
+
+    if (maxAttemptNumber > input.expectedMaxAttemptNumber) {
+      throw new ExtractionAttemptAlreadyClaimedError();
+    }
+
     this.extractions.set(input.extractionId, {
       ...existing,
       finalStatus: input.status,
@@ -283,24 +308,37 @@ export class FakeExtractionRepository implements ExtractionRepository {
   // real production admission control uses the Supabase-backed RPC
   // (SupabaseExtractionRepository); this fake exists only so tests never
   // need a real database. Same sliding-window semantics as
-  // netlify/server/extraction/rateLimit.ts's SlidingWindowRateLimiter.
+  // netlify/server/extraction/rateLimit.ts's SlidingWindowRateLimiter,
+  // plus the same (bucket, extractionRequestId) idempotency the
+  // migration's RPC now provides (Section 3): a non-null id already
+  // admitted under this bucket is admitted again WITHOUT being counted
+  // a second time.
   async checkAndRecordAdmission(
     bucket: string,
+    extractionRequestId: string | null,
     windowSeconds: number,
     maxRequests: number
   ): Promise<boolean> {
     const now = this.clock();
     const windowStart = now - windowSeconds * 1000;
     const existing = (this.admissionEvents.get(bucket) ?? []).filter(
-      (timestamp) => timestamp > windowStart
+      (event) => event.timestamp > windowStart
     );
+
+    if (
+      extractionRequestId !== null &&
+      existing.some((event) => event.extractionRequestId === extractionRequestId)
+    ) {
+      this.admissionEvents.set(bucket, existing);
+      return true;
+    }
 
     if (existing.length >= maxRequests) {
       this.admissionEvents.set(bucket, existing);
       return false;
     }
 
-    existing.push(now);
+    existing.push({ timestamp: now, extractionRequestId });
     this.admissionEvents.set(bucket, existing);
 
     return true;

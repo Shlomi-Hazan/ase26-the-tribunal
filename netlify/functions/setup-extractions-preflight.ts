@@ -7,9 +7,12 @@ import { readOpenRouterServerConfig, readPackageExtractionServerConfig } from ".
 import { RealOpenRouterProvider } from "../server/openrouter/provider";
 import { PACKAGE_EXTRACTION_PROMPT_VERSION } from "../../src/prompts/versions";
 import { sharedEndpointCache, sharedModelCache } from "../server/openrouter/sharedMetadataCache";
-import { sharedExtractionRateLimiter, trustedSourceIp } from "../server/extraction/rateLimit";
+import { trustedSourceIp } from "../server/extraction/rateLimit";
 import { runExtractionPreflight, type ExtractionSourceDeps } from "../server/extraction/service";
-import type { ExtractionRepository } from "../server/extraction/repository";
+import {
+  createSupabaseExtractionRepository,
+  type ExtractionRepository
+} from "../server/extraction/repository";
 
 function jsonResponse(statusCode: number, body: unknown) {
   return {
@@ -44,11 +47,19 @@ export async function handleSetupExtractionsPreflightRequest(
 export const handler: Handler = async (event) => {
   try {
     const openRouterConfig = readOpenRouterServerConfig();
+    // Corrected this pass (second independent pre-live re-audit, Section
+    // 9): preflight now genuinely calls `checkAndRecordAdmission` (it is
+    // its OWN authoritative admission gate, no longer only the
+    // process-local rate limiter) -- a repository whose
+    // `checkAndRecordAdmission` also threw unconditionally would break
+    // every real preflight request. Every OTHER method stays a hard
+    // throwing stub: preflight must still never touch extraction-row
+    // persistence, and a repository that throws if ever invoked there is
+    // a stronger guarantee than a working one. The real Supabase-backed
+    // implementation is only ever asked to do the one thing preflight
+    // actually needs.
+    const realAdmissionRepository = createSupabaseExtractionRepository();
     const throwingRepository: ExtractionRepository = {
-      // Preflight never persists -- these methods are structurally
-      // unreachable from runExtractionPreflight, but ExtractionSourceDeps
-      // requires a repository field. A repository that throws if ever
-      // invoked is a stronger guarantee than a working one here.
       getExtraction() {
         throw new Error("Preflight must never touch persistence.");
       },
@@ -70,8 +81,13 @@ export const handler: Handler = async (event) => {
       reconcileAttempts() {
         throw new Error("Preflight must never touch persistence.");
       },
-      checkAndRecordAdmission() {
-        throw new Error("Preflight must never touch persistence.");
+      checkAndRecordAdmission(bucket, extractionRequestId, windowSeconds, maxRequests) {
+        return realAdmissionRepository.checkAndRecordAdmission(
+          bucket,
+          extractionRequestId,
+          windowSeconds,
+          maxRequests
+        );
       }
     };
     const deps: ExtractionSourceDeps = {
@@ -79,7 +95,6 @@ export const handler: Handler = async (event) => {
       createTimedMetadataProvider: (timeoutMs) =>
         new RealOpenRouterProvider(openRouterConfig, undefined, timeoutMs),
       repository: throwingRepository,
-      rateLimiter: sharedExtractionRateLimiter,
       // No args -- trustedSourceIp() resolves the trusted platform IP via
       // getContext() itself (Section 5); never a caller-supplied header.
       sourceIp: trustedSourceIp(),
