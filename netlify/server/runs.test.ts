@@ -17,6 +17,7 @@ function persistedParticipant(id: ParticipantId): PersistedParticipantConfig {
   const isAdvocate = id.startsWith("advocate-");
 
   return {
+    id: `00000000-0000-4000-8000-${id.length.toString().padStart(12, "0")}`,
     participantId: id,
     role: isAdvocate ? "ADVOCATE" : "JUDGE",
     side: id.includes("-pro-") ? "PRO" : id.includes("-con-") ? "CON" : null,
@@ -25,7 +26,11 @@ function persistedParticipant(id: ParticipantId): PersistedParticipantConfig {
     personalitySource: "manual",
     personalitySourceFilename: null,
     modelId: "mock/free-deliberator",
-    promptVersion: "unassigned-pre-m7"
+    promptVersion: "unassigned-pre-m7",
+    attemptStatus: "PENDING",
+    speech: null,
+    verdict: null,
+    reasoning: null
   };
 }
 

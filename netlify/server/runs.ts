@@ -380,6 +380,11 @@ function canonicalStringify(value: unknown): string {
 // ---------------------------------------------------------------------
 
 export type PersistedParticipantConfig = {
+  // Milestone 8: the participant_configs row's own primary key -- needed
+  // as the participant_config_id foreign key on model_call_attempts/
+  // advocate_speeches/judge_verdicts. Never exposed in a public API
+  // response by itself (toRunResponse continues to key by participantId).
+  id: string;
   participantId: ParticipantId;
   role: "ADVOCATE" | "JUDGE";
   side: "PRO" | "CON" | null;
@@ -389,6 +394,16 @@ export type PersistedParticipantConfig = {
   personalitySourceFilename: string | null;
   modelId: string;
   promptVersion: string;
+  // Milestone 8 -- derived from the latest model_call_attempts row for
+  // this participant (never a fabricated default): PENDING when no
+  // attempt row exists yet, RUNNING/RETRYING while attempt 1/2 is
+  // CLAIMED, SUCCESS/FAILED once terminal. Populated by getById's own
+  // enrichment query; always "PENDING" immediately after freeze (zero
+  // attempts can exist yet).
+  attemptStatus: "PENDING" | "RUNNING" | "RETRYING" | "SUCCESS" | "FAILED";
+  speech: string | null;
+  verdict: "GUILTY" | "NOT_GUILTY" | null;
+  reasoning: string | null;
 };
 
 export type PersistedRun = {
@@ -398,6 +413,15 @@ export type PersistedRun = {
   executionMode: "shared" | "separate";
   status: string;
   createdAt: string;
+  // Milestone 8 execution/economics -- all null on a still-READY run.
+  startedAt: string | null;
+  completedAt: string | null;
+  majorityVerdict: "GUILTY" | "NOT_GUILTY" | null;
+  failureCode: string | null;
+  failureMessage: string | null;
+  totalCostUsd: string | null;
+  advocateCostUsd: string | null;
+  judgeCostUsd: string | null;
   participants: PersistedParticipantConfig[];
 };
 
@@ -427,10 +451,19 @@ const runRowSchema = z.object({
   client_request_id: z.string(),
   execution_mode: z.string(),
   status: z.string(),
-  created_at: z.string()
+  created_at: z.string(),
+  started_at: z.string().nullable().optional(),
+  completed_at: z.string().nullable().optional(),
+  majority_verdict: z.string().nullable().optional(),
+  failure_code: z.string().nullable().optional(),
+  failure_message: z.string().nullable().optional(),
+  total_cost_usd: z.union([z.string(), z.number()]).nullable().optional(),
+  advocate_cost_usd: z.union([z.string(), z.number()]).nullable().optional(),
+  judge_cost_usd: z.union([z.string(), z.number()]).nullable().optional()
 });
 
 const participantRowSchema = z.object({
+  id: z.string().uuid(),
   participant_key: z.string(),
   role: z.string(),
   side: z.string().nullable(),
@@ -522,7 +555,7 @@ export class SupabaseRunRepository implements RunRepository {
       throw new RunPersistenceError();
     }
 
-    const participants = data.map((row) => {
+    const baseParticipants = data.map((row) => {
       const result = participantRowSchema.safeParse(row);
 
       if (!result.success) {
@@ -531,6 +564,15 @@ export class SupabaseRunRepository implements RunRepository {
 
       return fromParticipantRow(result.data);
     });
+
+    // Milestone 8: enrich each participant with its execution state.
+    // Cheap and harmless on a still-READY run (all three queries return
+    // empty sets, and enrichExecutionState leaves every participant at
+    // its PENDING/null default).
+    const enriched = await this.enrichExecutionState(
+      run.id,
+      sortParticipantsCanonically(baseParticipants)
+    );
 
     const executionMode = EXECUTION_MODE_FROM_DB[run.execution_mode];
 
@@ -545,9 +587,116 @@ export class SupabaseRunRepository implements RunRepository {
       executionMode,
       status: run.status,
       createdAt: run.created_at,
-      participants: sortParticipantsCanonically(participants)
+      startedAt: run.started_at ?? null,
+      completedAt: run.completed_at ?? null,
+      majorityVerdict: (run.majority_verdict as "GUILTY" | "NOT_GUILTY" | null | undefined) ?? null,
+      failureCode: run.failure_code ?? null,
+      failureMessage: run.failure_message ?? null,
+      totalCostUsd: toNullableDecimalString(run.total_cost_usd),
+      advocateCostUsd: toNullableDecimalString(run.advocate_cost_usd),
+      judgeCostUsd: toNullableDecimalString(run.judge_cost_usd),
+      participants: enriched
     };
   }
+
+  private async enrichExecutionState(
+    runId: string,
+    participants: PersistedParticipantConfig[]
+  ): Promise<PersistedParticipantConfig[]> {
+    const participantConfigIds = participants.map((participant) => participant.id);
+
+    if (participantConfigIds.length === 0) {
+      return participants;
+    }
+
+    const [attemptsResult, speechesResult, verdictsResult] = await Promise.all([
+      this.client
+        .from("model_call_attempts")
+        .select("participant_config_id,attempt_number,status")
+        .in("participant_config_id", participantConfigIds),
+      this.client
+        .from("advocate_speeches")
+        .select("participant_config_id,speech")
+        .in("participant_config_id", participantConfigIds),
+      this.client
+        .from("judge_verdicts")
+        .select("participant_config_id,verdict,reasoning")
+        .in("participant_config_id", participantConfigIds)
+    ]);
+
+    if (attemptsResult.error || speechesResult.error || verdictsResult.error) {
+      throw new RunPersistenceError();
+    }
+
+    const latestAttemptByParticipant = new Map<string, { attemptNumber: number; status: string }>();
+
+    for (const row of (attemptsResult.data ?? []) as Array<{
+      participant_config_id: string;
+      attempt_number: number;
+      status: string;
+    }>) {
+      const existing = latestAttemptByParticipant.get(row.participant_config_id);
+
+      if (!existing || row.attempt_number > existing.attemptNumber) {
+        latestAttemptByParticipant.set(row.participant_config_id, {
+          attemptNumber: row.attempt_number,
+          status: row.status
+        });
+      }
+    }
+
+    const speechByParticipant = new Map(
+      ((speechesResult.data ?? []) as Array<{ participant_config_id: string; speech: string }>).map(
+        (row) => [row.participant_config_id, row.speech]
+      )
+    );
+
+    const verdictByParticipant = new Map(
+      (
+        (verdictsResult.data ?? []) as Array<{
+          participant_config_id: string;
+          verdict: string;
+          reasoning: string;
+        }>
+      ).map((row) => [row.participant_config_id, { verdict: row.verdict, reasoning: row.reasoning }])
+    );
+
+    return participants.map((participant) => {
+      const latest = latestAttemptByParticipant.get(participant.id);
+      const speech = speechByParticipant.get(participant.id) ?? null;
+      const verdictRow = verdictByParticipant.get(participant.id) ?? null;
+
+      return {
+        ...participant,
+        attemptStatus: deriveAttemptStatus(latest),
+        speech,
+        verdict: (verdictRow?.verdict as "GUILTY" | "NOT_GUILTY" | undefined) ?? null,
+        reasoning: verdictRow?.reasoning ?? null
+      };
+    });
+  }
+}
+
+function deriveAttemptStatus(
+  latest: { attemptNumber: number; status: string } | undefined
+): PersistedParticipantConfig["attemptStatus"] {
+  if (!latest) {
+    return "PENDING";
+  }
+
+  if (latest.status === "CLAIMED") {
+    return latest.attemptNumber >= 2 ? "RETRYING" : "RUNNING";
+  }
+
+  return latest.status === "SUCCESS" ? "SUCCESS" : "FAILED";
+}
+
+function toNullableDecimalString(value: string | number | null | undefined): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  return String(value);
 }
 
 // PostgreSQL does not promise row order without an explicit ORDER BY, and
@@ -575,10 +724,19 @@ const runSelectColumns = [
   "client_request_id",
   "execution_mode",
   "status",
-  "created_at"
+  "created_at",
+  "started_at",
+  "completed_at",
+  "majority_verdict",
+  "failure_code",
+  "failure_message",
+  "total_cost_usd",
+  "advocate_cost_usd",
+  "judge_cost_usd"
 ].join(",");
 
 const participantSelectColumns = [
+  "id",
   "participant_key",
   "role",
   "side",
@@ -594,6 +752,7 @@ function fromParticipantRow(
   row: z.infer<typeof participantRowSchema>
 ): PersistedParticipantConfig {
   return {
+    id: row.id,
     participantId: row.participant_key as ParticipantId,
     role: row.role as "ADVOCATE" | "JUDGE",
     side: row.side as "PRO" | "CON" | null,
@@ -602,7 +761,14 @@ function fromParticipantRow(
     personalitySource: row.personality_source as PersonalitySource,
     personalitySourceFilename: row.personality_source_filename,
     modelId: row.model_id,
-    promptVersion: row.prompt_version
+    promptVersion: row.prompt_version,
+    // Milestone 8 defaults -- overwritten by enrichExecutionState's own
+    // per-participant lookup immediately after this is called; a
+    // freshly-frozen run legitimately has none of these yet.
+    attemptStatus: "PENDING",
+    speech: null,
+    verdict: null,
+    reasoning: null
   };
 }
 

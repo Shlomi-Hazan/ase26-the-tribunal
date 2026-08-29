@@ -14,6 +14,15 @@ export function toRunResponse(run: PersistedRun) {
     executionMode: run.executionMode,
     status: run.status,
     createdAt: run.createdAt,
+    // Milestone 8 execution/economics -- null on a still-READY run.
+    startedAt: run.startedAt,
+    completedAt: run.completedAt,
+    majorityVerdict: run.majorityVerdict,
+    failureCode: run.failureCode,
+    failureMessage: run.failureMessage,
+    totalCostUsd: run.totalCostUsd,
+    advocateCostUsd: run.advocateCostUsd,
+    judgeCostUsd: run.judgeCostUsd,
     participants: run.participants.map((participant) => ({
       participantId: participant.participantId,
       role: participant.role,
@@ -23,7 +32,12 @@ export function toRunResponse(run: PersistedRun) {
       personalitySource: participant.personalitySource,
       personalitySourceFilename: participant.personalitySourceFilename,
       modelId: participant.modelId,
-      promptVersion: participant.promptVersion
+      promptVersion: participant.promptVersion,
+      // Milestone 8 -- never the internal participant_config_id itself.
+      attemptStatus: participant.attemptStatus,
+      speech: participant.speech,
+      verdict: participant.verdict,
+      reasoning: participant.reasoning
     }))
   };
 }
