@@ -20,11 +20,22 @@ const packageExtractionServerConfigSchema = z.object({
   PACKAGE_EXTRACTION_MODEL_ID: z.string().min(1)
 });
 
+// Milestone 8 (ARCHITECTURE.md Sec 4.1): the unguessable server-only token
+// that authorizes an invocation of the Tribunal Background Function. The
+// browser never receives this value -- it is read only by the synchronous
+// POST /api/runs handler (to forward it, server-to-server, to the worker)
+// and by the worker itself (to authenticate the invocation before any
+// execution work). See netlify/server/tribunal/internalSecret.ts.
+const internalFunctionSecretConfigSchema = z.object({
+  INTERNAL_FUNCTION_SECRET: z.string().min(1)
+});
+
 export type ServerEnvironment = Partial<
   Record<
     | keyof z.infer<typeof supabaseServerConfigSchema>
     | keyof z.infer<typeof openRouterServerConfigSchema>
-    | keyof z.infer<typeof packageExtractionServerConfigSchema>,
+    | keyof z.infer<typeof packageExtractionServerConfigSchema>
+    | keyof z.infer<typeof internalFunctionSecretConfigSchema>,
     string
   >
 >;
@@ -33,6 +44,9 @@ export type SupabaseServerConfig = z.infer<typeof supabaseServerConfigSchema>;
 export type OpenRouterServerConfig = z.infer<typeof openRouterServerConfigSchema>;
 export type PackageExtractionServerConfig = z.infer<
   typeof packageExtractionServerConfigSchema
+>;
+export type InternalFunctionSecretConfig = z.infer<
+  typeof internalFunctionSecretConfigSchema
 >;
 
 export class ServerConfigError extends Error {
@@ -85,6 +99,23 @@ export function readPackageExtractionServerConfig(
   if (!result.success) {
     throw new ServerConfigError(
       "Missing or invalid package-extraction server configuration."
+    );
+  }
+
+  return result.data;
+}
+
+// Mirrors readOpenRouterServerConfig exactly. Missing/invalid config fails
+// safely rather than falling back to any default -- an unset secret must
+// never be treated as "no secret required."
+export function readInternalFunctionSecretConfig(
+  environment: ServerEnvironment = process.env
+): InternalFunctionSecretConfig {
+  const result = internalFunctionSecretConfigSchema.safeParse(environment);
+
+  if (!result.success) {
+    throw new ServerConfigError(
+      "Missing or invalid internal function secret configuration."
     );
   }
 
