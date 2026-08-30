@@ -89,6 +89,40 @@ const FAKE_ELIGIBLE_MODEL = {
   supportsStructuredOutput: true
 };
 
+// M9 (Separate-Model Tribunal, Issue #20): AdvocatesPage/JudgesPage/
+// ReviewPage now also fetch GET /api/models?role=ADVOCATE|JUDGE on
+// mount, incidentally, exactly like the existing GET /api/models fetch
+// this file already answers out-of-band. Deliberately a DIFFERENT model
+// id per role, so a Separate-Mode setup that only relies on
+// ParticipantCard's own auto-select naturally exercises two distinct
+// configured models -- proving the mixed-model case without every test
+// having to hand-pick one.
+const FAKE_ADVOCATE_ROLE_MODEL_ID = "openai/gpt-5-advocate-role";
+const FAKE_JUDGE_ROLE_MODEL_ID = "openai/gpt-5-judge-role";
+
+function fakeRoleEligibleModelResponse(role: "ADVOCATE" | "JUDGE") {
+  return new Response(
+    JSON.stringify({
+      models: [
+        {
+          id: role === "ADVOCATE" ? FAKE_ADVOCATE_ROLE_MODEL_ID : FAKE_JUDGE_ROLE_MODEL_ID,
+          canonicalModelId: role === "ADVOCATE" ? FAKE_ADVOCATE_ROLE_MODEL_ID : FAKE_JUDGE_ROLE_MODEL_ID,
+          name: role === "ADVOCATE" ? "GPT-5 (Advocate route)" : "GPT-5 (Judge route)",
+          providerName: "OpenAI",
+          contextLength: 200_000,
+          promptPricePerMillion: "1.00",
+          completionPricePerMillion: "2.00",
+          isFree: false,
+          role,
+          conservativeParticipantEstimateUsd: "0.10",
+          supportsStructuredOutput: true
+        }
+      ]
+    }),
+    { status: 200, headers: { "content-type": "application/json" } }
+  );
+}
+
 // Milestone 8 (independent audit correction, Issue #17 blocker 1):
 // ExecutionModeControl fetches the real GET /api/models catalog on
 // mount (zero-cost metadata), and re-fetches on every remount as the
@@ -116,7 +150,7 @@ function queueFetchError(error: Error) {
 // `fetchSpy.mock.calls[N]`-style assertions actually mean in this file.
 function nonModelsFetchCalls(): Array<[string, RequestInit | undefined]> {
   return (vi.mocked(globalThis.fetch).mock.calls as Array<[string, RequestInit | undefined]>).filter(
-    ([url]) => url !== "/api/models"
+    ([url]) => !url.startsWith("/api/models")
   );
 }
 
@@ -130,6 +164,14 @@ beforeEach(() => {
         status: 200,
         headers: { "content-type": "application/json" }
       });
+    }
+
+    if (url === "/api/models?role=ADVOCATE") {
+      return fakeRoleEligibleModelResponse("ADVOCATE");
+    }
+
+    if (url === "/api/models?role=JUDGE") {
+      return fakeRoleEligibleModelResponse("JUDGE");
     }
 
     const next = fetchResponseQueue.shift();
@@ -501,13 +543,12 @@ describe("case setup workflow", () => {
     expect(screen.getByRole("heading", { name: "Judge III" })).toBeVisible();
   });
 
-  it("shows the real Shared model selector and a disabled Separate Models option (M9 scope, independent audit correction)", async () => {
+  it("shows the real Shared model selector and an enabled Separate Models option (M9)", async () => {
     renderWithAppProviders(<AppRoutes />, "/new/advocates");
 
     expect(await screen.findByLabelText("Shared model")).toBeVisible();
     expect(screen.queryByLabelText("PRO I mock model")).not.toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: "Separate Models" })).toBeDisabled();
-    expect(screen.getByText(/available in a future milestone/i)).toBeVisible();
+    expect(screen.getByRole("radio", { name: "Separate Models" })).toBeEnabled();
   });
 
   // Final micro-correction #3 (independent audit): validity means real
@@ -529,6 +570,14 @@ describe("case setup workflow", () => {
           status: 200,
           headers: { "content-type": "application/json" }
         });
+      }
+
+      if (url === "/api/models?role=ADVOCATE") {
+        return fakeRoleEligibleModelResponse("ADVOCATE");
+      }
+
+      if (url === "/api/models?role=JUDGE") {
+        return fakeRoleEligibleModelResponse("JUDGE");
       }
 
       throw new Error(`Unhandled fetch in test: ${url}`);
@@ -557,6 +606,14 @@ describe("case setup workflow", () => {
           status: 200,
           headers: { "content-type": "application/json" }
         });
+      }
+
+      if (url === "/api/models?role=ADVOCATE") {
+        return fakeRoleEligibleModelResponse("ADVOCATE");
+      }
+
+      if (url === "/api/models?role=JUDGE") {
+        return fakeRoleEligibleModelResponse("JUDGE");
       }
 
       throw new Error(`Unhandled fetch in test: ${url}`);
@@ -883,6 +940,164 @@ describe("case setup workflow", () => {
     expect(requestBody.participants).toHaveLength(7);
     expect(typeof requestBody.clientRequestId).toBe("string");
     expect(requestBody.clientRequestId.length).toBeGreaterThan(0);
+  });
+
+  // M9 (Separate-Model Tribunal, Issue #20) UI-level coverage.
+
+  it("M9-B/U/W: Separate Mode auto-selects each seat's own role-appropriate model and Convenes with two distinct configured models", async () => {
+    const user = userEvent.setup();
+    queueFetchResponse(
+      new Response(
+        JSON.stringify({
+          run: {
+            id: "55555555-5555-4555-8555-555555555555",
+            caseId: "66666666-6666-4666-8666-666666666666",
+            executionMode: "separate",
+            status: "READY",
+            createdAt: "2026-08-25T10:00:00.000Z",
+            participants: []
+          }
+        }),
+        { status: 201 }
+      )
+    );
+
+    renderWithAppProviders(<AppRoutes />);
+    await user.type(screen.getByLabelText(/defendant/i), "Alex Rowan");
+    await user.type(screen.getByLabelText(/^act/i), "Entered the restricted lab.");
+    await user.type(
+      screen.getByLabelText(/exact question/i),
+      "Did Alex knowingly violate the lab protocol?"
+    );
+    await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
+    await user.click(screen.getByRole("radio", { name: "Separate Models" }));
+
+    // Every advocate card auto-selects the (single, fake) ADVOCATE-role
+    // model once its shared role catalog loads.
+    expect((await screen.findAllByText("GPT-5 (Advocate route)")).length).toBe(4);
+
+    await user.click(screen.getByRole("link", { name: /continue to judges/i }));
+
+    // Every judge card auto-selects the (single, fake) JUDGE-role model.
+    expect((await screen.findAllByText("GPT-5 (Judge route)")).length).toBe(3);
+
+    await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+    await connectOpenRouter(user);
+    await user.click(screen.getByRole("button", { name: "Convene Tribunal" }));
+
+    expect(
+      await screen.findByText(/tribunal configuration frozen/i)
+    ).toBeVisible();
+
+    const [, requestInit] = nonModelsFetchCalls()[0];
+    const requestBody = JSON.parse(requestInit!.body as string);
+
+    expect(requestBody.executionMode).toBe("separate");
+    expect(requestBody.participants).toHaveLength(7);
+
+    const modelIdsByParticipant = new Map<string, string>(
+      requestBody.participants.map((p: { participantId: string; modelId: string }) => [
+        p.participantId,
+        p.modelId
+      ])
+    );
+
+    for (const id of ["advocate-pro-1", "advocate-pro-2", "advocate-con-1", "advocate-con-2"]) {
+      expect(modelIdsByParticipant.get(id)).toBe(FAKE_ADVOCATE_ROLE_MODEL_ID);
+    }
+    for (const id of ["judge-1", "judge-2", "judge-3"]) {
+      expect(modelIdsByParticipant.get(id)).toBe(FAKE_JUDGE_ROLE_MODEL_ID);
+    }
+    // Two genuinely distinct configured models across the seven seats.
+    expect(new Set(modelIdsByParticipant.values()).size).toBe(2);
+  });
+
+  it("M9-V: Convene stays blocked while even one seat's model is stale/not a member of its role catalog, with a per-seat reason", async () => {
+    const user = userEvent.setup();
+
+    renderWithAppProviders(<AppRoutes />);
+    await user.type(screen.getByLabelText(/defendant/i), "Alex Rowan");
+    await user.type(screen.getByLabelText(/^act/i), "Entered the restricted lab.");
+    await user.type(
+      screen.getByLabelText(/exact question/i),
+      "Did Alex knowingly violate the lab protocol?"
+    );
+    await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
+    await user.click(screen.getByRole("radio", { name: "Separate Models" }));
+    await user.click(screen.getByRole("link", { name: /continue to judges/i }));
+    await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+
+    // Wait for the auto-repair effect to settle every advocate seat to a
+    // valid selection first -- with everything valid, the "cannot be
+    // frozen yet" block is absent.
+    expect((await screen.findAllByText(/Model: GPT-5 \(Advocate route\)/i)).length).toBe(4);
+    expect(
+      screen.queryByText(/tribunal configuration cannot be frozen yet/i)
+    ).not.toBeInTheDocument();
+
+    // Simulate exactly one seat's model falling out of eligibility by
+    // re-fetching a catalog that no longer contains it (the same "stale
+    // selection" pattern the existing Shared-Mode regression test above
+    // already uses) -- here the entire ADVOCATE catalog goes empty.
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = typeof input === "string" ? input : input.toString();
+
+      if (url === "/api/models") {
+        return new Response(JSON.stringify({ models: [FAKE_ELIGIBLE_MODEL] }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+
+      if (url === "/api/models?role=ADVOCATE") {
+        return new Response(JSON.stringify({ models: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+
+      if (url === "/api/models?role=JUDGE") {
+        return fakeRoleEligibleModelResponse("JUDGE");
+      }
+
+      throw new Error(`Unhandled fetch in test: ${url}`);
+    });
+
+    await user.click(screen.getByRole("link", { name: /advocates/i }));
+    await user.click(screen.getByRole("link", { name: /review/i }));
+
+    expect(await screen.findByText(/PRO I requires a current eligible Advocate model\./i)).toBeVisible();
+    expect(screen.getByText(/PRO II requires a current eligible Advocate model\./i)).toBeVisible();
+    expect(screen.getByText(/CON I requires a current eligible Advocate model\./i)).toBeVisible();
+    expect(screen.getByText(/CON II requires a current eligible Advocate model\./i)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Convene Tribunal" })).toBeDisabled();
+  });
+
+  it("M9-X: Shared -> Separate -> Shared -> Separate preserves the already-valid per-seat Separate assignments", async () => {
+    const user = userEvent.setup();
+
+    renderWithAppProviders(<AppRoutes />, "/new/advocates");
+    await user.click(screen.getByRole("radio", { name: "Separate Models" }));
+    expect(await screen.findAllByText("GPT-5 (Advocate route)")).toHaveLength(4);
+
+    await user.click(screen.getByRole("radio", { name: "Shared Model" }));
+    expect(screen.queryByText("GPT-5 (Advocate route)")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("radio", { name: "Separate Models" }));
+    // No re-fetch/re-repair needed -- the prior valid selection survived
+    // the round trip through Shared untouched.
+    expect(await screen.findAllByText("GPT-5 (Advocate route)")).toHaveLength(4);
+  });
+
+  it("M9-Y: the ADVOCATE role catalog is fetched exactly once for all four advocate cards, not once per card", async () => {
+    renderWithAppProviders(<AppRoutes />, "/new/advocates");
+    await screen.findByLabelText("Shared model");
+
+    const advocateRoleFetchCalls = vi
+      .mocked(globalThis.fetch)
+      .mock.calls.filter(([url]) => url === "/api/models?role=ADVOCATE");
+
+    expect(advocateRoleFetchCalls).toHaveLength(1);
   });
 
   it("disables Convene while pending and after success, without re-arming", async () => {

@@ -7,7 +7,7 @@ import {
   TextField,
   Typography
 } from "@mui/material";
-import { type ChangeEvent, useRef, useState } from "react";
+import { type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   personalityLimit,
   profileNameLimit,
@@ -16,12 +16,29 @@ import {
 } from "../features/case-setup/setupState";
 import { useSetup } from "../features/case-setup/useSetup";
 import type { Participant } from "../mocks/tribunalMockData";
+import type { RoleEligibleModel } from "../services/modelsApi";
 import {
   ImportApiError,
   importPersonalityFile
 } from "../services/importApi";
+import { RoleModelSelect } from "./RoleModelSelect";
 
-export function ParticipantCard({ participant }: { participant: Participant }) {
+export function ParticipantCard({
+  participant,
+  roleModels,
+  roleModelsLoading,
+  roleModelsError
+}: {
+  participant: Participant;
+  // M9 (Separate-Model Tribunal, Issue #20): the shared role catalog
+  // (fetched once per page -- AdvocatesPage/JudgesPage -- and reused by
+  // every card of that role), only consulted while Separate Mode is
+  // active. Optional so this component's existing Shared-Mode behavior
+  // and every existing caller/test remain unaffected when omitted.
+  roleModels?: RoleEligibleModel[];
+  roleModelsLoading?: boolean;
+  roleModelsError?: string;
+}) {
   const { state, dispatch } = useSetup();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [importError, setImportError] = useState("");
@@ -32,6 +49,46 @@ export function ParticipantCard({ participant }: { participant: Participant }) {
   const personalityError = validateParticipantPersonality(config.personality);
   const hasProfileNameError = Boolean(profileNameError);
   const hasPersonalityError = Boolean(personalityError);
+  const isSeparateMode = state.executionMode === "separate";
+  // Stable empty-array identity across renders when roleModels is
+  // omitted -- otherwise `roleModels ?? []` allocates a new array every
+  // render and would trip the repair effect's dependency array below on
+  // every re-render, not only when the catalog genuinely changes.
+  const models = useMemo(() => roleModels ?? [], [roleModels]);
+  const modelsLoading = roleModelsLoading ?? false;
+  const modelsError = roleModelsError ?? "";
+
+  // M9 mock/stale-model guard (Issue #20 independent planning review,
+  // Correction 3): once this participant's own role catalog has loaded,
+  // repair an id that is not (or no longer) a real member of it --
+  // never leave the empty starting default or a stale selection silently
+  // in place, and never overwrite an already-valid selection (so
+  // Shared -> Separate -> Shared -> Separate preserves it exactly).
+  // Mirrors useEligibleModels's own auto-select-only-when-invalid
+  // pattern for the Shared selector.
+  useEffect(() => {
+    if (!isSeparateMode || modelsLoading || modelsError || models.length === 0) {
+      return;
+    }
+
+    const isCurrentSelectionValid = models.some((model) => model.id === config.modelId);
+
+    if (!isCurrentSelectionValid) {
+      dispatch({
+        type: "setParticipantModel",
+        participantId: participant.id,
+        modelId: models[0].id
+      });
+    }
+  }, [
+    isSeparateMode,
+    modelsLoading,
+    modelsError,
+    models,
+    config.modelId,
+    dispatch,
+    participant.id
+  ]);
 
   async function handlePersonalityImport(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -166,19 +223,22 @@ export function ParticipantCard({ participant }: { participant: Participant }) {
           >
             {isImporting ? "Importing..." : "Import Personality"}
           </Button>
-          {state.executionMode === "separate" ? (
-            // Independent audit correction (Issue #17 blocker 1/2):
-            // Separate-Model execution is M9 scope and its radio is
-            // disabled in ExecutionModeControl, so this branch is
-            // unreachable via the real UI today -- kept as a visible
-            // placeholder (not a real per-participant model selector,
-            // which would need its own real-catalog wiring) rather than
-            // silently deleted, since the underlying reducer action
-            // remains for M9 to build on.
-            <Typography color="text.secondary" variant="body2">
-              Per-participant model selection is available in a future
-              milestone (M9).
-            </Typography>
+          {isSeparateMode ? (
+            <RoleModelSelect
+              error={modelsError}
+              id={`${participant.id}-model`}
+              label={`${participant.label} model`}
+              loading={modelsLoading}
+              models={models}
+              onChange={(modelId) =>
+                dispatch({
+                  type: "setParticipantModel",
+                  participantId: participant.id,
+                  modelId
+                })
+              }
+              value={config.modelId}
+            />
           ) : null}
         </Stack>
       </CardContent>

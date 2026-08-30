@@ -8,6 +8,7 @@ import {
   Stack,
   Typography
 } from "@mui/material";
+import Decimal from "decimal.js";
 import { useCallback, useRef, useState } from "react";
 import { Link as RouterLink, useNavigate } from "react-router-dom";
 import { EconomicsSummary } from "../components/EconomicsSummary";
@@ -16,6 +17,7 @@ import { PageHeader } from "../components/PageHeader";
 import { SetupStepper } from "../components/SetupStepper";
 import { hasUserOpenRouterKey } from "../services/openRouterCredential";
 import { useEligibleModels } from "../features/case-setup/useEligibleModels";
+import { useRoleEligibleModels } from "../features/case-setup/useRoleEligibleModels";
 import {
   areAdvocatePersonalitiesValid,
   areJudgePersonalitiesValid,
@@ -25,7 +27,7 @@ import {
   type SetupState
 } from "../features/case-setup/setupState";
 import { useSetup } from "../features/case-setup/useSetup";
-import { allParticipants } from "../mocks/tribunalMockData";
+import { allParticipants, type Participant } from "../mocks/tribunalMockData";
 import { CaseApiError, saveCase, type StoredCase } from "../services/caseApi";
 import {
   convene,
@@ -72,10 +74,49 @@ export function ReviewPage() {
     loading: modelsLoading,
     error: modelsError
   } = useEligibleModels(state.sharedModelId, handleAutoSelectSharedModel);
+  // M9 (Separate-Model Tribunal, Issue #20): Review can be reached
+  // directly (e.g. after a Smart Import apply) without AdvocatesPage/
+  // JudgesPage ever having mounted, so it fetches both role catalogs
+  // itself too, exactly like it already does for the Shared catalog --
+  // never relies on another page having already fetched them.
+  const {
+    models: advocateModels,
+    loading: advocateModelsLoading,
+    error: advocateModelsError
+  } = useRoleEligibleModels("ADVOCATE");
+  const {
+    models: judgeModels,
+    loading: judgeModelsLoading,
+    error: judgeModelsError
+  } = useRoleEligibleModels("JUDGE");
   const sharedModel = eligibleModels.find((model) => model.id === state.sharedModelId);
   const chargeSheetValid = isChargeSheetValid(state.chargeSheet);
   const advocatesValid = areAdvocatePersonalitiesValid(state);
   const judgesValid = areJudgePersonalitiesValid(state);
+
+  function roleModelsFor(participant: Participant) {
+    return participant.kind === "advocate" ? advocateModels : judgeModels;
+  }
+
+  function resolvedSeparateModel(participant: Participant) {
+    return roleModelsFor(participant).find(
+      (model) => model.id === state.participants[participant.id].modelId
+    );
+  }
+
+  const separateModelsLoading = advocateModelsLoading || judgeModelsLoading;
+  const separateModelsError = advocateModelsError || judgeModelsError;
+  // M9 correction (Issue #20 independent planning review, Correction 3):
+  // mode-aware validity. SHARED is exactly the pre-M9 check, unchanged.
+  // SEPARATE requires every one of the seven seats to hold a current
+  // member of ITS OWN role catalog (advocates against the ADVOCATE
+  // catalog, judges against the JUDGE catalog) -- never merely a
+  // non-empty id, and never validated against the wrong role's catalog.
+  const separateParticipantsValid = allParticipants.every((participant) =>
+    roleModelsFor(participant).some(
+      (model) => model.id === state.participants[participant.id].modelId
+    )
+  );
   // Independent audit correction (final micro-correction #3): validity
   // means real CATALOG MEMBERSHIP, not merely a non-empty id -- a stale
   // id left over from a prior catalog fetch (or one that simply never
@@ -83,11 +124,9 @@ export function ReviewPage() {
   // therefore also blocked while the catalog is loading, if it failed to
   // load, or if it loaded empty, not only when nothing is selected yet.
   const hasRealModelSelected =
-    state.executionMode === "shared" &&
-    !modelsLoading &&
-    !modelsError &&
-    eligibleModels.length > 0 &&
-    sharedModel !== undefined;
+    state.executionMode === "shared"
+      ? !modelsLoading && !modelsError && eligibleModels.length > 0 && sharedModel !== undefined
+      : !separateModelsLoading && !separateModelsError && separateParticipantsValid;
   // M5 persists only the canonical case (Defendant/Act/Exact Question plus
   // source metadata). Participant configuration is not persisted/frozen
   // until M6, so Save Case must not require seven valid participants.
@@ -96,12 +135,51 @@ export function ReviewPage() {
   // proceed without a real selected model -- isMockSetupReady itself
   // doesn't know about the live catalog, so this is checked here too.
   const canConvene = isMockSetupReady(state) && hasRealModelSelected;
+  // M9: per-seat blocked reasons for Separate Mode, identifying WHICH
+  // participant(s) still need a valid model rather than one generic
+  // message -- reuses each participant's own catalog-membership check
+  // above, never a second validation system.
+  const separateSeatReasons =
+    state.executionMode === "separate" && !separateModelsLoading && !separateModelsError
+      ? allParticipants
+          .filter(
+            (participant) =>
+              !roleModelsFor(participant).some(
+                (model) => model.id === state.participants[participant.id].modelId
+              )
+          )
+          .map(
+            (participant) =>
+              `${participant.label} requires a current eligible ${
+                participant.kind === "advocate" ? "Advocate" : "Judge"
+              } model.`
+          )
+      : [];
   const blockedReasons = [
     !chargeSheetValid ? "Charge Sheet fields must be complete and valid." : "",
     !advocatesValid ? "All four advocate personalities must be valid." : "",
     !judgesValid ? "All three judge personalities must be valid." : "",
-    !hasRealModelSelected ? "A real eligible Shared model must be selected." : ""
+    ...(state.executionMode === "shared"
+      ? [!hasRealModelSelected ? "A real eligible Shared model must be selected." : ""]
+      : separateModelsError
+        ? [separateModelsError]
+        : separateModelsLoading
+          ? ["Loading eligible models..."]
+          : separateSeatReasons)
   ].filter(Boolean);
+  // M9: Decimal-safe sum of the seven participant-scoped conservative
+  // discovery estimates -- never ad-hoc Number addition for the
+  // authoritative displayed aggregate. Only computed once every seat
+  // resolves to a real catalog member; the authoritative frozen-run
+  // preflight (server-side) remains the real gate regardless.
+  const separateAggregateEstimateUsd =
+    state.executionMode === "separate" && separateParticipantsValid
+      ? allParticipants.reduce((sum, participant) => {
+          const resolved = resolvedSeparateModel(participant);
+
+          return resolved ? sum.plus(new Decimal(resolved.conservativeParticipantEstimateUsd)) : sum;
+        }, new Decimal(0))
+      : null;
 
   async function handleSaveCase() {
     if (!canSaveCase) {
@@ -230,7 +308,7 @@ export function ReviewPage() {
             <Typography>
               {state.executionMode === "shared"
                 ? "Shared Model — one model, seven distinct roles and personalities."
-                : "Separate Models — each participant can use a different eligible model."}
+                : "Separate Models — each participant uses its own selected eligible model."}
             </Typography>
             <Divider />
             <Typography component="h3" variant="h6">
@@ -249,6 +327,12 @@ export function ReviewPage() {
               }}
             >
               {allParticipants.map((participant) => {
+                const displayModelName =
+                  state.executionMode === "shared"
+                    ? (sharedModel?.name ?? (state.sharedModelId || "Not selected yet"))
+                    : (resolvedSeparateModel(participant)?.name ??
+                        (state.participants[participant.id].modelId || "Not selected yet"));
+
                 return (
                   <Box
                     key={participant.id}
@@ -266,7 +350,7 @@ export function ReviewPage() {
                       {participant.side ? `${participant.side} advocate` : "Judge"}
                     </Typography>
                     <Typography color="text.secondary" variant="body2">
-                      Model: {sharedModel?.name ?? (state.sharedModelId || "Not selected yet")}
+                      Model: {displayModelName}
                     </Typography>
                     <Typography color="text.secondary" variant="body2">
                       Profile name:{" "}
@@ -307,18 +391,28 @@ export function ReviewPage() {
           </Typography>
           <Typography>Retry policy: max one retry per participant</Typography>
           <Typography>Hard policy: $5.00 maximum</Typography>
-          {sharedModel ? (
-            <>
-              <Typography color="success.main" sx={{ fontWeight: 800 }}>
-                {sharedModel.priceTier} tier
-              </Typography>
+          {state.executionMode === "shared" ? (
+            sharedModel ? (
+              <>
+                <Typography color="success.main" sx={{ fontWeight: 800 }}>
+                  {sharedModel.priceTier} tier
+                </Typography>
+                <Typography color="text.secondary" variant="body2">
+                  {`Conservative full-Tribunal estimate for this route: $${sharedModel.conservativeFullTribunalEstimateUsd} (discovery estimate; the authoritative preflight runs again, using your connected credential, when you Convene).`}
+                </Typography>
+              </>
+            ) : (
               <Typography color="text.secondary" variant="body2">
-                {`Conservative full-Tribunal estimate for this route: $${sharedModel.conservativeFullTribunalEstimateUsd} (discovery estimate; the authoritative preflight runs again, using your connected credential, when you Convene).`}
+                Select a Shared model above to see its conservative estimate.
               </Typography>
-            </>
+            )
+          ) : separateAggregateEstimateUsd ? (
+            <Typography color="text.secondary" variant="body2">
+              {`Conservative discovery estimate for this Separate-Mode configuration (sum of each of the seven participants' own estimate): $${separateAggregateEstimateUsd.toFixed()} (discovery estimate; the authoritative preflight runs again, using your connected credential, when you Convene. The $5.00 hard ceiling remains authoritative regardless of this estimate.)`}
+            </Typography>
           ) : (
             <Typography color="text.secondary" variant="body2">
-              Select a Shared model above to see its conservative estimate.
+              Select an eligible model for all seven participants above to see the aggregate conservative estimate.
             </Typography>
           )}
         </CardContent>
