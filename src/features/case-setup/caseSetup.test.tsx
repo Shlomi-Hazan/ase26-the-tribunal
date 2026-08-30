@@ -510,6 +510,74 @@ describe("case setup workflow", () => {
     expect(screen.getByText(/available in a future milestone/i)).toBeVisible();
   });
 
+  // Final micro-correction #3 (independent audit): validity means real
+  // CATALOG MEMBERSHIP, not merely a non-empty id. Auto-select on
+  // Advocates picks a real model from a first catalog fetch; by the time
+  // Review re-fetches on its own mount, the catalog has changed to no
+  // longer contain ANY model (the real-world case a stale/removed model
+  // id represents) -- Convene must stay disabled and no POST /api/runs
+  // may ever be attempted, even though sharedModelId is still a
+  // non-empty string left over from the earlier, now-stale selection.
+  it("a sharedModelId no longer present in a freshly re-fetched catalog keeps Convene disabled and makes zero POST /api/runs calls", async () => {
+    const user = userEvent.setup();
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = typeof input === "string" ? input : input.toString();
+
+      if (url === "/api/models") {
+        return new Response(JSON.stringify({ models: [FAKE_ELIGIBLE_MODEL] }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+
+      throw new Error(`Unhandled fetch in test: ${url}`);
+    });
+
+    renderWithAppProviders(<AppRoutes />);
+    await user.type(screen.getByLabelText(/defendant/i), "Alex Rowan");
+    await user.type(screen.getByLabelText(/^act/i), "Entered the restricted lab.");
+    await user.type(
+      screen.getByLabelText(/exact question/i),
+      "Did Alex knowingly violate the lab protocol?"
+    );
+    await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
+
+    // The real (fake, but non-empty) catalog auto-selected a real model.
+    expect(await screen.findByText("GPT-5")).toBeInTheDocument();
+
+    // By the time Review mounts and re-fetches on its own, the catalog
+    // has changed to return zero eligible models -- simulating the
+    // previously-selected model falling out of eligibility.
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = typeof input === "string" ? input : input.toString();
+
+      if (url === "/api/models") {
+        return new Response(JSON.stringify({ models: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+
+      throw new Error(`Unhandled fetch in test: ${url}`);
+    });
+
+    await user.click(screen.getByRole("link", { name: /continue to judges/i }));
+    await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+    await connectOpenRouter(user);
+
+    expect(
+      await screen.findByText(/select a shared model above/i)
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "Convene Tribunal" })).toBeDisabled();
+
+    // Convene is unreachable (disabled), so this is a defensive proof,
+    // not merely inferred from the disabled attribute.
+    expect(
+      vi.mocked(globalThis.fetch).mock.calls.some(([url]) => url === "/api/runs")
+    ).toBe(false);
+  });
+
   it("shows review gate geometry, budget policy, and privacy warning", async () => {
     renderWithAppProviders(<AppRoutes />, "/new/review");
 

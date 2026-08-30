@@ -67,12 +67,27 @@ export function ReviewPage() {
     (modelId: string) => dispatch({ type: "setSharedModel", modelId }),
     [dispatch]
   );
-  const { models: eligibleModels } = useEligibleModels(state.sharedModelId, handleAutoSelectSharedModel);
+  const {
+    models: eligibleModels,
+    loading: modelsLoading,
+    error: modelsError
+  } = useEligibleModels(state.sharedModelId, handleAutoSelectSharedModel);
   const sharedModel = eligibleModels.find((model) => model.id === state.sharedModelId);
   const chargeSheetValid = isChargeSheetValid(state.chargeSheet);
   const advocatesValid = areAdvocatePersonalitiesValid(state);
   const judgesValid = areJudgePersonalitiesValid(state);
-  const hasRealModelSelected = state.executionMode === "shared" && state.sharedModelId.trim().length > 0;
+  // Independent audit correction (final micro-correction #3): validity
+  // means real CATALOG MEMBERSHIP, not merely a non-empty id -- a stale
+  // id left over from a prior catalog fetch (or one that simply never
+  // resolves) must never be treated as a valid selection. Convene is
+  // therefore also blocked while the catalog is loading, if it failed to
+  // load, or if it loaded empty, not only when nothing is selected yet.
+  const hasRealModelSelected =
+    state.executionMode === "shared" &&
+    !modelsLoading &&
+    !modelsError &&
+    eligibleModels.length > 0 &&
+    sharedModel !== undefined;
   // M5 persists only the canonical case (Defendant/Act/Exact Question plus
   // source metadata). Participant configuration is not persisted/frozen
   // until M6, so Save Case must not require seven valid participants.

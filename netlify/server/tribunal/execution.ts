@@ -176,7 +176,8 @@ const RETRYABLE_CATEGORIES: ReadonlySet<ProviderErrorCategory> = new Set([
 // anything this module calls, so they carry harmless placeholder values
 // rather than triggering a second metadata fetch merely to populate
 // fields nothing reads.
-function toResolvedRoute(participant: PreflightParticipantResult): ResolvedModelRoute {
+// Exported for the direct runLogicalCall unit test below (execution.test.ts).
+export function toResolvedRoute(participant: PreflightParticipantResult): ResolvedModelRoute {
   if (
     !participant.modelEligible ||
     !participant.pricing ||
@@ -256,7 +257,13 @@ type LogicalCallOutcome =
   // OpenRouter call for that attempt, no attempt row created.
   | { success: false; economics: AttemptEconomics[]; blockedByBudget: boolean };
 
-async function runLogicalCall(params: {
+// Exported for a direct, deterministic unit test (execution.test.ts) of
+// the final micro-correction's "reserve for still-required not-yet-
+// started work" behavior -- a scenario that depends on precise
+// committed-spend timing that a full executeTribunalRun integration
+// test cannot deterministically control across four concurrent
+// advocates (see RuntimeBudgetGuard's own export for the same reasoning).
+export async function runLogicalCall(params: {
   runId: string;
   participantConfigId: string;
   role: "ADVOCATE" | "JUDGE";
@@ -268,6 +275,16 @@ async function runLogicalCall(params: {
   // includes the x2 retry reserve for both permitted attempts) -- audited
   // on every attempt row, never recomputed independently here.
   conservativeMaxCostUsd: string;
+  // Independent audit correction (Issue #17 final micro-correction #1,
+  // docs/economics.md Sec 11): the conservative reserve for whatever
+  // LATER phase(s) have not started yet and are still required for the
+  // run to complete -- the full judge batch reserve for an advocate
+  // call, zero for a judge call (nothing required after judges). A
+  // fixed value for the whole execution, computed once from preflight
+  // data and never itself added to committed spend -- only used
+  // transiently in the affordability check below, so it can never be
+  // double-counted against real spend that already happened.
+  remainingRequiredReserveUsd: Decimal;
   budgetGuard: RuntimeBudgetGuard;
   systemPrompt: string;
   userMessage: string;
@@ -286,10 +303,16 @@ async function runLogicalCall(params: {
   );
 
   for (let attemptNumber = 1; attemptNumber <= MAX_ATTEMPTS_PER_LOGICAL_CALL; attemptNumber += 1) {
-    // Requirement 3/4: re-validated against REAL spend so far,
-    // immediately before every attempt (including the first, for
-    // uniformity) -- DO NOT call OpenRouter if it would not fit.
-    if (!budgetGuard.canAffordReserve(perAttemptReserveUsd)) {
+    // Requirement 3/4 (plus the final micro-correction): re-validated
+    // against REAL spend so far, immediately before every attempt
+    // (including the first, for uniformity) -- authorized only when
+    // committed spend + this attempt's own reserve + the reserve still
+    // required for every later phase together fit under the ceiling.
+    // Without the last term, a retry could be individually affordable
+    // while leaving no room for phases that must still run afterward.
+    if (
+      !budgetGuard.canAffordReserve(perAttemptReserveUsd.plus(params.remainingRequiredReserveUsd))
+    ) {
       return { success: false, economics, blockedByBudget: true };
     }
 
@@ -388,14 +411,23 @@ async function runLogicalCall(params: {
         inputTokens = result.raw.usage.prompt_tokens;
         outputTokens = result.raw.usage.completion_tokens;
 
+        // Independent audit correction (final micro-correction #4):
+        // whenever native token counts are reliable, an independently
+        // derived comparison cost is ALWAYS computed from the claimed
+        // pricing snapshot -- regardless of whether the provider also
+        // reported usage.cost -- never only as a fallback for when
+        // usage.cost happens to be absent.
+        derivedCostUsd = computeDerivedCostUsd(route.pricing, inputTokens, outputTokens).toFixed();
+
+        // actualCostUsd (the provider-reported value) and derivedCostUsd
+        // (the independently computed one) are structurally distinct and
+        // persisted separately -- one is never used to overwrite the
+        // other. Runtime authoritative spend precedence (below,
+        // `actualCostUsd ?? derivedCostUsd`) prefers the provider's own
+        // reported value when present, falling back to the reliable
+        // derived one only when it is not.
         if (result.raw.usage.cost !== undefined) {
           actualCostUsd = new Decimal(result.raw.usage.cost).toFixed();
-        } else {
-          // Independent audit correction (Issue #17 blockers 4/5): cost
-          // is reliably derivable from native tokens + the claimed
-          // pricing snapshot -- persisted as derivedCostUsd, distinct
-          // from (and never overwriting) actualCostUsd, which stays null.
-          derivedCostUsd = computeDerivedCostUsd(route.pricing, inputTokens, outputTokens).toFixed();
         }
 
         terminalStatus = "SUCCESS";
@@ -636,6 +668,13 @@ export async function executeTribunalRun(
       .times(BUDGET_SAFETY_FACTOR);
   }
 
+  // Independent audit correction (final micro-correction #1): computed
+  // once, from preflight data only -- never mutated, never itself added
+  // to committed spend. Passed to every advocate's runLogicalCall as the
+  // reserve still required for the judge phase, which has not started
+  // yet and must still fit even after an advocate retry.
+  const judgeBatchReserve = batchReserveUsd(JUDGE_ORDER);
+
   // ---------------------------------------------------------------
   // Phase A: four advocates, one concurrent phase (SPEC.md Sec 9.1).
   // Requirement 1: the complete concurrent advocate batch exposure is
@@ -673,6 +712,7 @@ export async function executeTribunalRun(
         promptVersion: config.promptVersion,
         route,
         conservativeMaxCostUsd: preflightParticipant.conservativeParticipantCostUsd,
+        remainingRequiredReserveUsd: judgeBatchReserve,
         budgetGuard,
         systemPrompt: buildAdvocateSystemPrompt(side),
         userMessage: buildAdvocateUserMessage(config.personality, chargeSheetForModel),
@@ -736,7 +776,7 @@ export async function executeTribunalRun(
   // Requirement 2: known/derived advocate spend + the conservative
   // complete judge batch reserve must fit BEFORE any judge call starts.
   // ---------------------------------------------------------------
-  if (!budgetGuard.canAffordReserve(batchReserveUsd(JUDGE_ORDER))) {
+  if (!budgetGuard.canAffordReserve(judgeBatchReserve)) {
     await deps.repository.failRun(
       runId,
       "RUNTIME_BUDGET_EXCEEDED",
@@ -764,6 +804,8 @@ export async function executeTribunalRun(
         promptVersion: config.promptVersion,
         route,
         conservativeMaxCostUsd: preflightParticipant.conservativeParticipantCostUsd,
+        // Nothing is required after the judge phase completes.
+        remainingRequiredReserveUsd: new Decimal(0),
         budgetGuard,
         systemPrompt: JUDGE_SYSTEM_PROMPT,
         userMessage: buildJudgeUserMessage(config.personality, chargeSheetForModel, speeches),

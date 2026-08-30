@@ -14,8 +14,16 @@ import type { OpenRouterProvider, ProviderChatRequest, ProviderChatResult } from
 import type { RawOpenRouterEndpoint, RawOpenRouterModel } from "../openrouter/schemas";
 import type { PreflightCase, PreflightRun, PreflightRunLoader } from "../openrouter/preflight";
 import type { PersistedRun } from "../runs";
+import { runPreflight } from "../openrouter/preflight";
+import { advocateSpeechJsonSchema } from "../../../src/prompts/schemas";
 import { FakeTribunalExecutionRepository } from "./repository";
-import { executeTribunalRun, RuntimeBudgetGuard, type RunLoader } from "./execution";
+import {
+  executeTribunalRun,
+  runLogicalCall,
+  toResolvedRoute,
+  RuntimeBudgetGuard,
+  type RunLoader
+} from "./execution";
 
 const MODEL_ID = "openai/gpt-5";
 const CASE = {
@@ -538,6 +546,76 @@ describe("executeTribunalRun", () => {
     expect(totalRecorded.lte(new Decimal("5.00").plus("1.50"))).toBe(true);
   });
 
+  // Final micro-correction #1 (docs/economics.md Sec 11): an attempt
+  // must not be authorized merely because IT ALONE would fit under the
+  // ceiling -- the reserve for whatever later phase(s) still MUST run
+  // has to fit too. Tested directly against runLogicalCall (not the full
+  // executeTribunalRun) so committed spend can be set to an exact,
+  // deterministic value -- a full integration test cannot precisely
+  // control timing across four concurrently-resolving advocates.
+  it("attempt #2 is refused when committed spend + this attempt's own reserve + the still-required judge-phase reserve would not fit, even though the attempt alone would", async () => {
+    const run = buildRun();
+    const preflightRunLoader = new FakePreflightRunLoader(run);
+    const preflightProvider = new ScriptedOpenRouterProvider(eligibleFixture(), allEligibleScripts());
+
+    const preflight = await runPreflight(run.id, { runLoader: preflightRunLoader, provider: preflightProvider });
+    const advocateParticipant = preflight.participants.find((p) => p.participantId === "advocate-con-2")!;
+    const judgeParticipants = preflight.participants.filter((p) => p.participantId.startsWith("judge"));
+    const judgeBatchReserve = judgeParticipants
+      .map((p) => new Decimal(p.conservativeParticipantCostUsd ?? "0"))
+      .reduce((sum, amount) => sum.plus(amount), new Decimal(0))
+      .times("1.10");
+    const route = toResolvedRoute(advocateParticipant);
+
+    const repository = new FakeTribunalExecutionRepository();
+    const budgetGuard = new RuntimeBudgetGuard(new Decimal("5.00"));
+
+    // At the moment this logical call's own attempt #1 is authorized,
+    // nothing is committed yet, so it proceeds normally and fails with a
+    // retryable TIMEOUT. While that attempt was in flight, concurrent
+    // sibling advocates' REAL costs landed in the shared guard (the
+    // real-world equivalent of Promise.allSettled's other branches
+    // resolving around the same time) -- by the time attempt #2 is
+    // considered, committed spend alone is $4.9997: this attempt's own
+    // per-attempt reserve would still individually fit under $5.00, but
+    // adding the still-required judge-phase reserve on top does not.
+    let callCount = 0;
+    const provider: OpenRouterProvider = {
+      async listModels() {
+        return eligibleFixture().models;
+      },
+      async listEndpoints() {
+        return eligibleFixture().endpoints;
+      },
+      async createChatCompletion() {
+        callCount += 1;
+        budgetGuard.recordActualSpend(new Decimal("4.9997"));
+        throw new ProviderError("TIMEOUT", "timed out");
+      }
+    };
+
+    const outcome = await runLogicalCall({
+      runId: run.id,
+      participantConfigId: "config-advocate-con-2",
+      role: "ADVOCATE",
+      promptVersion: ADVOCATE_PROMPT_VERSION,
+      route,
+      conservativeMaxCostUsd: advocateParticipant.conservativeParticipantCostUsd!,
+      remainingRequiredReserveUsd: judgeBatchReserve,
+      budgetGuard,
+      systemPrompt: "system prompt",
+      userMessage: personalityMarker("advocate-con-2"),
+      maxCompletionTokens: 1000,
+      structuredOutput: { name: "advocate_speech", schema: advocateSpeechJsonSchema },
+      deps: { runLoader: new FakeRunLoader(run, repository), preflightRunLoader, provider, repository }
+    });
+
+    // Attempt #1 (the TIMEOUT) happened; attempt #2 (the retry) was
+    // refused before ever calling OpenRouter again.
+    expect(outcome.success).toBe(false);
+    expect(callCount).toBe(1);
+  });
+
   // ---------------------------------------------------------------
   // Blocker 4 (independent audit correction): attempt pricing snapshot.
   // ---------------------------------------------------------------
@@ -610,6 +688,35 @@ describe("executeTribunalRun", () => {
     expect(attempt?.actualCostUsd).toBeNull();
     expect(attempt?.derivedCostUsd).toBeTruthy();
     expect(new Decimal(attempt?.derivedCostUsd ?? "0").gt(0)).toBe(true);
+  });
+
+  // Final micro-correction #4: a derived comparison cost is ALWAYS
+  // computed from native usage + the claimed pricing snapshot, even when
+  // the provider also reported usage.cost -- not only as a fallback.
+  it("native usage + usage.cost present -> both actualCostUsd and derivedCostUsd are persisted, non-null, and structurally distinct", async () => {
+    const run = buildRun();
+    const scripts = allEligibleScripts();
+    scripts["advocate-pro-1"] = [successResult({ speech: "Costed both ways.", cost: 0.001, usage: "present" })];
+
+    const provider = new ScriptedOpenRouterProvider(eligibleFixture(), scripts);
+    const { deps, repository } = buildDeps(run, provider);
+
+    const outcome = await executeTribunalRun(run.id, deps);
+
+    expect(outcome.outcome).toBe("completed");
+
+    const attempt = [...repository.attempts.values()].find(
+      (a) => a.participantConfigId === "config-advocate-pro-1"
+    );
+
+    expect(attempt?.status).toBe("SUCCESS");
+    expect(attempt?.actualCostUsd).toBe("0.001");
+    expect(attempt?.derivedCostUsd).toBeTruthy();
+    expect(new Decimal(attempt?.derivedCostUsd ?? "0").gt(0)).toBe(true);
+    // The provider's own reported cost was never overwritten by the
+    // derived value, and the two are not required to be numerically
+    // identical -- they are independently computed comparison figures.
+    expect(attempt?.derivedCostUsd).not.toBe(attempt?.actualCostUsd);
   });
 
   it("a run cannot reach COMPLETED with unauditable (telemetry-missing) economics", async () => {

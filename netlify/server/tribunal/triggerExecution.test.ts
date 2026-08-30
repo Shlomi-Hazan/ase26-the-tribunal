@@ -338,4 +338,109 @@ describe("triggerExecutionIfEligible", () => {
       fetchMock.mock.calls.every((call) => (call[0] as string).includes("openrouter.ai"))
     ).toBe(true);
   });
+
+  // Final micro-correction #2: a resolved fetch is not proof of
+  // acceptance -- only an actual HTTP 202 (Netlify's own documented
+  // Background Function acceptance status) may report invoked: true.
+  // OpenRouter metadata responses are unrelated to this check and stay
+  // eligible throughout every case below.
+  describe("worker invocation HTTP acceptance (final micro-correction #2)", () => {
+    function fetchMockReturning(workerStatus: number) {
+      return vi.fn().mockImplementation((url: string) => {
+        const openRouterResponse = eligibleOpenRouterResponse(url);
+
+        if (openRouterResponse) {
+          return Promise.resolve(openRouterResponse);
+        }
+
+        return Promise.resolve(new Response("{}", { status: workerStatus }));
+      });
+    }
+
+    it("202 -> invoked: true", async () => {
+      vi.stubEnv("INTERNAL_FUNCTION_SECRET", "test-internal-secret");
+      vi.stubGlobal("fetch", fetchMockReturning(202));
+
+      const run = eligibleRun();
+      const repository = new FakeTribunalExecutionRepository();
+      repository.setRunStatus(RUN_ID, "READY");
+
+      const result = await triggerExecutionIfEligible(run, "sk-or-v1-user-key", {
+        runRepository: fakeRunRepository(run),
+        caseRepository: fakeCaseRepository(),
+        tribunalRepository: repository,
+        backgroundFunctionBaseUrl: TRUSTED_BASE_URL
+      });
+
+      expect(result).toEqual({ invoked: true });
+    });
+
+    it("404 -> invocation_failed, run stays READY", async () => {
+      vi.stubEnv("INTERNAL_FUNCTION_SECRET", "test-internal-secret");
+      vi.stubGlobal("fetch", fetchMockReturning(404));
+
+      const run = eligibleRun();
+      const repository = new FakeTribunalExecutionRepository();
+      repository.setRunStatus(RUN_ID, "READY");
+
+      const result = await triggerExecutionIfEligible(run, "sk-or-v1-user-key", {
+        runRepository: fakeRunRepository(run),
+        caseRepository: fakeCaseRepository(),
+        tribunalRepository: repository,
+        backgroundFunctionBaseUrl: TRUSTED_BASE_URL
+      });
+
+      expect(result).toEqual({ invoked: false, reason: "invocation_failed" });
+      expect(repository.runStatus.get(RUN_ID)).toBe("READY");
+    });
+
+    it("500 -> invocation_failed, run stays READY", async () => {
+      vi.stubEnv("INTERNAL_FUNCTION_SECRET", "test-internal-secret");
+      vi.stubGlobal("fetch", fetchMockReturning(500));
+
+      const run = eligibleRun();
+      const repository = new FakeTribunalExecutionRepository();
+      repository.setRunStatus(RUN_ID, "READY");
+
+      const result = await triggerExecutionIfEligible(run, "sk-or-v1-user-key", {
+        runRepository: fakeRunRepository(run),
+        caseRepository: fakeCaseRepository(),
+        tribunalRepository: repository,
+        backgroundFunctionBaseUrl: TRUSTED_BASE_URL
+      });
+
+      expect(result).toEqual({ invoked: false, reason: "invocation_failed" });
+      expect(repository.runStatus.get(RUN_ID)).toBe("READY");
+    });
+
+    it("network rejection calling the worker -> invocation_failed, run stays READY", async () => {
+      vi.stubEnv("INTERNAL_FUNCTION_SECRET", "test-internal-secret");
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockImplementation((url: string) => {
+          const openRouterResponse = eligibleOpenRouterResponse(url);
+
+          if (openRouterResponse) {
+            return Promise.resolve(openRouterResponse);
+          }
+
+          return Promise.reject(new TypeError("Failed to fetch"));
+        })
+      );
+
+      const run = eligibleRun();
+      const repository = new FakeTribunalExecutionRepository();
+      repository.setRunStatus(RUN_ID, "READY");
+
+      const result = await triggerExecutionIfEligible(run, "sk-or-v1-user-key", {
+        runRepository: fakeRunRepository(run),
+        caseRepository: fakeCaseRepository(),
+        tribunalRepository: repository,
+        backgroundFunctionBaseUrl: TRUSTED_BASE_URL
+      });
+
+      expect(result).toEqual({ invoked: false, reason: "invocation_failed" });
+      expect(repository.runStatus.get(RUN_ID)).toBe("READY");
+    });
+  });
 });

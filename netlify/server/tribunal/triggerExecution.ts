@@ -100,7 +100,16 @@ export async function triggerExecutionIfEligible(
   const fetchImpl = deps.fetchImpl ?? fetch;
 
   try {
-    await fetchImpl(resolveBackgroundFunctionUrl(deps.backgroundFunctionBaseUrl), {
+    // Independent audit correction (final micro-correction #2): the
+    // Response itself is captured and checked -- a resolved fetch is not
+    // proof of acceptance. Netlify's own documented Background Function
+    // contract is that a successfully queued invocation returns HTTP 202;
+    // anything else (a 404/500/other status, however it arrived) means
+    // the worker was never actually accepted and must not be reported as
+    // invoked. The response body is never read/exposed here -- only the
+    // status is inspected, so no server-side detail leaks through this
+    // path.
+    const response = await fetchImpl(resolveBackgroundFunctionUrl(deps.backgroundFunctionBaseUrl), {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -109,6 +118,10 @@ export async function triggerExecutionIfEligible(
       },
       body: JSON.stringify({ runId: run.id })
     });
+
+    if (response.status !== 202) {
+      return { invoked: false, reason: "invocation_failed" };
+    }
   } catch {
     // The worker invocation itself failed to be accepted (network/DNS
     // failure calling our own deployment) -- the run remains READY, a
