@@ -115,7 +115,6 @@ export type TribunalExecutionDeps = {
 
 export type ExecutionOutcome =
   | { outcome: "not_ready" }
-  | { outcome: "separate_mode_not_enabled" }
   | { outcome: "blocked_budget"; reasonCodes: string[] }
   | { outcome: "not_claimed" }
   | { outcome: "completed"; majorityVerdict: Verdict }
@@ -615,17 +614,18 @@ export async function executeTribunalRun(
     return { outcome: "not_ready" };
   }
 
-  // Blocker 2 (independent audit correction, Issue #17): M8 is
-  // Shared-Model only -- Separate-Model execution is M9 scope. The
-  // synchronous trigger (triggerExecution.ts) already refuses to invoke
-  // the worker for a SEPARATE run; this is defense in depth inside the
-  // worker itself, checked before any metadata/completion call, so no
-  // code path -- including a hypothetically misconfigured or directly
-  // invoked worker call -- can ever execute a SEPARATE run in this
-  // milestone.
-  if (run.executionMode !== "shared") {
-    return { outcome: "separate_mode_not_enabled" };
-  }
+  // M9 (Separate-Model Tribunal, Issue #20): the M8-only "Shared-Model-
+  // only" gate that used to live here (mirroring triggerExecution.ts's
+  // own, now-also-removed gate) has been removed -- SHARED and SEPARATE
+  // runs are both eligible for execution. This does NOT weaken the
+  // worker's defense-in-depth posture in general: every other invariant
+  // below (fresh execution-time preflight per participant, atomic claim,
+  // reasoning compatibility, budget, idempotency) still independently
+  // fails closed on a malformed/ineligible run of EITHER mode -- only
+  // the specific "reject every SEPARATE run outright" restriction, which
+  // was never a general safety property, is gone. run.executionMode is
+  // no longer consulted here at all; preflight already resolves each
+  // participant's own frozen model/route regardless of mode.
 
   // Step 2: fresh, zero-completion metadata + route resolution +
   // preflight -- reuses the exact same runPreflight() the standalone

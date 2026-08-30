@@ -189,23 +189,40 @@ describe("triggerExecutionIfEligible", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  // Blocker 2: M8 is Shared-Model only. A SEPARATE run must never reach
-  // the worker or make any provider call, even with a valid connected
-  // credential.
-  it("SEPARATE mode + valid credential -> zero worker invocation, zero OpenRouter call of any kind", async () => {
-    const fetchMock = vi.fn();
+  // M9 (Separate-Model Tribunal, Issue #20), Test Plan item P: the M8-
+  // only "reject every SEPARATE run outright" gate is gone -- a SEPARATE
+  // run with an eligible preflight reaches the worker exactly like a
+  // SHARED run does. (Whether the seven seats share one model or use
+  // several is irrelevant here -- this module never inspects individual
+  // participant model IDs, only run.status and the preflight/credential
+  // gates; the mixed-model case is covered end-to-end in
+  // execution.test.ts.)
+  it("SEPARATE mode + eligible preflight + valid credential -> invoked, identically to SHARED mode", async () => {
+    vi.stubEnv("INTERNAL_FUNCTION_SECRET", "test-internal-secret");
+
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      const openRouterResponse = eligibleOpenRouterResponse(url);
+
+      if (openRouterResponse) {
+        return Promise.resolve(openRouterResponse);
+      }
+
+      return Promise.resolve(new Response("{}", { status: 202 }));
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     const run = { ...eligibleRun(), executionMode: "separate" as const };
+    const repository = new FakeTribunalExecutionRepository();
+    repository.setRunStatus(RUN_ID, "READY");
 
     const result = await triggerExecutionIfEligible(run, "sk-or-v1-user-key", {
       runRepository: fakeRunRepository(run),
       caseRepository: fakeCaseRepository(),
-      tribunalRepository: new FakeTribunalExecutionRepository()
+      tribunalRepository: repository,
+      backgroundFunctionBaseUrl: TRUSTED_BASE_URL
     });
 
-    expect(result).toEqual({ invoked: false, reason: "separate_mode_not_enabled" });
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result).toEqual({ invoked: true });
   });
 
   it("ineligible preflight -> blocked_budget, zero worker invocation, blockBudget RPC called", async () => {

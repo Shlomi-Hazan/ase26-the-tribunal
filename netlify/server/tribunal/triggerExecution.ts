@@ -18,7 +18,6 @@ import type { TribunalExecutionRepository } from "./repository";
 export type TriggerExecutionResult =
   | { invoked: true }
   | { invoked: false; reason: "not_connected" }
-  | { invoked: false; reason: "separate_mode_not_enabled" }
   | { invoked: false; reason: "blocked_budget"; blockedReasonCodes: string[] }
   | { invoked: false; reason: "invocation_failed" };
 
@@ -59,15 +58,15 @@ export async function triggerExecutionIfEligible(
     return { invoked: false, reason: "not_connected" };
   }
 
-  // Milestone 8 audit correction (blocker 2): M8 is Shared-Model only.
-  // Separate-Model execution is M9 scope -- a SEPARATE run must never
-  // reach the worker, and this is checked before any preflight/provider
-  // call is made, using a stable reason code distinct from
-  // "not_connected" so the two are never confused in logs/audit.
-  if (run.executionMode !== "shared") {
-    return { invoked: false, reason: "separate_mode_not_enabled" };
-  }
-
+  // M9 (Separate-Model Tribunal, Issue #20): the M8-only
+  // "Shared-Model-only" gate that used to live here has been removed --
+  // SHARED and SEPARATE runs are both eligible for execution now that
+  // runPreflight/executeTribunalRun resolve every participant's model
+  // independently (they always did; only this gate and its
+  // executeTribunalRun-side counterpart ever restricted execution to
+  // SHARED). run.executionMode is no longer consulted at all in this
+  // function -- eligibility is decided entirely by the normal preflight/
+  // budget/credential checks below, identically for either mode.
   if (!userOpenRouterKey) {
     return { invoked: false, reason: "not_connected" };
   }

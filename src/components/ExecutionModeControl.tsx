@@ -45,14 +45,12 @@ export function ExecutionModeControl() {
           </Typography>
           <FormControlLabel
             control={<Radio />}
-            disabled
             label="Separate Models"
             value="separate"
           />
           <Typography color="text.secondary" sx={{ ml: 4 }} variant="body2">
-            Each participant can use a different eligible model. Available in
-            a future milestone (M9) -- Milestone 8 executes Shared-Model
-            Tribunal runs only.
+            Each participant can use a different eligible model, chosen per
+            seat on the Advocates and Judges pages.
           </Typography>
         </RadioGroup>
       </FormControl>
