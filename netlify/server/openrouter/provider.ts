@@ -37,6 +37,13 @@ export type ProviderChatRequest = {
     type: "json_schema";
     json_schema: { name: string; strict: true; schema: Record<string, unknown> };
   };
+  // M8 live-gate root-cause correction (Issue #17): OpenRouter's unified
+  // reasoning-control parameter, sent only for an exact endpoint proven
+  // (via ResolvedModelRoute.supportsReasoningControl) to support it --
+  // never a broader shape than the one conservative V1 policy this
+  // application actually sends (see executionRequest.ts), so this stays a
+  // narrow literal type rather than an open-ended `unknown`/passthrough.
+  reasoning?: { effort: "minimal"; exclude: true };
   provider?: ProviderPreferences;
 };
 

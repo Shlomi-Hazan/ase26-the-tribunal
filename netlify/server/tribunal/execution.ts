@@ -169,13 +169,16 @@ const RETRYABLE_CATEGORIES: ReadonlySet<ProviderErrorCategory> = new Set([
 
 // Only the fields buildFutureCompletionRequest actually reads
 // (isUniquelyPinnable, canonicalModelId, providerEndpointTag,
-// pricing.effectiveInputPricePerToken/completionPricePerToken/
-// requestPriceUsd) are populated faithfully from this SAME worker
-// invocation's fresh preflight result -- the remaining ResolvedModelRoute
-// fields are structurally required by the type but not consumed by
-// anything this module calls, so they carry harmless placeholder values
-// rather than triggering a second metadata fetch merely to populate
-// fields nothing reads.
+// supportsReasoningControl, pricing.effectiveInputPricePerToken/
+// completionPricePerToken/requestPriceUsd) are populated faithfully from
+// this SAME worker invocation's fresh preflight result -- the remaining
+// ResolvedModelRoute fields are structurally required by the type but not
+// consumed by anything this module calls, so they carry harmless
+// placeholder values rather than triggering a second metadata fetch
+// merely to populate fields nothing reads. supportsReasoningControl in
+// particular (M8 live-gate root-cause correction, Issue #17) MUST come
+// from this exact preflight's own resolved route, never re-derived here
+// -- execution always uses the same route fresh preflight selected.
 // Exported for the direct runLogicalCall unit test below (execution.test.ts).
 export function toResolvedRoute(participant: PreflightParticipantResult): ResolvedModelRoute {
   if (
@@ -219,6 +222,7 @@ export function toResolvedRoute(participant: PreflightParticipantResult): Resolv
     maxPromptTokens: null,
     maxCompletionTokens: null,
     supportedParameters: [],
+    supportsReasoningControl: participant.supportsReasoningControl,
     quantization: null,
     pricing,
     observedAt: participant.pricing.observedAt
@@ -375,35 +379,18 @@ export async function runLogicalCall(params: {
 
       providerRequestId = result.raw.id ?? null;
 
-      const content = result.raw.choices[0]?.message.content ?? null;
-      const parsedJson = content ? safeJsonParse(content) : undefined;
-      const schemaResult =
-        parsedJson === undefined
-          ? null
-          : role === "ADVOCATE"
-            ? advocateSpeechSchema.safeParse(parsedJson)
-            : judgeVerdictSchema.safeParse(parsedJson);
-
-      if (!schemaResult || !schemaResult.success) {
-        terminalStatus = "INVALID_STRUCTURED_OUTPUT";
-        errorCategory = "INVALID_STRUCTURED_OUTPUT";
-        errorMessage =
-          parsedJson === undefined
-            ? "Provider returned no content or invalid JSON."
-            : `${role === "ADVOCATE" ? "Advocate" : "Judge"} output failed schema validation.`;
-        retryableFailure = true;
-      } else if (!result.raw.usage) {
-        // Independent audit correction (Issue #17 blocker 5): schema-valid
-        // output with NO usage telemetry at all cannot become SUCCESS --
-        // there is no reliable basis for input/output token counts, let
-        // alone cost. Retryable: a missing usage envelope on an
-        // otherwise-valid response is treated the same as any other
-        // incomplete-response case.
-        terminalStatus = "TELEMETRY_UNAVAILABLE";
-        errorCategory = "TELEMETRY_UNAVAILABLE";
-        errorMessage = "Provider response was valid but reported no usage telemetry.";
-        retryableFailure = true;
-      } else {
+      // M8 live-gate root-cause correction (Issue #17): telemetry is
+      // captured FIRST, unconditionally, whenever the provider returned a
+      // usage envelope -- regardless of what happens next in this exact
+      // response's content/schema evaluation below. docs/economics.md
+      // Sec 7's "any returned usage/cost data is retained" applies to
+      // every terminal outcome (including INVALID_STRUCTURED_OUTPUT), not
+      // only SUCCESS. The first real live run's generation-ledger
+      // post-mortem proved OpenRouter can and does return real, billed
+      // usage/cost alongside a response whose content failed to parse as
+      // valid structured output -- that telemetry must never be
+      // discarded merely because content/schema evaluation fails.
+      if (result.raw.usage) {
         // chatUsageSchema guarantees prompt_tokens/completion_tokens are
         // present numbers whenever `usage` itself is present (schemas.ts)
         // -- reliable native token counts are therefore already assured
@@ -429,7 +416,40 @@ export async function runLogicalCall(params: {
         if (result.raw.usage.cost !== undefined) {
           actualCostUsd = new Decimal(result.raw.usage.cost).toFixed();
         }
+      }
 
+      const content = result.raw.choices[0]?.message.content ?? null;
+      const parsedJson = content ? safeJsonParse(content) : undefined;
+      const schemaResult =
+        parsedJson === undefined
+          ? null
+          : role === "ADVOCATE"
+            ? advocateSpeechSchema.safeParse(parsedJson)
+            : judgeVerdictSchema.safeParse(parsedJson);
+
+      if (!schemaResult || !schemaResult.success) {
+        // Telemetry captured above (if the provider returned any) is
+        // retained as-is -- never cleared here just because content/
+        // schema evaluation failed after it was captured.
+        terminalStatus = "INVALID_STRUCTURED_OUTPUT";
+        errorCategory = "INVALID_STRUCTURED_OUTPUT";
+        errorMessage =
+          parsedJson === undefined
+            ? "Provider returned no content or invalid JSON."
+            : `${role === "ADVOCATE" ? "Advocate" : "Judge"} output failed schema validation.`;
+        retryableFailure = true;
+      } else if (!result.raw.usage) {
+        // Independent audit correction (Issue #17 blocker 5): schema-valid
+        // output with NO usage telemetry at all cannot become SUCCESS --
+        // there is no reliable basis for input/output token counts, let
+        // alone cost. Retryable: a missing usage envelope on an
+        // otherwise-valid response is treated the same as any other
+        // incomplete-response case.
+        terminalStatus = "TELEMETRY_UNAVAILABLE";
+        errorCategory = "TELEMETRY_UNAVAILABLE";
+        errorMessage = "Provider response was valid but reported no usage telemetry.";
+        retryableFailure = true;
+      } else {
         terminalStatus = "SUCCESS";
 
         if (role === "ADVOCATE") {

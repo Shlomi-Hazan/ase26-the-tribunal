@@ -54,6 +54,25 @@ export function buildFutureCompletionRequest(params: {
         schema: structuredOutput.schema
       }
     },
+    // M8 live-gate root-cause correction (Issue #17): the first real live
+    // run proved a reasoning-capable model can silently consume the
+    // entire max_completion_tokens budget on hidden reasoning tokens
+    // before ever producing the required visible structured output (8/8
+    // attempts terminalized INVALID_STRUCTURED_OUTPUT with
+    // native_finish_reason "max_output_tokens", reasoning tokens ==
+    // completion tokens). Sent ONLY when the exact resolved endpoint
+    // advertises support (never inferred from model/provider name, never
+    // sent to an endpoint that doesn't advertise it -- provider.
+    // require_parameters below rejects any unsupported parameter).
+    // `effort: "minimal"` keeps reasoning available to models that
+    // require it while substantially limiting how much of the fixed
+    // output cap it can consume; `exclude: true` drops reasoning text the
+    // Tribunal never uses from the response. max_completion_tokens
+    // remains the sole authoritative total output ceiling, unchanged by
+    // this correction (Advocate 1000 / Judge 1200).
+    ...(route.supportsReasoningControl
+      ? { reasoning: { effort: "minimal" as const, exclude: true as const } }
+      : {}),
     provider: {
       order: [route.providerEndpointTag],
       only: [route.providerEndpointTag],

@@ -248,6 +248,10 @@ Rules:
 
 Zero means **known zero**, not “we do not know.”
 
+**Correction (M8 live-gate root cause, Issue #17):** "any returned usage/cost data is retained" applies to every terminal status, including `INVALID_STRUCTURED_OUTPUT` — a response whose content failed to parse/validate can still carry a real, provider-reported usage envelope, and that telemetry must never be discarded merely because the content itself was unusable. Execution captures usage/cost immediately once a response is received, before content/schema evaluation runs, so a failed attempt's real spend is never silently lost. The one exception remains unchanged: when the provider genuinely returns no usage envelope at all, the fields stay `null` — never invented as zero.
+
+**Reasoning-capable endpoints (M8 live-gate root cause, Issue #17):** an exact resolved endpoint that advertises OpenRouter's unified `reasoning` request parameter receives an explicit, conservative policy on every Tribunal participant call — `reasoning: { effort: "minimal", exclude: true }` — so a reasoning model cannot silently spend the entire fixed output cap (Advocate 1000 / Judge 1200, unchanged) on hidden reasoning tokens before ever producing the required visible structured output. Reasoning tokens remain inside the existing output cap; this policy is never sent to an endpoint that doesn't advertise support, and is always derived from the exact endpoint the same fresh preflight resolved, never inferred from a model or provider name.
+
 ---
 
 ## 8. Per-Attempt Cost Record

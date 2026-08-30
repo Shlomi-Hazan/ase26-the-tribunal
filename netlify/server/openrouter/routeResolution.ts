@@ -24,6 +24,21 @@ export type ResolvedModelRoute = {
   maxPromptTokens: number | null;
   maxCompletionTokens: number | null;
   supportedParameters: string[];
+  // M8 live-gate root-cause correction (Issue #17): whether this exact
+  // resolved endpoint advertises OpenRouter's unified `reasoning` request
+  // parameter, per its own live supported_parameters -- never inferred
+  // from a model/provider name. Execution uses this to decide whether to
+  // send an explicit conservative reasoning policy (see
+  // executionRequest.ts) so a reasoning-capable model cannot silently
+  // consume the fixed output cap on hidden reasoning tokens before ever
+  // producing the required structured output. Optional (never `false`
+  // where it could instead be omitted) so the separate, unrelated M7A
+  // extraction route type (extraction/routeResolution.ts's
+  // ResolvedExtractionRoute, which shares buildFutureCompletionRequest
+  // but predates and is out of scope for this correction) remains
+  // structurally assignable without adopting reasoning behavior it was
+  // never audited for -- an absent value is always treated as `false`.
+  supportsReasoningControl?: boolean;
   quantization: string | null;
   pricing: PricingSnapshot;
   observedAt: string;
@@ -93,6 +108,10 @@ export const REQUIRED_STRUCTURED_OUTPUT_PARAMETER = "response_format";
 // The current (non-deprecated) bounded-output parameter -- `max_tokens` is
 // documented deprecated and is never used (ADR Decision 4).
 export const REQUIRED_BOUNDED_OUTPUT_PARAMETER = "max_completion_tokens";
+// OpenRouter's unified reasoning-control parameter name (never required
+// for eligibility -- a route without it is still eligible, it simply
+// never receives a `reasoning` field on the completion request).
+export const REASONING_CONTROL_PARAMETER = "reasoning";
 
 export const MIN_COMPLETION_TOKENS: Record<RouteRole, number> = {
   ADVOCATE: 1000,
@@ -319,6 +338,9 @@ export function resolveModelRoute(params: {
     maxPromptTokens: selected.endpoint.max_prompt_tokens ?? null,
     maxCompletionTokens: selected.endpoint.max_completion_tokens ?? null,
     supportedParameters: selected.endpoint.supported_parameters ?? [],
+    supportsReasoningControl: (selected.endpoint.supported_parameters ?? []).includes(
+      REASONING_CONTROL_PARAMETER
+    ),
     quantization: selected.endpoint.quantization ?? null,
     pricing: selected.pricing,
     observedAt

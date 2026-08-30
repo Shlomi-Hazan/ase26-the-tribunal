@@ -15,7 +15,7 @@ import type { RawOpenRouterEndpoint, RawOpenRouterModel } from "../openrouter/sc
 import type { PreflightCase, PreflightRun, PreflightRunLoader } from "../openrouter/preflight";
 import type { PersistedRun } from "../runs";
 import { runPreflight } from "../openrouter/preflight";
-import { advocateSpeechJsonSchema } from "../../../src/prompts/schemas";
+import { advocateSpeechJsonSchema, judgeVerdictJsonSchema } from "../../../src/prompts/schemas";
 import { FakeTribunalExecutionRepository } from "./repository";
 import {
   executeTribunalRun,
@@ -617,6 +617,195 @@ describe("executeTribunalRun", () => {
   });
 
   // ---------------------------------------------------------------
+  // M8 live-gate root-cause correction (Issue #17): reasoning-control
+  // propagation. The first real live run's generation-ledger post-mortem
+  // proved a reasoning-capable model can consume the entire fixed output
+  // cap on hidden reasoning tokens before ever producing visible
+  // structured output. These tests lock the corrected end-to-end
+  // propagation: preflight resolves the exact endpoint's real
+  // supported_parameters -> PreflightParticipantResult carries a narrow
+  // supportsReasoningControl boolean -> toResolvedRoute carries it into
+  // the ResolvedModelRoute execution actually uses -> the real completion
+  // request sent to the provider includes an explicit conservative
+  // reasoning policy only when that flag is true.
+  // ---------------------------------------------------------------
+
+  function eligibleFixtureWithReasoning(): { models: RawOpenRouterModel[]; endpoints: RawOpenRouterEndpoint[] } {
+    return {
+      models: [{ id: MODEL_ID, canonical_slug: MODEL_ID, name: "Model", context_length: 200_000 }],
+      endpoints: [
+        {
+          tag: "azure/swedencentral",
+          provider_name: "Azure",
+          name: "Azure",
+          context_length: 200_000,
+          max_prompt_tokens: 190_000,
+          max_completion_tokens: 4000,
+          supported_parameters: [
+            "response_format",
+            "max_completion_tokens",
+            "reasoning",
+            "reasoning_effort",
+            "include_reasoning"
+          ],
+          quantization: null,
+          status: 0,
+          pricing: { prompt: "0.0000001", completion: "0.0000002" }
+        }
+      ]
+    };
+  }
+
+  it("propagates reasoning support from the exact preflight-resolved endpoint into the real completion request, not inferred from model id", async () => {
+    const run = buildRun();
+    const preflightRunLoader = new FakePreflightRunLoader(run);
+    const preflightProvider = new ScriptedOpenRouterProvider(eligibleFixtureWithReasoning(), allEligibleScripts());
+
+    const preflight = await runPreflight(run.id, { runLoader: preflightRunLoader, provider: preflightProvider });
+    const advocateParticipant = preflight.participants.find((p) => p.participantId === "advocate-pro-1")!;
+
+    expect(advocateParticipant.supportsReasoningControl).toBe(true);
+
+    const route = toResolvedRoute(advocateParticipant);
+    let capturedRequest: ProviderChatRequest | null = null;
+    const repository = new FakeTribunalExecutionRepository();
+    const budgetGuard = new RuntimeBudgetGuard(new Decimal("5.00"));
+
+    const provider: OpenRouterProvider = {
+      async listModels() {
+        return eligibleFixtureWithReasoning().models;
+      },
+      async listEndpoints() {
+        return eligibleFixtureWithReasoning().endpoints;
+      },
+      async createChatCompletion(request) {
+        capturedRequest = request;
+
+        return successResult({ speech: "A well-formed speech." });
+      }
+    };
+
+    await runLogicalCall({
+      runId: run.id,
+      participantConfigId: "config-advocate-pro-1",
+      role: "ADVOCATE",
+      promptVersion: ADVOCATE_PROMPT_VERSION,
+      route,
+      conservativeMaxCostUsd: advocateParticipant.conservativeParticipantCostUsd!,
+      remainingRequiredReserveUsd: new Decimal(0),
+      budgetGuard,
+      systemPrompt: "system prompt",
+      userMessage: personalityMarker("advocate-pro-1"),
+      maxCompletionTokens: 1000,
+      structuredOutput: { name: "advocate_speech", schema: advocateSpeechJsonSchema },
+      deps: { runLoader: new FakeRunLoader(run, repository), preflightRunLoader, provider, repository }
+    });
+
+    expect(capturedRequest).not.toBeNull();
+    expect(capturedRequest!.reasoning).toEqual({ effort: "minimal", exclude: true });
+    // The existing output cap remains the sole authoritative ceiling,
+    // unchanged by this correction.
+    expect(capturedRequest!.max_completion_tokens).toBe(1000);
+  });
+
+  it("sends no reasoning field when the exact preflight-resolved endpoint does not advertise support", async () => {
+    const run = buildRun();
+    const preflightRunLoader = new FakePreflightRunLoader(run);
+    const preflightProvider = new ScriptedOpenRouterProvider(eligibleFixture(), allEligibleScripts());
+
+    const preflight = await runPreflight(run.id, { runLoader: preflightRunLoader, provider: preflightProvider });
+    const advocateParticipant = preflight.participants.find((p) => p.participantId === "advocate-pro-1")!;
+
+    expect(advocateParticipant.supportsReasoningControl).toBe(false);
+
+    const route = toResolvedRoute(advocateParticipant);
+    let capturedRequest: ProviderChatRequest | null = null;
+    const repository = new FakeTribunalExecutionRepository();
+    const budgetGuard = new RuntimeBudgetGuard(new Decimal("5.00"));
+
+    const provider: OpenRouterProvider = {
+      async listModels() {
+        return eligibleFixture().models;
+      },
+      async listEndpoints() {
+        return eligibleFixture().endpoints;
+      },
+      async createChatCompletion(request) {
+        capturedRequest = request;
+
+        return successResult({ speech: "A well-formed speech." });
+      }
+    };
+
+    await runLogicalCall({
+      runId: run.id,
+      participantConfigId: "config-advocate-pro-1",
+      role: "ADVOCATE",
+      promptVersion: ADVOCATE_PROMPT_VERSION,
+      route,
+      conservativeMaxCostUsd: advocateParticipant.conservativeParticipantCostUsd!,
+      remainingRequiredReserveUsd: new Decimal(0),
+      budgetGuard,
+      systemPrompt: "system prompt",
+      userMessage: personalityMarker("advocate-pro-1"),
+      maxCompletionTokens: 1000,
+      structuredOutput: { name: "advocate_speech", schema: advocateSpeechJsonSchema },
+      deps: { runLoader: new FakeRunLoader(run, repository), preflightRunLoader, provider, repository }
+    });
+
+    expect(capturedRequest).not.toBeNull();
+    expect(capturedRequest!.reasoning).toBeUndefined();
+  });
+
+  it("judge cap remains 1200, unaffected by the reasoning-policy correction, and judges also receive the policy when eligible", async () => {
+    const run = buildRun();
+    const preflightRunLoader = new FakePreflightRunLoader(run);
+    const preflightProvider = new ScriptedOpenRouterProvider(eligibleFixtureWithReasoning(), allEligibleScripts());
+
+    const preflight = await runPreflight(run.id, { runLoader: preflightRunLoader, provider: preflightProvider });
+    const judgeParticipant = preflight.participants.find((p) => p.participantId === "judge-1")!;
+    const route = toResolvedRoute(judgeParticipant);
+
+    let capturedRequest: ProviderChatRequest | null = null;
+    const repository = new FakeTribunalExecutionRepository();
+    const budgetGuard = new RuntimeBudgetGuard(new Decimal("5.00"));
+
+    const provider: OpenRouterProvider = {
+      async listModels() {
+        return eligibleFixtureWithReasoning().models;
+      },
+      async listEndpoints() {
+        return eligibleFixtureWithReasoning().endpoints;
+      },
+      async createChatCompletion(request) {
+        capturedRequest = request;
+
+        return successResult({ verdict: "GUILTY", reasoning: "Reasoned verdict." });
+      }
+    };
+
+    await runLogicalCall({
+      runId: run.id,
+      participantConfigId: "config-judge-1",
+      role: "JUDGE",
+      promptVersion: JUDGE_PROMPT_VERSION,
+      route,
+      conservativeMaxCostUsd: judgeParticipant.conservativeParticipantCostUsd!,
+      remainingRequiredReserveUsd: new Decimal(0),
+      budgetGuard,
+      systemPrompt: "system prompt",
+      userMessage: personalityMarker("judge-1"),
+      maxCompletionTokens: 1200,
+      structuredOutput: { name: "judge_verdict", schema: judgeVerdictJsonSchema },
+      deps: { runLoader: new FakeRunLoader(run, repository), preflightRunLoader, provider, repository }
+    });
+
+    expect(capturedRequest).not.toBeNull();
+    expect(capturedRequest!.max_completion_tokens).toBe(1200);
+    expect(capturedRequest!.reasoning).toEqual({ effort: "minimal", exclude: true });
+  });
+
+  // ---------------------------------------------------------------
   // Blocker 4 (independent audit correction): attempt pricing snapshot.
   // ---------------------------------------------------------------
 
@@ -735,6 +924,152 @@ describe("executeTribunalRun", () => {
 
     expect(outcome.outcome).not.toBe("completed");
     expect(repository.completedRuns.has(run.id)).toBe(false);
+  });
+
+  // ---------------------------------------------------------------
+  // M8 live-gate root-cause correction (Issue #17): failed structured-
+  // output attempts must retain any usage/cost telemetry the provider
+  // actually returned (docs/economics.md Sec 7, "any returned usage/cost
+  // data is retained"). The first real live run's generation-ledger
+  // post-mortem proved OpenRouter can and does return real, billed usage
+  // alongside a response whose content failed to parse as valid
+  // structured output -- that telemetry must never be discarded merely
+  // because content/schema evaluation failed.
+  // ---------------------------------------------------------------
+
+  function invalidContentResult(usage: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    cost?: number;
+  } | undefined): ProviderChatResult {
+    return {
+      raw: {
+        id: "gen-invalid-content",
+        // Empty content -> safeJsonParse returns undefined -> schema
+        // validation never even runs -- exactly the first real live
+        // run's own "Provider returned no content or invalid JSON." case.
+        choices: [{ message: { content: "" } }],
+        usage
+      }
+    } as ProviderChatResult;
+  }
+
+  it("INVALID_STRUCTURED_OUTPUT with usage + usage.cost present -> tokens, actualCostUsd, and derivedCostUsd are all persisted, not discarded", async () => {
+    const run = buildRun();
+    const scripts = allEligibleScripts();
+    scripts["advocate-pro-1"] = [
+      invalidContentResult({ prompt_tokens: 407, completion_tokens: 960, cost: 0.000444785 }),
+      invalidContentResult({ prompt_tokens: 407, completion_tokens: 960, cost: 0.000444785 })
+    ];
+
+    const provider = new ScriptedOpenRouterProvider(eligibleFixture(), scripts);
+    const { deps, repository } = buildDeps(run, provider);
+
+    const outcome = await executeTribunalRun(run.id, deps);
+
+    expect(outcome).toEqual({ outcome: "failed", failureCode: "ADVOCATE_TERMINAL_FAILURE" });
+
+    const attempts = [...repository.attempts.values()].filter(
+      (a) => a.participantConfigId === "config-advocate-pro-1"
+    );
+
+    expect(attempts).toHaveLength(2);
+    for (const attempt of attempts) {
+      expect(attempt.status).toBe("INVALID_STRUCTURED_OUTPUT");
+      expect(attempt.inputTokens).toBe(407);
+      expect(attempt.outputTokens).toBe(960);
+      expect(attempt.actualCostUsd).toBe("0.000444785");
+      expect(attempt.derivedCostUsd).toBeTruthy();
+      expect(new Decimal(attempt.derivedCostUsd ?? "0").gt(0)).toBe(true);
+    }
+  });
+
+  it("INVALID_STRUCTURED_OUTPUT with usage present but usage.cost absent -> actualCostUsd is null, derivedCostUsd is independently computed and persisted", async () => {
+    const run = buildRun();
+    const scripts = allEligibleScripts();
+    scripts["advocate-pro-1"] = [
+      invalidContentResult({ prompt_tokens: 406, completion_tokens: 960 }),
+      invalidContentResult({ prompt_tokens: 406, completion_tokens: 960 })
+    ];
+
+    const provider = new ScriptedOpenRouterProvider(eligibleFixture(), scripts);
+    const { deps, repository } = buildDeps(run, provider);
+
+    await executeTribunalRun(run.id, deps);
+
+    const attempts = [...repository.attempts.values()].filter(
+      (a) => a.participantConfigId === "config-advocate-pro-1"
+    );
+
+    expect(attempts).toHaveLength(2);
+    for (const attempt of attempts) {
+      expect(attempt.status).toBe("INVALID_STRUCTURED_OUTPUT");
+      expect(attempt.inputTokens).toBe(406);
+      expect(attempt.outputTokens).toBe(960);
+      expect(attempt.actualCostUsd).toBeNull();
+      expect(attempt.derivedCostUsd).toBeTruthy();
+      expect(new Decimal(attempt.derivedCostUsd ?? "0").gt(0)).toBe(true);
+    }
+  });
+
+  it("INVALID_STRUCTURED_OUTPUT with usage genuinely absent -> telemetry remains NULL, never invented as zero", async () => {
+    const run = buildRun();
+    const scripts = allEligibleScripts();
+    scripts["advocate-pro-1"] = [
+      invalidContentResult(undefined),
+      invalidContentResult(undefined)
+    ];
+
+    const provider = new ScriptedOpenRouterProvider(eligibleFixture(), scripts);
+    const { deps, repository } = buildDeps(run, provider);
+
+    await executeTribunalRun(run.id, deps);
+
+    const attempts = [...repository.attempts.values()].filter(
+      (a) => a.participantConfigId === "config-advocate-pro-1"
+    );
+
+    expect(attempts).toHaveLength(2);
+    for (const attempt of attempts) {
+      expect(attempt.status).toBe("INVALID_STRUCTURED_OUTPUT");
+      expect(attempt.inputTokens).toBeNull();
+      expect(attempt.outputTokens).toBeNull();
+      expect(attempt.actualCostUsd).toBeNull();
+      expect(attempt.derivedCostUsd).toBeNull();
+    }
+  });
+
+  it("a failed attempt's retained real/derived spend still feeds the runtime budget guard exactly like a successful attempt's", async () => {
+    const run = buildRun();
+    const scripts = allEligibleScripts();
+    // A large real cost on a FAILED (invalid-structured-output) attempt
+    // must still count against the guard -- otherwise a run could spend
+    // real money on failed attempts that never shows up in the runtime
+    // ceiling enforcement.
+    scripts["advocate-pro-1"] = [
+      invalidContentResult({ prompt_tokens: 407, completion_tokens: 960, cost: 4.9999 }),
+      invalidContentResult({ prompt_tokens: 407, completion_tokens: 960, cost: 4.9999 })
+    ];
+
+    const provider = new ScriptedOpenRouterProvider(eligibleFixture(), scripts);
+    const { deps, repository } = buildDeps(run, provider);
+
+    const outcome = await executeTribunalRun(run.id, deps);
+
+    // The retained real spend from the FAILED attempt(s) alone already
+    // exceeds the $5.00 ceiling once both attempts have run -- the
+    // runtime guard must reflect this exactly as it would for successful
+    // attempts, not treat a failed attempt's real cost as zero.
+    expect(outcome.outcome).toBe("failed");
+
+    let totalRecorded = new Decimal(0);
+    for (const attempt of repository.attempts.values()) {
+      if (attempt.actualCostUsd) {
+        totalRecorded = totalRecorded.plus(attempt.actualCostUsd);
+      }
+    }
+
+    expect(totalRecorded.gt(0)).toBe(true);
   });
 });
 

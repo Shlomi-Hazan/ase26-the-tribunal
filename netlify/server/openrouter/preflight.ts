@@ -121,6 +121,11 @@ export type PreflightParticipantResult = {
   modelEligible: boolean;
   providerName: string | null;
   providerEndpointIdOrTag: string | null;
+  // M8 live-gate root-cause correction (Issue #17): carried straight from
+  // the exact ResolvedModelRoute THIS preflight resolved -- never
+  // inferred from configuredModelId/canonicalModelId. false for every
+  // ineligible participant (no route was ever resolved to ask).
+  supportsReasoningControl: boolean;
   priceTier: PriceTier | null;
   conservativeParticipantCostUsd: string | null;
   pricing: {
@@ -233,6 +238,7 @@ export async function runPreflight(
         modelEligible: false,
         providerName: null,
         providerEndpointIdOrTag: null,
+        supportsReasoningControl: false,
         priceTier: null,
         conservativeParticipantCostUsd: null,
         pricing: null,
@@ -298,6 +304,7 @@ export async function runPreflight(
         modelEligible: false,
         providerName: null,
         providerEndpointIdOrTag: null,
+        supportsReasoningControl: false,
         priceTier: null,
         conservativeParticipantCostUsd: null,
         pricing: null,
@@ -328,6 +335,7 @@ export async function runPreflight(
         modelEligible: false,
         providerName: null,
         providerEndpointIdOrTag: null,
+        supportsReasoningControl: false,
         priceTier: null,
         conservativeParticipantCostUsd: null,
         pricing: null,
@@ -360,6 +368,7 @@ export async function runPreflight(
       modelEligible: true,
       providerName: route.providerDisplayName,
       providerEndpointIdOrTag: route.providerEndpointTag,
+      supportsReasoningControl: route.supportsReasoningControl ?? false,
       // Route-discovery tier: what this exact resolved route/pricing
       // would conservatively cost across the complete fixed Tribunal
       // shape -- a reusable category of the ROUTE, not a measurement of

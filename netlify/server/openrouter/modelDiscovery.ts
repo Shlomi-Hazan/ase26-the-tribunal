@@ -43,7 +43,11 @@ import {
   requireCacheObservedAt,
   type Clock
 } from "./cache";
-import { checkAliasOrDynamicModel, evaluateEndpoint } from "./routeResolution";
+import {
+  checkAliasOrDynamicModel,
+  evaluateEndpoint,
+  REASONING_CONTROL_PARAMETER
+} from "./routeResolution";
 import type { PreflightReasonCode } from "./errors";
 import type { PriceTier } from "./pricing";
 import { classifyPriceTier, toDecimalString, TIER_THRESHOLDS_USD } from "./pricing";
@@ -248,6 +252,9 @@ export function resolveSharedTribunalRoute(params: {
       maxPromptTokens: endpoint.max_prompt_tokens ?? null,
       maxCompletionTokens: endpoint.max_completion_tokens ?? null,
       supportedParameters: endpoint.supported_parameters ?? [],
+      supportsReasoningControl: (endpoint.supported_parameters ?? []).includes(
+        REASONING_CONTROL_PARAMETER
+      ),
       quantization: endpoint.quantization ?? null,
       pricing,
       observedAt
