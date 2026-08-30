@@ -45,8 +45,8 @@ Do not begin later milestones by destabilizing incomplete earlier work.
 | 6 | Participant Configuration | ✅ Complete |
 | 7 | OpenRouter Infrastructure | ✅ Complete |
 | 7A | Smart Tribunal Package Extraction | ✅ Complete |
-| 8 | Shared-Model Tribunal | 🟡 Current |
-| 9 | Separate-Model Tribunal | ⬜ Planned |
+| 8 | Shared-Model Tribunal | ✅ Complete |
+| 9 | Separate-Model Tribunal | 🟡 Current |
 | 10 | Protocol & Economics | ⬜ Planned |
 | 11 | Past Cases & Auditability | ⬜ Planned |
 | 12 | Agent Mode, If Confirmed | ⬜ Conditional |
@@ -445,7 +445,7 @@ A free-form text or text-extractable PDF dossier can be converted into a reviewa
 
 ---
 
-# M8 — Shared-Model Tribunal
+# M8 — Shared-Model Tribunal ✅
 
 Full planning contract: [Issue #17](https://github.com/Shlomi-Hazan/ase26-the-tribunal/issues/17)
 (execution order, atomic budget/claim state machine, BYOK Background
@@ -456,13 +456,20 @@ below.
 **Corrected during implementation (independent review, Issue #17):**
 runtime inference is user-funded, reusing the M7A BYOK boundary
 unchanged (`docs/economics.md` §22.1) -- the developer/operator's
-`OPENROUTER_API_KEY` is never reachable by the execution path. The
-"one explicitly authorized low-cost/free end-to-end real run" mentioned
-below did **not** happen in the implementation pass: automated tests use
-`FakeOpenRouterProvider` exclusively, and the first real paid completion
-can only occur via an actual user's own connected credential, not the
-developer's. Execution-time preflight strictly precedes the atomic run
-claim (`ARCHITECTURE.md` §7.4).
+`OPENROUTER_API_KEY` is never reachable by the execution path. Execution-time
+preflight strictly precedes the atomic run claim (`ARCHITECTURE.md` §7.4).
+
+**Closed out (merged via [PR #18](https://github.com/Shlomi-Hazan/ase26-the-tribunal/pull/18), approved head `0e860386f2ff5636019aaf70d4f8bb2f9e80468e`, merge commit `2159646122795fdccdcdbc3bcabaab4bf89d6ab8`):**
+three human-authorized real live Tribunal runs occurred against the
+user's own connected OpenRouter credential (never the developer's key).
+The first two exposed real integration defects -- reasoning-capable
+models exhausting the fixed output cap, then a reasoning
+capability/effort compatibility gap -- each driving a source correction
+before the next attempt. The third run completed cleanly on the approved
+M8 head: 4 concurrent advocates, hard barrier, 3 concurrent judges,
+deterministic majority, exactly 7 provider attempts with zero retries
+and zero eighth logical model call, total cost $0.001551385. Full
+evidence for all three runs is preserved in Issue #17's comment history.
 
 ## Goal
 
@@ -493,11 +500,13 @@ With mocked OpenRouter:
 - terminal judge failure blocks completion
 - duplicate worker does not duplicate calls
 
-Then one explicitly authorized low-cost/free end-to-end real run.
+Then one explicitly authorized low-cost/free end-to-end real run --
+delivered as three human-authorized real runs (see closeout note above);
+the third completed the requirement.
 
 ## Exit condition
 
-Shared-Model Mode completes a real run without violating output, failure, idempotency, or cost rules.
+Shared-Model Mode completes a real run without violating output, failure, idempotency, or cost rules. ✅ Met by live run `352a4856-f282-4250-80fd-d78ca90f17e0`.
 
 ---
 
@@ -668,6 +677,15 @@ Polish the already-correct workflow without adding product scope.
 - contrast
 - reduced-motion support
 - long speech/reasoning readability
+
+## Known follow-up (observed during M8 live verification)
+
+On the Result page, Judge reasoning and Advocate arguments sit inside
+Accordions (e.g. "Judge I — GUILTY", "PRO I — PRO"), but nothing signals
+the row is expandable -- content and function are correct, this is
+purely a discoverability gap. Preferred future direction: a visible
+expand chevron and/or an explicit "View reasoning" / "View argument"
+affordance.
 
 ## Exit condition
 
