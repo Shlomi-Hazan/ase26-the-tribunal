@@ -91,12 +91,36 @@ export type RawPublicPricing = z.infer<typeof publicPricingSchema>;
 // GET /models -- coarse discovery metadata (ADR Decision 2).
 // ---------------------------------------------------------------------
 
+// M8 reasoning-compatibility correction (Issue #17): OpenRouter's
+// model-level reasoning metadata -- distinct from an ENDPOINT's
+// supported_parameters (which only says "this endpoint accepts a
+// `reasoning` request field," never which effort values it actually
+// honors). `supported_efforts` is the array of effort strings this MODEL
+// is documented to accept; `null` means every gateway effort is
+// accepted, an omitted field means the model exposes no effort
+// selection at all. Every field here is optional/untrusted metadata --
+// z.array(z.string()) deliberately never pins a closed enum of known
+// effort strings, so an unrecognized future value from OpenRouter is
+// preserved rather than rejected; the application's own selection logic
+// (routeResolution.ts's resolveReasoningPolicy) is solely responsible
+// for never choosing an effort value it does not recognize.
+export const rawOpenRouterModelReasoningSchema = z.object({
+  mandatory: z.boolean().optional(),
+  default_enabled: z.boolean().optional(),
+  supported_efforts: z.array(z.string()).nullable().optional(),
+  default_effort: z.string().optional(),
+  supports_max_tokens: z.boolean().optional()
+});
+
+export type RawOpenRouterModelReasoning = z.infer<typeof rawOpenRouterModelReasoningSchema>;
+
 export const rawOpenRouterModelSchema = z.object({
   id: z.string().min(1),
   canonical_slug: z.string().min(1).optional(),
   name: z.string().optional(),
   context_length: z.number().optional(),
   supported_parameters: z.array(z.string()).optional(),
+  reasoning: rawOpenRouterModelReasoningSchema.optional(),
   pricing: publicPricingSchema.optional()
 });
 

@@ -169,16 +169,18 @@ const RETRYABLE_CATEGORIES: ReadonlySet<ProviderErrorCategory> = new Set([
 
 // Only the fields buildFutureCompletionRequest actually reads
 // (isUniquelyPinnable, canonicalModelId, providerEndpointTag,
-// supportsReasoningControl, pricing.effectiveInputPricePerToken/
+// reasoningEffort, pricing.effectiveInputPricePerToken/
 // completionPricePerToken/requestPriceUsd) are populated faithfully from
 // this SAME worker invocation's fresh preflight result -- the remaining
 // ResolvedModelRoute fields are structurally required by the type but not
 // consumed by anything this module calls, so they carry harmless
 // placeholder values rather than triggering a second metadata fetch
-// merely to populate fields nothing reads. supportsReasoningControl in
-// particular (M8 live-gate root-cause correction, Issue #17) MUST come
-// from this exact preflight's own resolved route, never re-derived here
-// -- execution always uses the same route fresh preflight selected.
+// merely to populate fields nothing reads. reasoningEffort in particular
+// (M8 reasoning-compatibility correction, Issue #17) MUST come from this
+// exact preflight's own resolved route -- never re-derived, never
+// re-resolved here -- execution always uses the same route fresh
+// preflight selected, including the exact effort value (or null) that
+// preflight already proved safe for this exact endpoint + model.
 // Exported for the direct runLogicalCall unit test below (execution.test.ts).
 export function toResolvedRoute(participant: PreflightParticipantResult): ResolvedModelRoute {
   if (
@@ -222,7 +224,7 @@ export function toResolvedRoute(participant: PreflightParticipantResult): Resolv
     maxPromptTokens: null,
     maxCompletionTokens: null,
     supportedParameters: [],
-    supportsReasoningControl: participant.supportsReasoningControl,
+    reasoningEffort: participant.reasoningEffort,
     quantization: null,
     pricing,
     observedAt: participant.pricing.observedAt

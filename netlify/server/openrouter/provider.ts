@@ -37,13 +37,17 @@ export type ProviderChatRequest = {
     type: "json_schema";
     json_schema: { name: string; strict: true; schema: Record<string, unknown> };
   };
-  // M8 live-gate root-cause correction (Issue #17): OpenRouter's unified
-  // reasoning-control parameter, sent only for an exact endpoint proven
-  // (via ResolvedModelRoute.supportsReasoningControl) to support it --
-  // never a broader shape than the one conservative V1 policy this
-  // application actually sends (see executionRequest.ts), so this stays a
-  // narrow literal type rather than an open-ended `unknown`/passthrough.
-  reasoning?: { effort: "minimal"; exclude: true };
+  // M8 reasoning-compatibility correction (Issue #17): OpenRouter's
+  // unified reasoning-control parameter, sent only for an exact endpoint
+  // AND exact model proven (via ResolvedModelRoute.reasoningEffort) to
+  // safely accept one of M8 V1's two supported effort values -- never a
+  // broader shape than what this application actually sends (see
+  // executionRequest.ts), so this stays a narrow literal union rather
+  // than an open-ended `unknown`/passthrough. "medium"/"high"/"xhigh"/
+  // "max" and a reasoning.max_tokens-style budget are deliberately never
+  // representable here -- out of scope for M8 V1 (see
+  // routeResolution.ts's resolveReasoningPolicy).
+  reasoning?: { effort: "minimal" | "low"; exclude: true };
   provider?: ProviderPreferences;
 };
 

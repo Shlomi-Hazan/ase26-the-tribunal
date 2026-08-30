@@ -39,17 +39,23 @@ function resolvedRoute() {
   return result.route;
 }
 
-// M8 live-gate root-cause correction (Issue #17): a second fixture whose
-// only difference from resolvedRoute() is that its endpoint advertises
-// the unified `reasoning` parameter -- proves reasoning-policy injection
-// is driven by the exact resolved endpoint's own supported_parameters,
-// never by the model id (both fixtures share the same configuredModelId/
+// M8 live-gate root-cause correction (Issue #17), refined by the M8
+// reasoning-compatibility correction: a second fixture whose only
+// differences from resolvedRoute() are that its endpoint advertises the
+// unified `reasoning` parameter AND its model declares reasoning
+// metadata proving "minimal" is safe (supported_efforts: null) -- proves
+// reasoning-policy injection requires BOTH the exact endpoint's
+// capability AND the exact model's own semantics, never inferred from
+// the model id (both fixtures share the same configuredModelId/
 // canonicalModelId).
-function resolvedRouteWithReasoningSupport() {
+function resolvedRouteWithReasoningSupport(
+  supportedEfforts: string[] | null = null
+) {
   const model: RawOpenRouterModel = {
     id: "openai/gpt-5",
     canonical_slug: "openai/gpt-5",
-    name: "GPT-5"
+    name: "GPT-5",
+    reasoning: { supported_efforts: supportedEfforts }
   };
   const endpoint: RawOpenRouterEndpoint = {
     tag: "azure/swedencentral",
@@ -288,6 +294,59 @@ describe("buildFutureCompletionRequest (ADR Decision 6)", () => {
       expect(request.provider?.allow_fallbacks).toBe(false);
       expect(request.provider?.require_parameters).toBe(true);
       expect(request.provider?.max_price).toBeDefined();
+    });
+
+    // M8 reasoning-compatibility correction (Issue #17): the sent effort
+    // value must be whatever route.reasoningEffort actually resolved to
+    // -- never hard-coded to "minimal" -- proven here with a model whose
+    // metadata only proves "low" safe, never "minimal".
+    it("sends the exact resolved effort value (\"low\"), not a hard-coded \"minimal\", when that is what preflight proved safe", () => {
+      const route = resolvedRouteWithReasoningSupport(["low", "medium"]);
+
+      expect(route.reasoningEffort).toBe("low");
+
+      const request = buildFutureCompletionRequest({
+        route,
+        messages: [{ role: "user", content: "hi" }],
+        maxCompletionTokens: 1000,
+        structuredOutput: { name: "advocate_speech", schema: { type: "object" } }
+      });
+
+      expect(request.reasoning).toEqual({ effort: "low", exclude: true });
+    });
+
+    it("sends no reasoning field when the model's own metadata cannot establish a safe M8 V1 effort, even though the endpoint advertises the parameter", () => {
+      const model: RawOpenRouterModel = {
+        id: "openai/gpt-5",
+        canonical_slug: "openai/gpt-5",
+        name: "GPT-5",
+        reasoning: { supported_efforts: ["medium", "high"] }
+      };
+      const endpoint: RawOpenRouterEndpoint = {
+        tag: "azure/swedencentral",
+        provider_name: "Azure",
+        name: "Azure | GPT-5",
+        context_length: 200_000,
+        max_prompt_tokens: 190_000,
+        max_completion_tokens: 4000,
+        supported_parameters: ["response_format", "max_completion_tokens", "reasoning"],
+        quantization: null,
+        status: 0,
+        pricing: { prompt: "0.000003", completion: "0.000006" }
+      };
+      const result = resolveModelRoute({
+        configuredModelId: "openai/gpt-5",
+        models: [model],
+        endpoints: [endpoint],
+        role: "ADVOCATE",
+        estimatedInputTokens: 500,
+        outputCapTokens: 1000,
+        observedAt: "2026-08-26T00:00:00.000Z"
+      });
+
+      expect(result.eligible).toBe(false);
+      if (result.eligible) return;
+      expect(result.reasonCodes).toEqual(["REASONING_CONTROL_UNSUPPORTED"]);
     });
   });
 });

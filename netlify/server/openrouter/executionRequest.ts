@@ -60,18 +60,29 @@ export function buildFutureCompletionRequest(params: {
     // before ever producing the required visible structured output (8/8
     // attempts terminalized INVALID_STRUCTURED_OUTPUT with
     // native_finish_reason "max_output_tokens", reasoning tokens ==
-    // completion tokens). Sent ONLY when the exact resolved endpoint
-    // advertises support (never inferred from model/provider name, never
-    // sent to an endpoint that doesn't advertise it -- provider.
-    // require_parameters below rejects any unsupported parameter).
-    // `effort: "minimal"` keeps reasoning available to models that
-    // require it while substantially limiting how much of the fixed
-    // output cap it can consume; `exclude: true` drops reasoning text the
+    // completion tokens).
+    //
+    // M8 reasoning-compatibility correction (Issue #17): the SECOND real
+    // live run then proved that merely knowing an endpoint accepts the
+    // `reasoning` parameter NAME is not enough -- OpenRouter rejected the
+    // whole request (INVALID_PROVIDER_REQUEST, zero generation created)
+    // when the effort VALUE this application unconditionally sent
+    // ("minimal") was not one the specific model/route actually honors.
+    // `route.reasoningEffort` is therefore never a bare boolean: it is
+    // the exact, pre-validated effort value (routeResolution.ts's
+    // resolveReasoningPolicy, using both this exact endpoint's
+    // supported_parameters AND this exact model's own reasoning
+    // metadata) this application already proved safe to send for this
+    // exact route -- or `null`/absent, meaning send no reasoning field
+    // at all (never inferred from model/provider name; never sent to an
+    // endpoint that doesn't advertise the parameter -- provider.
+    // require_parameters below still rejects any unsupported parameter
+    // as defense in depth). `exclude: true` drops reasoning text the
     // Tribunal never uses from the response. max_completion_tokens
     // remains the sole authoritative total output ceiling, unchanged by
-    // this correction (Advocate 1000 / Judge 1200).
-    ...(route.supportsReasoningControl
-      ? { reasoning: { effort: "minimal" as const, exclude: true as const } }
+    // either correction (Advocate 1000 / Judge 1200).
+    ...(route.reasoningEffort
+      ? { reasoning: { effort: route.reasoningEffort, exclude: true as const } }
       : {}),
     provider: {
       order: [route.providerEndpointTag],

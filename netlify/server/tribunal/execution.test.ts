@@ -15,6 +15,7 @@ import type { RawOpenRouterEndpoint, RawOpenRouterModel } from "../openrouter/sc
 import type { PreflightCase, PreflightRun, PreflightRunLoader } from "../openrouter/preflight";
 import type { PersistedRun } from "../runs";
 import { runPreflight } from "../openrouter/preflight";
+import { resolveSharedTribunalRoute } from "../openrouter/modelDiscovery";
 import { advocateSpeechJsonSchema, judgeVerdictJsonSchema } from "../../../src/prompts/schemas";
 import { FakeTribunalExecutionRepository } from "./repository";
 import {
@@ -617,22 +618,37 @@ describe("executeTribunalRun", () => {
   });
 
   // ---------------------------------------------------------------
-  // M8 live-gate root-cause correction (Issue #17): reasoning-control
-  // propagation. The first real live run's generation-ledger post-mortem
-  // proved a reasoning-capable model can consume the entire fixed output
-  // cap on hidden reasoning tokens before ever producing visible
-  // structured output. These tests lock the corrected end-to-end
-  // propagation: preflight resolves the exact endpoint's real
-  // supported_parameters -> PreflightParticipantResult carries a narrow
-  // supportsReasoningControl boolean -> toResolvedRoute carries it into
-  // the ResolvedModelRoute execution actually uses -> the real completion
-  // request sent to the provider includes an explicit conservative
-  // reasoning policy only when that flag is true.
+  // M8 live-gate root-cause correction (Issue #17), refined by the M8
+  // reasoning-compatibility correction: reasoning-control propagation.
+  // The first real live run's generation-ledger post-mortem proved a
+  // reasoning-capable model can consume the entire fixed output cap on
+  // hidden reasoning tokens before ever producing visible structured
+  // output; the second real live run then proved that merely knowing an
+  // endpoint accepts the `reasoning` parameter NAME is not enough --
+  // OpenRouter rejected the request outright when the effort VALUE sent
+  // wasn't one the model actually honors. These tests lock the corrected
+  // end-to-end propagation: preflight resolves the exact endpoint's real
+  // supported_parameters AND the exact model's own reasoning metadata ->
+  // PreflightParticipantResult carries a narrow reasoningEffort ("minimal"
+  // | "low" | null) -> toResolvedRoute carries it into the
+  // ResolvedModelRoute execution actually uses -> the real completion
+  // request sent to the provider includes that exact effort value only
+  // when one was proven safe.
   // ---------------------------------------------------------------
 
-  function eligibleFixtureWithReasoning(): { models: RawOpenRouterModel[]; endpoints: RawOpenRouterEndpoint[] } {
+  function eligibleFixtureWithReasoning(
+    supportedEfforts: string[] | null = null
+  ): { models: RawOpenRouterModel[]; endpoints: RawOpenRouterEndpoint[] } {
     return {
-      models: [{ id: MODEL_ID, canonical_slug: MODEL_ID, name: "Model", context_length: 200_000 }],
+      models: [
+        {
+          id: MODEL_ID,
+          canonical_slug: MODEL_ID,
+          name: "Model",
+          context_length: 200_000,
+          reasoning: { supported_efforts: supportedEfforts }
+        }
+      ],
       endpoints: [
         {
           tag: "azure/swedencentral",
@@ -664,7 +680,7 @@ describe("executeTribunalRun", () => {
     const preflight = await runPreflight(run.id, { runLoader: preflightRunLoader, provider: preflightProvider });
     const advocateParticipant = preflight.participants.find((p) => p.participantId === "advocate-pro-1")!;
 
-    expect(advocateParticipant.supportsReasoningControl).toBe(true);
+    expect(advocateParticipant.reasoningEffort).toBe("minimal");
 
     const route = toResolvedRoute(advocateParticipant);
     let capturedRequest: ProviderChatRequest | null = null;
@@ -716,7 +732,7 @@ describe("executeTribunalRun", () => {
     const preflight = await runPreflight(run.id, { runLoader: preflightRunLoader, provider: preflightProvider });
     const advocateParticipant = preflight.participants.find((p) => p.participantId === "advocate-pro-1")!;
 
-    expect(advocateParticipant.supportsReasoningControl).toBe(false);
+    expect(advocateParticipant.reasoningEffort).toBeNull();
 
     const route = toResolvedRoute(advocateParticipant);
     let capturedRequest: ProviderChatRequest | null = null;
@@ -803,6 +819,72 @@ describe("executeTribunalRun", () => {
     expect(capturedRequest).not.toBeNull();
     expect(capturedRequest!.max_completion_tokens).toBe(1200);
     expect(capturedRequest!.reasoning).toEqual({ effort: "minimal", exclude: true });
+  });
+
+  // M8 reasoning-compatibility correction (Issue #17): the exact same
+  // configured/canonical model id resolves a DIFFERENT reasoning policy
+  // purely because the fetched model metadata differs between the two
+  // preflight calls -- proves the decision is never a model-name lookup
+  // or any other form of hard-coding.
+  it("the identical model id propagates a different reasoningEffort through preflight solely because model metadata differs", async () => {
+    const run = buildRun();
+
+    const unsafeFixture = eligibleFixtureWithReasoning(["medium", "high"]);
+    const unsafePreflight = await runPreflight(run.id, {
+      runLoader: new FakePreflightRunLoader(run),
+      provider: new ScriptedOpenRouterProvider(unsafeFixture, allEligibleScripts())
+    });
+    const unsafeParticipant = unsafePreflight.participants.find((p) => p.participantId === "advocate-pro-1")!;
+
+    const safeFixture = eligibleFixtureWithReasoning(["low"]);
+    const safePreflight = await runPreflight(run.id, {
+      runLoader: new FakePreflightRunLoader(run),
+      provider: new ScriptedOpenRouterProvider(safeFixture, allEligibleScripts())
+    });
+    const safeParticipant = safePreflight.participants.find((p) => p.participantId === "advocate-pro-1")!;
+
+    expect(unsafeFixture.models[0].id).toBe(safeFixture.models[0].id);
+    expect(unsafeParticipant.configuredModelId).toBe(safeParticipant.configuredModelId);
+
+    // Same model id -> the "medium"/"high"-only fixture cannot establish
+    // a safe M8 V1 effort and is ineligible; the "low"-supporting fixture
+    // is eligible with reasoningEffort "low".
+    expect(unsafeParticipant.modelEligible).toBe(false);
+    expect(unsafeParticipant.reasonCodes).toContain("REASONING_CONTROL_UNSUPPORTED");
+    expect(safeParticipant.modelEligible).toBe(true);
+    expect(safeParticipant.reasoningEffort).toBe("low");
+  });
+
+  // M8 reasoning-compatibility correction (Issue #17): discovery
+  // (listEligibleModels, GET /api/models) and authoritative preflight
+  // (runPreflight, used at execution time) share the exact same
+  // evaluateEndpoint/resolveReasoningPolicy logic -- this proves they
+  // reach the SAME eligibility conclusion for the same model+endpoint
+  // metadata, never a UI-only filter that execution-time preflight fails
+  // to also enforce.
+  it("discovery and authoritative preflight agree that a reasoning-incompatible model is ineligible", async () => {
+    const run = buildRun();
+    const unsafeFixture = eligibleFixtureWithReasoning(["medium", "high"]);
+
+    const discoveryResult = resolveSharedTribunalRoute({
+      configuredModelId: MODEL_ID,
+      models: unsafeFixture.models,
+      endpoints: unsafeFixture.endpoints,
+      observedAt: "2026-08-26T00:00:00.000Z"
+    });
+
+    expect(discoveryResult.eligible).toBe(false);
+    if (discoveryResult.eligible) return;
+    expect(discoveryResult.reasonCodes).toContain("REASONING_CONTROL_UNSUPPORTED");
+
+    const preflight = await runPreflight(run.id, {
+      runLoader: new FakePreflightRunLoader(run),
+      provider: new ScriptedOpenRouterProvider(unsafeFixture, allEligibleScripts())
+    });
+    const participant = preflight.participants.find((p) => p.participantId === "advocate-pro-1")!;
+
+    expect(participant.modelEligible).toBe(false);
+    expect(participant.reasonCodes).toContain("REASONING_CONTROL_UNSUPPORTED");
   });
 
   // ---------------------------------------------------------------
