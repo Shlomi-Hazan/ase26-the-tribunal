@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { listEligibleModels, resolveSharedTribunalRoute } from "./modelDiscovery";
+import { listEligibleModels, listRoleEligibleModels, resolveSharedTribunalRoute } from "./modelDiscovery";
 import { ModelMetadataCache } from "./cache";
 import { FakeOpenRouterProvider } from "./fakeProvider";
 import {
@@ -245,5 +245,110 @@ describe("listEligibleModels -- fails closed (skips the model) when the cache's 
     const results = await listEligibleModels({ provider, modelCache, endpointCache, clock });
 
     expect(results).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------
+// M9 (Separate-Model Tribunal, Issue #20) -- role-aware discovery.
+// Corrected Test Plan items R, S, T.
+// ---------------------------------------------------------------------
+
+describe("listRoleEligibleModels (M9 role-aware discovery)", () => {
+  it("R: Shared discovery (listEligibleModels) behavior is completely unchanged by the addition of role-aware discovery", async () => {
+    // Same fixture as the existing dual-role "G" test: one endpoint
+    // capable of serving both roles.
+    const provider = new FakeOpenRouterProvider();
+    provider.listModelsResult = [model()];
+    provider.listEndpointsResult["openai/gpt-5"] = [endpoint({ max_completion_tokens: 1200 })];
+
+    const shared = await listEligibleModels({ provider });
+
+    expect(shared).toHaveLength(1);
+    expect(shared[0].id).toBe("openai/gpt-5");
+    expect(shared[0]).not.toHaveProperty("role");
+    expect(shared[0]).not.toHaveProperty("conservativeParticipantEstimateUsd");
+    expect(shared[0].conservativeFullTribunalEstimateUsd).toBeTruthy();
+  });
+
+  it("S: a model that is Advocate-eligible but Judge-ineligible appears in the ADVOCATE role catalog", async () => {
+    // Below JUDGE's 1200-token minimum but at/above ADVOCATE's 1000 --
+    // the exact same "advocate-only" endpoint shape the dual-role tests
+    // above already use to prove Shared discovery excludes it entirely.
+    const provider = new FakeOpenRouterProvider();
+    provider.listModelsResult = [model()];
+    provider.listEndpointsResult["openai/gpt-5"] = [
+      endpoint({ tag: "advocate-only", max_completion_tokens: 1000 })
+    ];
+
+    const advocateCatalog = await listRoleEligibleModels("ADVOCATE", { provider });
+    const judgeCatalog = await listRoleEligibleModels("JUDGE", { provider });
+    const sharedCatalog = await listEligibleModels({ provider });
+
+    expect(advocateCatalog).toHaveLength(1);
+    expect(advocateCatalog[0].id).toBe("openai/gpt-5");
+    expect(advocateCatalog[0].role).toBe("ADVOCATE");
+    expect(judgeCatalog).toHaveLength(0);
+    // Confirms this is a genuine role-aware discovery, not a relaxation
+    // of Shared discovery's own (correctly) stricter dual-role contract.
+    expect(sharedCatalog).toHaveLength(0);
+  });
+
+  it("T: every Judge-eligible route is structurally also Advocate-eligible (JUDGE's contract strictly dominates ADVOCATE's on every dimension) -- there is no Judge-only-eligible scenario to construct under the current locked eligibility formula", async () => {
+    // MIN_COMPLETION_TOKENS: ADVOCATE 1000 <= JUDGE 1200, and JUDGE's
+    // worst-case input reservation (which includes all 4 advocate
+    // speeches) is always >= ADVOCATE's own -- so JUDGE's context/
+    // completion-token requirements are a strict superset of ADVOCATE's.
+    // This test proves that relationship directly rather than assuming
+    // it, using a "just barely judge-eligible" endpoint.
+    const provider = new FakeOpenRouterProvider();
+    provider.listModelsResult = [model()];
+    provider.listEndpointsResult["openai/gpt-5"] = [
+      endpoint({ tag: "dual-capable", max_completion_tokens: 1200 })
+    ];
+
+    const advocateCatalog = await listRoleEligibleModels("ADVOCATE", { provider });
+    const judgeCatalog = await listRoleEligibleModels("JUDGE", { provider });
+
+    expect(judgeCatalog).toHaveLength(1);
+    // Whenever a route is judge-eligible, it is also advocate-eligible.
+    expect(advocateCatalog).toHaveLength(1);
+    expect(advocateCatalog[0].id).toBe(judgeCatalog[0].id);
+  });
+
+  it("role catalog entries expose a participant-scoped estimate, never the full-Tribunal figure or a misleading price tier", async () => {
+    const provider = new FakeOpenRouterProvider();
+    provider.listModelsResult = [model()];
+    provider.listEndpointsResult["openai/gpt-5"] = [endpoint({ max_completion_tokens: 1200 })];
+
+    const [advocateEntry] = await listRoleEligibleModels("ADVOCATE", { provider });
+    const [judgeEntry] = await listRoleEligibleModels("JUDGE", { provider });
+
+    expect(advocateEntry.role).toBe("ADVOCATE");
+    expect(judgeEntry.role).toBe("JUDGE");
+    expect(advocateEntry.conservativeParticipantEstimateUsd).toBeTruthy();
+    expect(judgeEntry.conservativeParticipantEstimateUsd).toBeTruthy();
+    // Judge's per-participant estimate is strictly larger than the
+    // advocate's for the same route (matches routeTierEconomics.test.ts).
+    expect(Number(judgeEntry.conservativeParticipantEstimateUsd)).toBeGreaterThan(
+      Number(advocateEntry.conservativeParticipantEstimateUsd)
+    );
+    expect(advocateEntry).not.toHaveProperty("priceTier");
+    expect(advocateEntry).not.toHaveProperty("conservativeFullTribunalEstimateUsd");
+  });
+
+  it("isFree is exactly true only for a genuinely $0 route, scale-invariant across roles", async () => {
+    const provider = new FakeOpenRouterProvider();
+    provider.listModelsResult = [model()];
+    provider.listEndpointsResult["openai/gpt-5"] = [
+      endpoint({ max_completion_tokens: 1200, pricing: { prompt: "0", completion: "0" } })
+    ];
+
+    const [advocateEntry] = await listRoleEligibleModels("ADVOCATE", { provider });
+    const [judgeEntry] = await listRoleEligibleModels("JUDGE", { provider });
+
+    expect(advocateEntry.isFree).toBe(true);
+    expect(judgeEntry.isFree).toBe(true);
+    expect(advocateEntry.conservativeParticipantEstimateUsd).toBe("0");
+    expect(judgeEntry.conservativeParticipantEstimateUsd).toBe("0");
   });
 });

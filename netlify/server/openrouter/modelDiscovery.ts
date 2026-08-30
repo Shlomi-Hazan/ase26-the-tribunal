@@ -46,13 +46,18 @@ import {
 import {
   checkAliasOrDynamicModel,
   evaluateEndpoint,
-  toModelReasoningMetadata
+  resolveModelRoute,
+  toModelReasoningMetadata,
+  type RouteRole
 } from "./routeResolution";
 import type { PreflightReasonCode } from "./errors";
 import type { PriceTier } from "./pricing";
 import { classifyPriceTier, toDecimalString, TIER_THRESHOLDS_USD } from "./pricing";
 import type { ResolvedModelRoute } from "./routeResolution";
-import { computeConservativeFullTribunalCostForRoute } from "./routeTierEconomics";
+import {
+  computeConservativeFullTribunalCostForRoute,
+  computeConservativeParticipantEstimateForRoute
+} from "./routeTierEconomics";
 import {
   ADVOCATE_OUTPUT_CAP_TOKENS,
   JUDGE_OUTPUT_CAP_TOKENS,
@@ -383,6 +388,134 @@ export async function listEligibleModels(deps: ModelDiscoveryDeps): Promise<Elig
   );
 
   return perModelResults.filter((result): result is EligibleModel => result !== null);
+}
+
+// ---------------------------------------------------------------------
+// M9 (Separate-Model Tribunal, Issue #20) -- role-aware discovery.
+// Shared-Tribunal discovery above (EligibleModel/listEligibleModels) is
+// completely UNCHANGED by this section -- it still requires the same
+// exact endpoint to pass BOTH the advocate and judge contract, correct
+// for Shared Mode where one model must serve the whole Tribunal.
+//
+// Separate Mode needs the opposite: a model eligible for ONLY one role
+// (e.g. Advocate-capable but Judge-incapable) must still be discoverable
+// for the role it IS eligible for. This reuses the exact same centralized
+// primitive frozen-run preflight already uses per participant
+// (routeResolution.ts's resolveModelRoute, role-parameterized) rather
+// than a second eligibility implementation -- only the discovery-time
+// orchestration (bounded-concurrency sweep, cache reuse, response
+// shaping) is new, mirroring listEligibleModels's own structure.
+// ---------------------------------------------------------------------
+
+export type RoleEligibleModel = {
+  id: string;
+  canonicalModelId: string;
+  name: string;
+  providerName: string;
+  contextLength: number;
+  promptPricePerMillion: string;
+  completionPricePerMillion: string;
+  // Scale-invariant: true only when this role's own conservative
+  // participant estimate is exactly $0.00 (classifyPriceTier's own FREE
+  // rule, ADR Decision 12 Section 23 -- "FREE requires the complete
+  // figure to be exactly $0.00"). Deliberately NOT a BUDGET/PREMIUM/
+  // ABOVE_PREMIUM/HARD_BLOCK classification: those thresholds
+  // (pricing.ts's TIER_THRESHOLDS_USD) are calibrated for a COMPLETE
+  // 4-advocate/3-judge run's cost, not one participant's -- applying
+  // them to a per-participant figure would misrepresent a role-only
+  // route's real price category, which is exactly the "misleading
+  // participant price tier" this deliberately avoids inventing.
+  isFree: boolean;
+  role: RouteRole;
+  // The conservative, retry-reserved, safety-factored discovery estimate
+  // for ONE participant of this role on this exact route (see
+  // routeTierEconomics.ts's computeConservativeParticipantEstimateForRoute
+  // for the exact additive relationship to the Shared full-Tribunal
+  // estimate). Never the same figure as EligibleModel's
+  // conservativeFullTribunalEstimateUsd -- a role-only route is never
+  // described as capable of serving the complete Tribunal.
+  conservativeParticipantEstimateUsd: string;
+  supportsStructuredOutput: boolean;
+  pricingObservedAt: string;
+};
+
+export async function listRoleEligibleModels(
+  role: RouteRole,
+  deps: ModelDiscoveryDeps
+): Promise<RoleEligibleModel[]> {
+  const clock = deps.clock ?? Date.now;
+  const modelCache =
+    deps.modelCache ?? new ModelMetadataCache<RawOpenRouterModel[]>(undefined, clock);
+  const endpointCache =
+    deps.endpointCache ?? new ModelMetadataCache<RawOpenRouterEndpoint[]>(undefined, clock);
+
+  const models = await cachedFetch(modelCache, "models", () => deps.provider.listModels());
+
+  const estimatedInputTokens =
+    role === "ADVOCATE" ? worstCaseAdvocateInputTokens() : worstCaseJudgeInputTokens();
+  const outputCapTokens = role === "ADVOCATE" ? ADVOCATE_OUTPUT_CAP_TOKENS : JUDGE_OUTPUT_CAP_TOKENS;
+
+  const perModelResults = await mapWithBoundedConcurrency(
+    models,
+    MODEL_DISCOVERY_ENDPOINT_CONCURRENCY,
+    async (model): Promise<RoleEligibleModel | null> => {
+      const separatorIndex = model.id.indexOf("/");
+      const author = separatorIndex === -1 ? model.id : model.id.slice(0, separatorIndex);
+      const slug = separatorIndex === -1 ? "" : model.id.slice(separatorIndex + 1);
+
+      let endpoints: RawOpenRouterEndpoint[];
+      let endpointObservedAt: string;
+
+      try {
+        endpoints = await cachedFetch(endpointCache, model.id, () =>
+          deps.provider.listEndpoints(author, slug)
+        );
+        // Same fail-closed contract as listEligibleModels above -- a
+        // missing observation timestamp skips the model rather than
+        // fabricating one.
+        endpointObservedAt = requireCacheObservedAt(endpointCache, model.id);
+      } catch {
+        return null;
+      }
+
+      const resolution = resolveModelRoute({
+        configuredModelId: model.id,
+        models,
+        endpoints,
+        role,
+        estimatedInputTokens,
+        outputCapTokens,
+        observedAt: endpointObservedAt
+      });
+
+      if (!resolution.eligible) {
+        return null;
+      }
+
+      const { route } = resolution;
+      const conservativeParticipantEstimateUsd = computeConservativeParticipantEstimateForRoute(
+        route.pricing,
+        role
+      );
+
+      return {
+        id: route.configuredModelId,
+        canonicalModelId: route.canonicalModelId,
+        name: model.name ?? route.canonicalModelId,
+        providerName: route.providerDisplayName,
+        contextLength: route.contextLength,
+        promptPricePerMillion: toDecimalString(route.pricing.promptPricePerMillion),
+        completionPricePerMillion: toDecimalString(route.pricing.completionPricePerMillion),
+        isFree: conservativeParticipantEstimateUsd.isZero(),
+        role,
+        conservativeParticipantEstimateUsd: toDecimalString(conservativeParticipantEstimateUsd),
+        supportsStructuredOutput: route.supportedParameters.includes("response_format"),
+        pricingObservedAt: route.observedAt
+      };
+    }
+  );
+
+  return perModelResults.filter((result): result is RoleEligibleModel => result !== null);
 }
 
 // Re-exported for callers that only need the fixed threshold constants

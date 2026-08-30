@@ -33,7 +33,7 @@ import {
   TOTAL_JUDGES
 } from "./economicsConstants";
 import type { PricingSnapshot } from "./pricing";
-import { computeCandidateAttemptCostUsd } from "./routeResolution";
+import { computeCandidateAttemptCostUsd, type RouteRole } from "./routeResolution";
 import {
   ADVOCATE_OUTPUT_CAP_TOKENS,
   JUDGE_OUTPUT_CAP_TOKENS,
@@ -47,29 +47,50 @@ import {
 const ADVOCATE_TIER_INPUT_TOKENS = worstCaseAdvocateInputTokens();
 const JUDGE_TIER_INPUT_TOKENS = worstCaseJudgeInputTokens();
 
+// M9 (Separate-Model Tribunal, Issue #20): ONE participant's own
+// conservative discovery estimate for the given role at this exact
+// resolved route's pricing -- the same per-attempt cost + retry reserve
+// + safety-factor treatment computeConservativeFullTribunalCostForRoute
+// already applies, just scoped to a single seat instead of the whole
+// fixed Tribunal shape. This is deliberately NOT the same figure as
+// "this route's full-Tribunal discovery estimate" (a route eligible for
+// only one role is never described as capable of serving the complete
+// Tribunal) and NOT the same figure as a frozen run's real
+// conservativeParticipantCostUsd (preflight.ts, computed from THIS run's
+// actual claimed pricing snapshot) -- this is route-discovery-only,
+// exactly like computeConservativeFullTribunalCostForRoute already is.
+//
+// Mathematically additive by construction: because Decimal multiplication
+// is associative/commutative (no float drift, no intermediate rounding),
+// `4 * computeConservativeParticipantEstimateForRoute(pricing, "ADVOCATE")
+// + 3 * computeConservativeParticipantEstimateForRoute(pricing, "JUDGE")`
+// is EXACTLY computeConservativeFullTribunalCostForRoute(pricing) for the
+// same pricing snapshot -- verified by both this refactor (the full-
+// Tribunal function below is now derived from this one, not a parallel
+// formula) and a dedicated equivalence test
+// (routeTierEconomics.test.ts).
+export function computeConservativeParticipantEstimateForRoute(
+  pricing: PricingSnapshot,
+  role: RouteRole
+): Decimal {
+  const inputTokens = role === "ADVOCATE" ? ADVOCATE_TIER_INPUT_TOKENS : JUDGE_TIER_INPUT_TOKENS;
+  const outputCapTokens = role === "ADVOCATE" ? ADVOCATE_OUTPUT_CAP_TOKENS : JUDGE_OUTPUT_CAP_TOKENS;
+  const attemptCostUsd = computeCandidateAttemptCostUsd(pricing, inputTokens, outputCapTokens);
+
+  return attemptCostUsd.times(MAX_PROVIDER_ATTEMPTS_PER_LOGICAL_CALL).times(BUDGET_SAFETY_FACTOR);
+}
+
 // 4 x conservative advocate attempt cost x retry reserve
 // + 3 x conservative judge attempt cost x retry reserve
-// then the approved safety factor applied ONCE to that sum.
+// then the approved safety factor applied ONCE to that sum -- now derived
+// from computeConservativeParticipantEstimateForRoute (see its own
+// comment above for the exact equivalence this preserves) rather than a
+// second, independently-written formula.
 export function computeConservativeFullTribunalCostForRoute(
   pricing: PricingSnapshot
 ): Decimal {
-  const advocateAttemptCostUsd = computeCandidateAttemptCostUsd(
-    pricing,
-    ADVOCATE_TIER_INPUT_TOKENS,
-    ADVOCATE_OUTPUT_CAP_TOKENS
-  );
-  const judgeAttemptCostUsd = computeCandidateAttemptCostUsd(
-    pricing,
-    JUDGE_TIER_INPUT_TOKENS,
-    JUDGE_OUTPUT_CAP_TOKENS
-  );
+  const advocateEstimateUsd = computeConservativeParticipantEstimateForRoute(pricing, "ADVOCATE");
+  const judgeEstimateUsd = computeConservativeParticipantEstimateForRoute(pricing, "JUDGE");
 
-  const advocatesTotalUsd = advocateAttemptCostUsd
-    .times(MAX_PROVIDER_ATTEMPTS_PER_LOGICAL_CALL)
-    .times(TOTAL_ADVOCATES);
-  const judgesTotalUsd = judgeAttemptCostUsd
-    .times(MAX_PROVIDER_ATTEMPTS_PER_LOGICAL_CALL)
-    .times(TOTAL_JUDGES);
-
-  return advocatesTotalUsd.plus(judgesTotalUsd).times(BUDGET_SAFETY_FACTOR);
+  return advocateEstimateUsd.times(TOTAL_ADVOCATES).plus(judgeEstimateUsd.times(TOTAL_JUDGES));
 }
