@@ -55,7 +55,7 @@ function resolvedRouteWithReasoningSupport(
     id: "openai/gpt-5",
     canonical_slug: "openai/gpt-5",
     name: "GPT-5",
-    reasoning: { supported_efforts: supportedEfforts }
+    reasoning: { mandatory: true, supported_efforts: supportedEfforts }
   };
   const endpoint: RawOpenRouterEndpoint = {
     tag: "azure/swedencentral",
@@ -320,7 +320,7 @@ describe("buildFutureCompletionRequest (ADR Decision 6)", () => {
         id: "openai/gpt-5",
         canonical_slug: "openai/gpt-5",
         name: "GPT-5",
-        reasoning: { supported_efforts: ["medium", "high"] }
+        reasoning: { mandatory: true, supported_efforts: ["medium", "high"] }
       };
       const endpoint: RawOpenRouterEndpoint = {
         tag: "azure/swedencentral",

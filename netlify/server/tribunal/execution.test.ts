@@ -646,7 +646,7 @@ describe("executeTribunalRun", () => {
           canonical_slug: MODEL_ID,
           name: "Model",
           context_length: 200_000,
-          reasoning: { supported_efforts: supportedEfforts }
+          reasoning: { mandatory: true, supported_efforts: supportedEfforts }
         }
       ],
       endpoints: [

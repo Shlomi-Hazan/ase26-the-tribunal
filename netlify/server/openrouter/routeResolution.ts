@@ -137,8 +137,13 @@ export type ReasoningEffort = "minimal" | "low";
 // Internal, camelCase mirror of the raw (snake_case, untrusted)
 // OpenRouter model-level reasoning metadata -- converted once at the
 // schemas.ts boundary, never read from the raw shape past this module.
+// `mandatory` is required, mirroring OpenRouter's own OpenAPI contract
+// (ModelReasoning.required = ["mandatory"]) -- its presence (this
+// object existing at all) is what identifies a reasoning model; its own
+// boolean value is never special-cased by resolveReasoningPolicy below
+// (M8 V1 deliberately never relies on provider/model reasoning defaults).
 export type ModelReasoningMetadata = {
-  mandatory?: boolean;
+  mandatory: boolean;
   defaultEnabled?: boolean;
   supportedEfforts?: string[] | null;
   defaultEffort?: string;
@@ -183,21 +188,35 @@ export function resolveReasoningPolicy(params: {
 }): ReasoningPolicyResult {
   const { modelReasoning, endpointSupportsReasoningParameter } = params;
 
-  // The exact endpoint doesn't accept the unified reasoning parameter at
-  // all -- nothing this application could send would be honored, so
-  // nothing is sent, regardless of what the model's own metadata claims.
-  // This is the existing, unchanged non-reasoning-endpoint behavior.
-  if (!endpointSupportsReasoningParameter) {
+  // Independent review correction (residual fail-closed gap): MODEL
+  // semantics are decided FIRST, before the endpoint's own capability is
+  // ever consulted. The endpoint-first ordering this replaced could
+  // return "eligible, no reasoning field" for a genuine reasoning model
+  // simply because THIS endpoint happens not to expose reasoning
+  // control -- silently recreating the exact class of failure live run
+  // #1 exposed (an uncontrolled/default/mandatory-reasoning model
+  // exhausting the fixed output cap), just via a different endpoint.
+  //
+  // No model-level reasoning metadata at all -- per OpenRouter's own
+  // documented model contract, the reasoning block is omitted entirely
+  // for non-reasoning models, so this is conclusive: an ordinary
+  // non-reasoning model, never made ineligible merely because metadata
+  // omits a reasoning block, regardless of what this endpoint supports.
+  if (!modelReasoning) {
     return { eligible: true, reasoningEffort: null };
   }
 
-  // No model-level reasoning metadata at all -- treated as an ordinary
-  // non-reasoning model. Deliberate, conservative default (never widen
-  // this into "assume reasoning applies" without real signal); ordinary
-  // non-reasoning models must never become ineligible merely because
-  // OpenRouter's model metadata omits a reasoning block.
-  if (!modelReasoning) {
-    return { eligible: true, reasoningEffort: null };
+  // The model IS a reasoning model (OpenRouter's ModelReasoning.mandatory
+  // is a required field whenever the block is present at all -- its
+  // presence alone is the signal, not any particular field's value).
+  // M8 V1 refuses to rely on provider/model reasoning defaults --
+  // `default_enabled`/`mandatory`'s actual values are deliberately never
+  // special-cased here. If the exact selected endpoint doesn't expose
+  // reasoning control, M8 has no way to constrain this model's
+  // reasoning behavior at all -- fail closed rather than gamble on an
+  // unknown default.
+  if (!endpointSupportsReasoningParameter) {
+    return { eligible: false, reasonCode: "REASONING_CONTROL_UNSUPPORTED" };
   }
 
   const supportedEfforts = modelReasoning.supportedEfforts;

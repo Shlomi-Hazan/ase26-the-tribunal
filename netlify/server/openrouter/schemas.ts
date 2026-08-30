@@ -105,7 +105,10 @@ export type RawPublicPricing = z.infer<typeof publicPricingSchema>;
 // (routeResolution.ts's resolveReasoningPolicy) is solely responsible
 // for never choosing an effort value it does not recognize.
 export const rawOpenRouterModelReasoningSchema = z.object({
-  mandatory: z.boolean().optional(),
+  // Required per the current official OpenRouter OpenAPI contract
+  // (ModelReasoning.required = ["mandatory"]) -- every other field
+  // remains optional/nullable exactly as that schema permits.
+  mandatory: z.boolean(),
   default_enabled: z.boolean().optional(),
   supported_efforts: z.array(z.string()).nullable().optional(),
   default_effort: z.string().optional(),
