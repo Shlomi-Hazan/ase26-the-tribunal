@@ -30,6 +30,13 @@ export type PreflightReasonCode =
   | "ENDPOINT_NOT_PINNABLE"
   | "STRUCTURED_OUTPUT_UNSUPPORTED"
   | "BOUNDED_OUTPUT_UNSUPPORTED"
+  // M8 reasoning-compatibility correction (Issue #17): the exact
+  // endpoint advertises the unified `reasoning` request parameter, but
+  // the MODEL's own reasoning metadata does not identify a safe M8 V1
+  // effort value ("minimal" or "low") to send -- never conflated with
+  // STRUCTURED_OUTPUT_UNSUPPORTED/BOUNDED_OUTPUT_UNSUPPORTED, which are
+  // endpoint-capability gaps, not a model-reasoning-semantics gap.
+  | "REASONING_CONTROL_UNSUPPORTED"
   | "CONTEXT_TOO_SMALL"
   | "PRICING_UNAVAILABLE"
   | "PRICING_UNREPRESENTABLE"

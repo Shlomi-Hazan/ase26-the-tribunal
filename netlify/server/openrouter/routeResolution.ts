@@ -6,7 +6,7 @@
 import Decimal from "decimal.js";
 import type { PreflightReasonCode } from "./errors";
 import { buildPricingSnapshot, type PricingSnapshot } from "./pricing";
-import type { RawOpenRouterEndpoint, RawOpenRouterModel } from "./schemas";
+import type { RawOpenRouterEndpoint, RawOpenRouterModel, RawOpenRouterModelReasoning } from "./schemas";
 
 export type ResolvedModelRoute = {
   configuredModelId: string;
@@ -24,6 +24,25 @@ export type ResolvedModelRoute = {
   maxPromptTokens: number | null;
   maxCompletionTokens: number | null;
   supportedParameters: string[];
+  // M8 reasoning-compatibility correction (Issue #17): the exact,
+  // conservative M8 V1 reasoning effort this route is SAFE to send, or
+  // `null` when no reasoning field should be sent at all -- never a bare
+  // "this endpoint accepts a reasoning parameter" boolean (the second
+  // real live run proved that conflation causes OpenRouter itself to
+  // reject the request: an endpoint can generically accept the
+  // `reasoning` parameter NAME while still rejecting the specific effort
+  // VALUE this application would otherwise blindly send). Always derived
+  // from resolveReasoningPolicy() using BOTH this exact endpoint's own
+  // supported_parameters AND the exact model's own reasoning metadata --
+  // never inferred from a model/provider name. Optional (never present
+  // as an explicit `null` where it could instead be omitted) so the
+  // separate, unrelated M7A extraction route type
+  // (extraction/routeResolution.ts's ResolvedExtractionRoute, which
+  // shares buildFutureCompletionRequest but predates and is out of scope
+  // for this correction) remains structurally assignable without
+  // adopting reasoning behavior it was never audited for -- an absent
+  // value is always treated as "send no reasoning field."
+  reasoningEffort?: ReasoningEffort | null;
   quantization: string | null;
   pricing: PricingSnapshot;
   observedAt: string;
@@ -93,11 +112,136 @@ export const REQUIRED_STRUCTURED_OUTPUT_PARAMETER = "response_format";
 // The current (non-deprecated) bounded-output parameter -- `max_tokens` is
 // documented deprecated and is never used (ADR Decision 4).
 export const REQUIRED_BOUNDED_OUTPUT_PARAMETER = "max_completion_tokens";
+// OpenRouter's unified reasoning-control parameter name (never required
+// for eligibility -- a route without it is still eligible, it simply
+// never receives a `reasoning` field on the completion request).
+export const REASONING_CONTROL_PARAMETER = "reasoning";
 
 export const MIN_COMPLETION_TOKENS: Record<RouteRole, number> = {
   ADVOCATE: 1000,
   JUDGE: 1200
 };
+
+// ---------------------------------------------------------------------
+// Reasoning-effort compatibility (M8 reasoning-compatibility correction,
+// Issue #17). Deliberately narrow for M8 V1: only "minimal" and "low"
+// are ever selected -- never "medium"/"high"/"xhigh"/"max", and never a
+// reasoning.max_tokens-style budget (a genuinely different request
+// shape, out of scope here). A model this policy cannot safely control
+// is excluded from the eligible Tribunal catalog entirely -- fail
+// closed, not a broader adapter.
+// ---------------------------------------------------------------------
+
+export type ReasoningEffort = "minimal" | "low";
+
+// Internal, camelCase mirror of the raw (snake_case, untrusted)
+// OpenRouter model-level reasoning metadata -- converted once at the
+// schemas.ts boundary, never read from the raw shape past this module.
+// `mandatory` is required, mirroring OpenRouter's own OpenAPI contract
+// (ModelReasoning.required = ["mandatory"]) -- its presence (this
+// object existing at all) is what identifies a reasoning model; its own
+// boolean value is never special-cased by resolveReasoningPolicy below
+// (M8 V1 deliberately never relies on provider/model reasoning defaults).
+export type ModelReasoningMetadata = {
+  mandatory: boolean;
+  defaultEnabled?: boolean;
+  supportedEfforts?: string[] | null;
+  defaultEffort?: string;
+  supportsMaxTokens?: boolean;
+};
+
+export function toModelReasoningMetadata(
+  raw: RawOpenRouterModelReasoning | undefined
+): ModelReasoningMetadata | null {
+  if (!raw) {
+    return null;
+  }
+
+  return {
+    mandatory: raw.mandatory,
+    defaultEnabled: raw.default_enabled,
+    supportedEfforts: raw.supported_efforts,
+    defaultEffort: raw.default_effort,
+    supportsMaxTokens: raw.supports_max_tokens
+  };
+}
+
+export type ReasoningPolicyResult =
+  | { eligible: true; reasoningEffort: ReasoningEffort | null }
+  | { eligible: false; reasonCode: "REASONING_CONTROL_UNSUPPORTED" };
+
+// The DEFECT this corrects: "this endpoint accepts the unified
+// `reasoning` parameter" (an ENDPOINT capability) is not the same fact
+// as "this model accepts our specific effort-based reasoning policy" (a
+// MODEL semantics question) -- conflating them let a model/route become
+// Tribunal-eligible even though M8 could not safely construct the exact
+// reasoning request it intended to send (the second real live run's
+// `INVALID_PROVIDER_REQUEST` rejection). This function is the sole
+// place that decision is made, using ONLY:
+//   - whether the exact resolved endpoint advertises the `reasoning`
+//     parameter name (never inferred, read from live supported_parameters);
+//   - the exact model's own reasoning metadata (never inferred, read
+//     from the live GET /models response) -- never a model/provider name.
+export function resolveReasoningPolicy(params: {
+  modelReasoning: ModelReasoningMetadata | null;
+  endpointSupportsReasoningParameter: boolean;
+}): ReasoningPolicyResult {
+  const { modelReasoning, endpointSupportsReasoningParameter } = params;
+
+  // Independent review correction (residual fail-closed gap): MODEL
+  // semantics are decided FIRST, before the endpoint's own capability is
+  // ever consulted. The endpoint-first ordering this replaced could
+  // return "eligible, no reasoning field" for a genuine reasoning model
+  // simply because THIS endpoint happens not to expose reasoning
+  // control -- silently recreating the exact class of failure live run
+  // #1 exposed (an uncontrolled/default/mandatory-reasoning model
+  // exhausting the fixed output cap), just via a different endpoint.
+  //
+  // No model-level reasoning metadata at all -- per OpenRouter's own
+  // documented model contract, the reasoning block is omitted entirely
+  // for non-reasoning models, so this is conclusive: an ordinary
+  // non-reasoning model, never made ineligible merely because metadata
+  // omits a reasoning block, regardless of what this endpoint supports.
+  if (!modelReasoning) {
+    return { eligible: true, reasoningEffort: null };
+  }
+
+  // The model IS a reasoning model (OpenRouter's ModelReasoning.mandatory
+  // is a required field whenever the block is present at all -- its
+  // presence alone is the signal, not any particular field's value).
+  // M8 V1 refuses to rely on provider/model reasoning defaults --
+  // `default_enabled`/`mandatory`'s actual values are deliberately never
+  // special-cased here. If the exact selected endpoint doesn't expose
+  // reasoning control, M8 has no way to constrain this model's
+  // reasoning behavior at all -- fail closed rather than gamble on an
+  // unknown default.
+  if (!endpointSupportsReasoningParameter) {
+    return { eligible: false, reasonCode: "REASONING_CONTROL_UNSUPPORTED" };
+  }
+
+  const supportedEfforts = modelReasoning.supportedEfforts;
+
+  // `null` is OpenRouter's own documented "every gateway effort is
+  // accepted" signal -- "minimal" is always safe to choose under it.
+  if (supportedEfforts === null) {
+    return { eligible: true, reasoningEffort: "minimal" };
+  }
+
+  // An omitted (`undefined`) supportedEfforts is explicitly NOT the same
+  // as `null` -- OpenRouter documents omission as "this model does not
+  // expose effort selection," never as "accepts everything." Falling
+  // through to the fail-closed branch below is intentional, not an
+  // oversight (see test: "supported_efforts omitted -> fail closed").
+  if (supportedEfforts?.includes("minimal")) {
+    return { eligible: true, reasoningEffort: "minimal" };
+  }
+
+  if (supportedEfforts?.includes("low")) {
+    return { eligible: true, reasoningEffort: "low" };
+  }
+
+  return { eligible: false, reasonCode: "REASONING_CONTROL_UNSUPPORTED" };
+}
 
 // Numeric endpoint `status` semantics are not pinned by any locked ADR/SPEC
 // decision -- 0 (or absent) is treated as usable, any other numeric value
@@ -121,6 +265,7 @@ export type EndpointEvaluation =
   | {
       eligible: true;
       pricing: PricingSnapshot;
+      reasoningEffort: ReasoningEffort | null;
     }
   | { eligible: false; reasonCode: PreflightReasonCode };
 
@@ -132,6 +277,14 @@ export function evaluateEndpoint(params: {
   outputCapTokens: number;
   allTagsForModel: string[];
   observedAt: string;
+  // M8 reasoning-compatibility correction (Issue #17): the exact
+  // model's own reasoning metadata (never inferred from a name).
+  // Optional/defaulted to `null` so every existing call site that
+  // predates this correction and doesn't pass it keeps evaluating a
+  // route exactly as an ordinary non-reasoning model -- unchanged
+  // behavior for every route that doesn't actually need reasoning
+  // control.
+  modelReasoning?: ModelReasoningMetadata | null;
 }): EndpointEvaluation {
   const {
     modelId,
@@ -140,7 +293,8 @@ export function evaluateEndpoint(params: {
     estimatedInputTokens,
     outputCapTokens,
     allTagsForModel,
-    observedAt
+    observedAt,
+    modelReasoning = null
   } = params;
 
   if (!isEndpointStatusUsable(endpoint.status)) {
@@ -190,7 +344,20 @@ export function evaluateEndpoint(params: {
     return { eligible: false, reasonCode: "ENDPOINT_NOT_PINNABLE" };
   }
 
-  return { eligible: true, pricing: pricingResult.snapshot };
+  const reasoningPolicy = resolveReasoningPolicy({
+    modelReasoning,
+    endpointSupportsReasoningParameter: supportedParameters.includes(REASONING_CONTROL_PARAMETER)
+  });
+
+  if (!reasoningPolicy.eligible) {
+    return { eligible: false, reasonCode: reasoningPolicy.reasonCode };
+  }
+
+  return {
+    eligible: true,
+    pricing: pricingResult.snapshot,
+    reasoningEffort: reasoningPolicy.reasoningEffort
+  };
 }
 
 // ---------------------------------------------------------------------
@@ -257,8 +424,14 @@ export function resolveModelRoute(params: {
 
   const allTagsForModel = endpoints.map((endpoint) => endpoint.tag);
   const reasonCodes = new Set<PreflightReasonCode>();
+  const modelReasoning = toModelReasoningMetadata(model.reasoning);
 
-  type Candidate = { endpoint: RawOpenRouterEndpoint; pricing: PricingSnapshot; costUsd: Decimal };
+  type Candidate = {
+    endpoint: RawOpenRouterEndpoint;
+    pricing: PricingSnapshot;
+    costUsd: Decimal;
+    reasoningEffort: ReasoningEffort | null;
+  };
   const eligibleCandidates: Candidate[] = [];
 
   for (const endpoint of endpoints) {
@@ -269,7 +442,8 @@ export function resolveModelRoute(params: {
       estimatedInputTokens,
       outputCapTokens,
       allTagsForModel,
-      observedAt
+      observedAt,
+      modelReasoning
     });
 
     if (!evaluation.eligible) {
@@ -280,6 +454,7 @@ export function resolveModelRoute(params: {
     eligibleCandidates.push({
       endpoint,
       pricing: evaluation.pricing,
+      reasoningEffort: evaluation.reasoningEffort,
       costUsd: computeCandidateAttemptCostUsd(
         evaluation.pricing,
         estimatedInputTokens,
@@ -319,6 +494,7 @@ export function resolveModelRoute(params: {
     maxPromptTokens: selected.endpoint.max_prompt_tokens ?? null,
     maxCompletionTokens: selected.endpoint.max_completion_tokens ?? null,
     supportedParameters: selected.endpoint.supported_parameters ?? [],
+    reasoningEffort: selected.reasoningEffort,
     quantization: selected.endpoint.quantization ?? null,
     pricing: selected.pricing,
     observedAt

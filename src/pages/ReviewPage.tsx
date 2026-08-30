@@ -8,11 +8,14 @@ import {
   Stack,
   Typography
 } from "@mui/material";
-import { useRef, useState } from "react";
-import { Link as RouterLink } from "react-router-dom";
+import { useCallback, useRef, useState } from "react";
+import { Link as RouterLink, useNavigate } from "react-router-dom";
 import { EconomicsSummary } from "../components/EconomicsSummary";
+import { OpenRouterConnect } from "../components/OpenRouterConnect";
 import { PageHeader } from "../components/PageHeader";
 import { SetupStepper } from "../components/SetupStepper";
+import { hasUserOpenRouterKey } from "../services/openRouterCredential";
+import { useEligibleModels } from "../features/case-setup/useEligibleModels";
 import {
   areAdvocatePersonalitiesValid,
   areJudgePersonalitiesValid,
@@ -22,7 +25,7 @@ import {
   type SetupState
 } from "../features/case-setup/setupState";
 import { useSetup } from "../features/case-setup/useSetup";
-import { allParticipants, mockModels } from "../mocks/tribunalMockData";
+import { allParticipants } from "../mocks/tribunalMockData";
 import { CaseApiError, saveCase, type StoredCase } from "../services/caseApi";
 import {
   convene,
@@ -34,12 +37,18 @@ import {
 
 export function ReviewPage() {
   const { state, dispatch } = useSetup();
+  const navigate = useNavigate();
   const [saveError, setSaveError] = useState("");
   const [savedCase, setSavedCase] = useState<StoredCase | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [conveneError, setConveneError] = useState("");
   const [conveneResult, setConveneResult] = useState<StoredRun | null>(null);
   const [isConvening, setIsConvening] = useState(false);
+  // Milestone 8 (user-funded BYOK): Convene is disabled until an
+  // OpenRouter credential is connected -- server-side enforcement
+  // (OPENROUTER_NOT_CONNECTED) is independent and authoritative
+  // regardless of this client-side gate.
+  const [openRouterConnected, setOpenRouterConnected] = useState(() => hasUserOpenRouterKey());
   // Milestone 6 client idempotency key lifecycle: stable across a retry of
   // the same semantic submission, refreshed only when the underlying
   // request actually changed (docs/adr/0002-participant-configuration-
@@ -47,19 +56,51 @@ export function ReviewPage() {
   // this is bookkeeping, not something that should trigger a re-render.
   const clientRequestIdRef = useRef<string | null>(null);
   const requestSnapshotRef = useRef<string | null>(null);
-  const sharedModel = mockModels.find((model) => model.id === state.sharedModelId);
+  // Independent audit correction (Issue #17 blocker 1): the real
+  // eligible catalog, not mock/tribunalMockData. Also passes the
+  // auto-select callback -- a setup can reach Review directly (e.g.
+  // after a Smart Import apply) without ExecutionModeControl (rendered
+  // only on Advocates/Judges) ever having mounted, so Review must be
+  // able to auto-select on its own too, not merely display whatever was
+  // already chosen elsewhere.
+  const handleAutoSelectSharedModel = useCallback(
+    (modelId: string) => dispatch({ type: "setSharedModel", modelId }),
+    [dispatch]
+  );
+  const {
+    models: eligibleModels,
+    loading: modelsLoading,
+    error: modelsError
+  } = useEligibleModels(state.sharedModelId, handleAutoSelectSharedModel);
+  const sharedModel = eligibleModels.find((model) => model.id === state.sharedModelId);
   const chargeSheetValid = isChargeSheetValid(state.chargeSheet);
   const advocatesValid = areAdvocatePersonalitiesValid(state);
   const judgesValid = areJudgePersonalitiesValid(state);
+  // Independent audit correction (final micro-correction #3): validity
+  // means real CATALOG MEMBERSHIP, not merely a non-empty id -- a stale
+  // id left over from a prior catalog fetch (or one that simply never
+  // resolves) must never be treated as a valid selection. Convene is
+  // therefore also blocked while the catalog is loading, if it failed to
+  // load, or if it loaded empty, not only when nothing is selected yet.
+  const hasRealModelSelected =
+    state.executionMode === "shared" &&
+    !modelsLoading &&
+    !modelsError &&
+    eligibleModels.length > 0 &&
+    sharedModel !== undefined;
   // M5 persists only the canonical case (Defendant/Act/Exact Question plus
   // source metadata). Participant configuration is not persisted/frozen
   // until M6, so Save Case must not require seven valid participants.
   const canSaveCase = chargeSheetValid;
-  const canConvene = isMockSetupReady(state);
+  // Independent audit correction (Issue #17 blocker 1): Convene must not
+  // proceed without a real selected model -- isMockSetupReady itself
+  // doesn't know about the live catalog, so this is checked here too.
+  const canConvene = isMockSetupReady(state) && hasRealModelSelected;
   const blockedReasons = [
     !chargeSheetValid ? "Charge Sheet fields must be complete and valid." : "",
     !advocatesValid ? "All four advocate personalities must be valid." : "",
-    !judgesValid ? "All three judge personalities must be valid." : ""
+    !judgesValid ? "All three judge personalities must be valid." : "",
+    !hasRealModelSelected ? "A real eligible Shared model must be selected." : ""
   ].filter(Boolean);
 
   async function handleSaveCase() {
@@ -89,8 +130,11 @@ export function ReviewPage() {
 
   async function handleConvene() {
     // Once accepted, retain the accepted run state instead of starting a
-    // fresh request -- Convene is not re-armed after success.
-    if (!canConvene || isConvening || conveneResult) {
+    // fresh request -- Convene is not re-armed after success. Milestone 8:
+    // also requires a connected OpenRouter credential -- the server's own
+    // OPENROUTER_NOT_CONNECTED gate is authoritative regardless, this is
+    // purely a UX short-circuit.
+    if (!canConvene || !openRouterConnected || isConvening || conveneResult) {
       return;
     }
 
@@ -115,7 +159,7 @@ export function ReviewPage() {
     setIsConvening(true);
 
     try {
-      const run = await convene({
+      const { run, executionTriggered } = await convene({
         clientRequestId: clientRequestIdRef.current,
         case: caseRequest,
         executionMode: state.executionMode,
@@ -127,6 +171,16 @@ export function ReviewPage() {
       }
 
       setConveneResult(run);
+
+      // Milestone 8: navigate to the real run page only when execution
+      // was actually triggered by this request (ARCHITECTURE.md Sec 12's
+      // /runs/:runId route). A BLOCKED_BUDGET run also has something
+      // useful to show there; any other non-trigger outcome (e.g. an
+      // unreachable worker invocation) stays on Review with the frozen
+      // run id visible instead of navigating to an unchanging blank page.
+      if (executionTriggered || run.status === "BLOCKED_BUDGET") {
+        navigate(`/runs/${run.id}`);
+      }
     } catch (error) {
       setConveneError(formatRunError(error));
     } finally {
@@ -184,7 +238,7 @@ export function ReviewPage() {
             </Typography>
             {state.executionMode === "shared" ? (
               <Typography>
-                Shared mock model: {sharedModel?.displayName ?? state.sharedModelId}
+                Shared model: {sharedModel?.name ?? (state.sharedModelId || "Not selected yet")}
               </Typography>
             ) : null}
             <Box
@@ -195,10 +249,6 @@ export function ReviewPage() {
               }}
             >
               {allParticipants.map((participant) => {
-                const model = mockModels.find(
-                  (item) => item.id === state.participants[participant.id].modelId
-                );
-
                 return (
                   <Box
                     key={participant.id}
@@ -216,10 +266,7 @@ export function ReviewPage() {
                       {participant.side ? `${participant.side} advocate` : "Judge"}
                     </Typography>
                     <Typography color="text.secondary" variant="body2">
-                      Model:{" "}
-                      {state.executionMode === "shared"
-                        ? sharedModel?.displayName
-                        : model?.displayName}
+                      Model: {sharedModel?.name ?? (state.sharedModelId || "Not selected yet")}
                     </Typography>
                     <Typography color="text.secondary" variant="body2">
                       Profile name:{" "}
@@ -253,23 +300,44 @@ export function ReviewPage() {
       <Card>
         <CardContent>
           <Typography component="h2" variant="h5">
-            Mock economics preflight
+            Economics
           </Typography>
           <Typography sx={{ mt: 1 }}>
             Expected logical calls: <strong>7</strong>
           </Typography>
           <Typography>Retry policy: max one retry per participant</Typography>
           <Typography>Hard policy: $5.00 maximum</Typography>
-          <Typography color="success.main" sx={{ fontWeight: 800 }}>
-            Eligible in this mock scenario
-          </Typography>
-          <Typography color="text.secondary" variant="body2">
-            Mock conservative estimate: $0.42. This is fixture data, not live
-            OpenRouter pricing or billing.
-          </Typography>
+          {sharedModel ? (
+            <>
+              <Typography color="success.main" sx={{ fontWeight: 800 }}>
+                {sharedModel.priceTier} tier
+              </Typography>
+              <Typography color="text.secondary" variant="body2">
+                {`Conservative full-Tribunal estimate for this route: $${sharedModel.conservativeFullTribunalEstimateUsd} (discovery estimate; the authoritative preflight runs again, using your connected credential, when you Convene).`}
+              </Typography>
+            </>
+          ) : (
+            <Typography color="text.secondary" variant="body2">
+              Select a Shared model above to see its conservative estimate.
+            </Typography>
+          )}
         </CardContent>
       </Card>
       <EconomicsSummary />
+      <Card>
+        <CardContent>
+          <Typography component="h2" sx={{ mb: 1 }} variant="h5">
+            Connect OpenRouter
+          </Typography>
+          <Typography color="text.secondary" sx={{ mb: 2 }} variant="body2">
+            Runtime model inference is user-funded: any charges from
+            convening the Tribunal go to your own connected OpenRouter
+            account, never the developer's. Convene is disabled until you
+            connect.
+          </Typography>
+          <OpenRouterConnect connected={openRouterConnected} onConnectedChange={setOpenRouterConnected} />
+        </CardContent>
+      </Card>
       {!canConvene ? (
         <Alert severity="error">
           <Stack spacing={1}>
@@ -315,7 +383,7 @@ export function ReviewPage() {
       {saveError ? <Alert severity="error">{saveError}</Alert> : null}
       {conveneResult ? (
         <Alert severity="success">
-          Tribunal configuration frozen. Model execution is not enabled yet.
+          Tribunal configuration frozen.
           {" "}
           <Typography color="text.secondary" component="span" variant="body2">
             Run ID: {conveneResult.id}
@@ -323,6 +391,11 @@ export function ReviewPage() {
         </Alert>
       ) : null}
       {conveneError ? <Alert severity="error">{conveneError}</Alert> : null}
+      {canConvene && !openRouterConnected ? (
+        <Typography color="text.secondary" variant="body2">
+          Connect OpenRouter above before convening the Tribunal.
+        </Typography>
+      ) : null}
       <Stack direction="row" spacing={2}>
         <Button component={RouterLink} to="/new/judges" variant="outlined">
           Back
@@ -335,7 +408,7 @@ export function ReviewPage() {
           {isSaving ? "Saving..." : "Save Case"}
         </Button>
         <Button
-          disabled={!canConvene || isConvening || Boolean(conveneResult)}
+          disabled={!canConvene || !openRouterConnected || isConvening || Boolean(conveneResult)}
           onClick={handleConvene}
           variant="contained"
         >

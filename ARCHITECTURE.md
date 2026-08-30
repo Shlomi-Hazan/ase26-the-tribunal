@@ -598,6 +598,46 @@ transitions a run past `READY`. `READY` means accepted/frozen
 configuration only — it does not by itself mean execution-eligible (see
 ADR Decision 12 on the `prompt_version` placeholder).
 
+**Corrected (Milestone 8 implementation, [Issue #17](https://github.com/Shlomi-Hazan/ase26-the-tribunal/issues/17)):**
+step 5's "reruns authoritative preflight" and step 9's "invokes worker"
+are two separate gates, not one. The actual implemented executable order
+is:
+
+```text
+freeze/reuse idempotent run (steps 1-8 above, unchanged)
+  -> synchronous preflight, using the connected user's own OpenRouter
+     credential (never the operator's) -- the user's pre-spend
+     confirmation gate, not the final authority
+       ineligible -> atomic READY -> BLOCKED_BUDGET (block_tribunal_run_budget
+         RPC), no worker invocation
+       eligible   -> server-to-server invocation of the Background
+         Function, forwarding INTERNAL_FUNCTION_SECRET (server-only) and
+         the user's credential as headers -- the browser never receives
+         either
+  -> worker: fresh, zero-completion metadata + route resolution + a
+     SECOND, independent run of the same preflight logic (the final
+     execution-time authority, since a resolved route cannot cross the
+     synchronous-function -> Background-Function boundary in memory)
+       ineligible -> atomic READY -> BLOCKED_BUDGET, zero completion calls
+       eligible   -> atomic READY -> ADVOCATES_RUNNING
+             (claim_tribunal_run_for_execution RPC) -- only past this
+             point does any paid completion call occur
+```
+
+The two `READY`-originating atomic transitions
+(`block_tribunal_run_budget`, `claim_tribunal_run_for_execution`) are
+mutually exclusive by construction: both are `WHERE status = 'READY'`
+updates, so whichever commits first prevents the other. See
+`netlify/server/tribunal/execution.ts` and
+`netlify/server/tribunal/triggerExecution.ts`.
+
+**Known limitation, documented rather than solved (P1, out of M8's
+submission scope):** if the Background Function process dies
+catastrophically after winning the `ADVOCATES_RUNNING`/`JUDGES_RUNNING`
+claim but before any terminal write, the run has no automatic
+reconciliation and can remain stuck in that state. No lease/heartbeat/
+queue system was built for this pass.
+
 ### 7.5 Read run/history
 
 - `GET /api/runs/:id`

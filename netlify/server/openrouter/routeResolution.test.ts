@@ -4,7 +4,10 @@ import {
   isUniquelyPinnable,
   evaluateEndpoint,
   resolveModelRoute,
-  computeCandidateAttemptCostUsd
+  computeCandidateAttemptCostUsd,
+  resolveReasoningPolicy,
+  toModelReasoningMetadata,
+  type ModelReasoningMetadata
 } from "./routeResolution";
 import type { RawOpenRouterEndpoint, RawOpenRouterModel } from "./schemas";
 
@@ -415,5 +418,241 @@ describe("computeCandidateAttemptCostUsd", () => {
 
     // 1000 * 0.000003 + 1000 * 0.000006 + 0.001 = 0.003 + 0.006 + 0.001 = 0.01
     expect(cost.toString()).toBe("0.01");
+  });
+});
+
+// ---------------------------------------------------------------------
+// M8 reasoning-compatibility correction (Issue #17). The second real
+// live run proved that "this exact endpoint accepts the unified
+// `reasoning` parameter NAME" is not the same fact as "this exact model
+// accepts our specific effort-based reasoning policy VALUE" -- OpenRouter
+// rejected the request outright (INVALID_PROVIDER_REQUEST, zero
+// generation created) when the two were conflated. resolveReasoningPolicy
+// is the sole place that distinction is made; these tests lock its exact
+// contract directly, independent of the full route-resolution pipeline.
+// ---------------------------------------------------------------------
+
+describe("resolveReasoningPolicy (M8 reasoning-compatibility correction)", () => {
+  // Independent review correction (residual fail-closed gap): model
+  // semantics are decided FIRST. A genuine reasoning model must never
+  // become "eligible, no reasoning field" merely because THIS endpoint
+  // doesn't expose reasoning control -- that would silently recreate
+  // live run #1's uncontrolled-reasoning failure via a different route.
+
+  it("1: no model reasoning metadata + endpoint without reasoning -> eligible, null", () => {
+    const result = resolveReasoningPolicy({
+      modelReasoning: null,
+      endpointSupportsReasoningParameter: false
+    });
+
+    expect(result).toEqual({ eligible: true, reasoningEffort: null });
+  });
+
+  it("2: no model reasoning metadata + endpoint advertises reasoning -> eligible, null", () => {
+    const result = resolveReasoningPolicy({
+      modelReasoning: null,
+      endpointSupportsReasoningParameter: true
+    });
+
+    expect(result).toEqual({ eligible: true, reasoningEffort: null });
+  });
+
+  it("3a: reasoning model (mandatory: true) + endpoint without reasoning -> REASONING_CONTROL_UNSUPPORTED", () => {
+    const result = resolveReasoningPolicy({
+      modelReasoning: { mandatory: true, supportedEfforts: null },
+      endpointSupportsReasoningParameter: false
+    });
+
+    expect(result).toEqual({ eligible: false, reasonCode: "REASONING_CONTROL_UNSUPPORTED" });
+  });
+
+  it("3b: reasoning model (mandatory: false) + endpoint without reasoning -> still REASONING_CONTROL_UNSUPPORTED (mandatory's value is never special-cased)", () => {
+    const result = resolveReasoningPolicy({
+      modelReasoning: { mandatory: false, defaultEnabled: false, supportedEfforts: null },
+      endpointSupportsReasoningParameter: false
+    });
+
+    expect(result).toEqual({ eligible: false, reasonCode: "REASONING_CONTROL_UNSUPPORTED" });
+  });
+
+  it("4: reasoning model + endpoint reasoning + supported_efforts === null -> eligible, minimal selected", () => {
+    const result = resolveReasoningPolicy({
+      modelReasoning: { mandatory: true, supportedEfforts: null },
+      endpointSupportsReasoningParameter: true
+    });
+
+    expect(result).toEqual({ eligible: true, reasoningEffort: "minimal" });
+  });
+
+  it("5: reasoning model + endpoint reasoning + supported_efforts explicitly contains minimal -> eligible, minimal selected", () => {
+    const result = resolveReasoningPolicy({
+      modelReasoning: { mandatory: true, supportedEfforts: ["low", "minimal", "medium"] },
+      endpointSupportsReasoningParameter: true
+    });
+
+    expect(result).toEqual({ eligible: true, reasoningEffort: "minimal" });
+  });
+
+  it("6: reasoning model + endpoint reasoning + supported_efforts lacks minimal but contains low -> eligible, low selected", () => {
+    const result = resolveReasoningPolicy({
+      modelReasoning: { mandatory: true, supportedEfforts: ["low", "medium", "high"] },
+      endpointSupportsReasoningParameter: true
+    });
+
+    expect(result).toEqual({ eligible: true, reasoningEffort: "low" });
+  });
+
+  it("7: supported_efforts contains only medium/high (no minimal, no low) -> NOT eligible for M8 V1", () => {
+    const result = resolveReasoningPolicy({
+      modelReasoning: { mandatory: true, supportedEfforts: ["medium", "high", "xhigh"] },
+      endpointSupportsReasoningParameter: true
+    });
+
+    expect(result).toEqual({ eligible: false, reasonCode: "REASONING_CONTROL_UNSUPPORTED" });
+  });
+
+  it("reasoning metadata present but supported_efforts omitted -> fails closed, never assumes minimal is supported", () => {
+    const result = resolveReasoningPolicy({
+      modelReasoning: { mandatory: true, defaultEnabled: true },
+      endpointSupportsReasoningParameter: true
+    });
+
+    expect(result).toEqual({ eligible: false, reasonCode: "REASONING_CONTROL_UNSUPPORTED" });
+  });
+
+  it("never selects medium/high/xhigh/max even when they are the only or first-listed efforts", () => {
+    const highOnly = resolveReasoningPolicy({
+      modelReasoning: { mandatory: true, supportedEfforts: ["max", "xhigh", "high", "medium"] },
+      endpointSupportsReasoningParameter: true
+    });
+
+    expect(highOnly.eligible).toBe(false);
+  });
+});
+
+describe("toModelReasoningMetadata (raw snake_case -> internal camelCase boundary)", () => {
+  it("converts every documented field and preserves unknown supported_efforts strings verbatim", () => {
+    const result = toModelReasoningMetadata({
+      mandatory: true,
+      default_enabled: true,
+      supported_efforts: ["minimal", "some-future-effort-string"],
+      default_effort: "minimal",
+      supports_max_tokens: false
+    });
+
+    expect(result).toEqual({
+      mandatory: true,
+      defaultEnabled: true,
+      supportedEfforts: ["minimal", "some-future-effort-string"],
+      defaultEffort: "minimal",
+      supportsMaxTokens: false
+    } satisfies ModelReasoningMetadata);
+  });
+
+  it("returns null for a model with no reasoning metadata at all", () => {
+    expect(toModelReasoningMetadata(undefined)).toBeNull();
+  });
+});
+
+describe("evaluateEndpoint + resolveModelRoute integration with model-level reasoning metadata", () => {
+  const shared = {
+    modelId: "openai/gpt-5",
+    estimatedInputTokens: 500,
+    outputCapTokens: 1000,
+    allTagsForModel: ["openai"] as string[],
+    observedAt: "2026-08-26T00:00:00.000Z"
+  };
+
+  function reasoningEndpoint(overrides: Partial<RawOpenRouterEndpoint> = {}): RawOpenRouterEndpoint {
+    return endpoint({
+      supported_parameters: ["response_format", "max_completion_tokens", "reasoning"],
+      ...overrides
+    });
+  }
+
+  it("a non-reasoning model on an endpoint that does not advertise reasoning stays eligible with no reasoning field", () => {
+    const result = evaluateEndpoint({
+      ...shared,
+      endpoint: endpoint(), // no "reasoning" in supported_parameters
+      role: "ADVOCATE",
+      modelReasoning: null
+    });
+
+    expect(result.eligible).toBe(true);
+    if (!result.eligible) return;
+    expect(result.reasoningEffort).toBeNull();
+  });
+
+  // Independent review correction (residual fail-closed gap): a genuine
+  // reasoning model on an endpoint that does NOT advertise reasoning
+  // control must fail closed, never silently proceed with no reasoning
+  // field -- that would leave the model's reasoning behavior
+  // uncontrolled/default/mandatory, recreating live run #1's failure
+  // class via a different endpoint.
+  it("a reasoning model on an endpoint that does not advertise reasoning is NOT eligible -- fails closed rather than sending nothing", () => {
+    const result = evaluateEndpoint({
+      ...shared,
+      endpoint: endpoint(), // no "reasoning" in supported_parameters
+      role: "ADVOCATE",
+      modelReasoning: { mandatory: true, supportedEfforts: ["medium"] }
+    });
+
+    expect(result).toEqual({ eligible: false, reasonCode: "REASONING_CONTROL_UNSUPPORTED" });
+  });
+
+  it("REASONING_CONTROL_UNSUPPORTED bubbles all the way up through resolveModelRoute as a reason code when no eligible endpoint remains", () => {
+    const result = resolveModelRoute({
+      configuredModelId: "openai/gpt-5",
+      models: [model({ reasoning: { mandatory: true, supported_efforts: ["medium", "high"] } })],
+      endpoints: [reasoningEndpoint()],
+      role: "ADVOCATE",
+      estimatedInputTokens: 500,
+      outputCapTokens: 1000,
+      observedAt: "2026-08-26T00:00:00.000Z"
+    });
+
+    expect(result).toEqual({ eligible: false, reasonCodes: ["REASONING_CONTROL_UNSUPPORTED"] });
+  });
+
+  it("resolveModelRoute populates route.reasoningEffort from the exact winning endpoint + model metadata", () => {
+    const result = resolveModelRoute({
+      configuredModelId: "openai/gpt-5",
+      models: [model({ reasoning: { mandatory: true, supported_efforts: null } })],
+      endpoints: [reasoningEndpoint()],
+      role: "ADVOCATE",
+      estimatedInputTokens: 500,
+      outputCapTokens: 1000,
+      observedAt: "2026-08-26T00:00:00.000Z"
+    });
+
+    expect(result.eligible).toBe(true);
+    if (!result.eligible) return;
+    expect(result.route.reasoningEffort).toBe("minimal");
+  });
+
+  it("the identical model id resolves a DIFFERENT reasoning policy purely because the model metadata fixture differs -- never hard-coded by name", () => {
+    const withoutSafeEffort = resolveModelRoute({
+      configuredModelId: "openai/gpt-5",
+      models: [model({ reasoning: { mandatory: true, supported_efforts: ["medium"] } })],
+      endpoints: [reasoningEndpoint()],
+      role: "ADVOCATE",
+      estimatedInputTokens: 500,
+      outputCapTokens: 1000,
+      observedAt: "2026-08-26T00:00:00.000Z"
+    });
+    const withSafeEffort = resolveModelRoute({
+      configuredModelId: "openai/gpt-5",
+      models: [model({ reasoning: { mandatory: true, supported_efforts: ["low"] } })],
+      endpoints: [reasoningEndpoint()],
+      role: "ADVOCATE",
+      estimatedInputTokens: 500,
+      outputCapTokens: 1000,
+      observedAt: "2026-08-26T00:00:00.000Z"
+    });
+
+    expect(withoutSafeEffort.eligible).toBe(false);
+    expect(withSafeEffort.eligible).toBe(true);
+    if (!withSafeEffort.eligible) return;
+    expect(withSafeEffort.route.reasoningEffort).toBe("low");
   });
 });

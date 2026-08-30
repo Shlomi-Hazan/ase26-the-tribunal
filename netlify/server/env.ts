@@ -20,11 +20,22 @@ const packageExtractionServerConfigSchema = z.object({
   PACKAGE_EXTRACTION_MODEL_ID: z.string().min(1)
 });
 
+// Milestone 8 (ARCHITECTURE.md Sec 4.1): the unguessable server-only token
+// that authorizes an invocation of the Tribunal Background Function. The
+// browser never receives this value -- it is read only by the synchronous
+// POST /api/runs handler (to forward it, server-to-server, to the worker)
+// and by the worker itself (to authenticate the invocation before any
+// execution work). See netlify/server/tribunal/internalSecret.ts.
+const internalFunctionSecretConfigSchema = z.object({
+  INTERNAL_FUNCTION_SECRET: z.string().min(1)
+});
+
 export type ServerEnvironment = Partial<
   Record<
     | keyof z.infer<typeof supabaseServerConfigSchema>
     | keyof z.infer<typeof openRouterServerConfigSchema>
-    | keyof z.infer<typeof packageExtractionServerConfigSchema>,
+    | keyof z.infer<typeof packageExtractionServerConfigSchema>
+    | keyof z.infer<typeof internalFunctionSecretConfigSchema>,
     string
   >
 >;
@@ -33,6 +44,9 @@ export type SupabaseServerConfig = z.infer<typeof supabaseServerConfigSchema>;
 export type OpenRouterServerConfig = z.infer<typeof openRouterServerConfigSchema>;
 export type PackageExtractionServerConfig = z.infer<
   typeof packageExtractionServerConfigSchema
+>;
+export type InternalFunctionSecretConfig = z.infer<
+  typeof internalFunctionSecretConfigSchema
 >;
 
 export class ServerConfigError extends Error {
@@ -89,4 +103,45 @@ export function readPackageExtractionServerConfig(
   }
 
   return result.data;
+}
+
+// Mirrors readOpenRouterServerConfig exactly. Missing/invalid config fails
+// safely rather than falling back to any default -- an unset secret must
+// never be treated as "no secret required."
+export function readInternalFunctionSecretConfig(
+  environment: ServerEnvironment = process.env
+): InternalFunctionSecretConfig {
+  const result = internalFunctionSecretConfigSchema.safeParse(environment);
+
+  if (!result.success) {
+    throw new ServerConfigError(
+      "Missing or invalid internal function secret configuration."
+    );
+  }
+
+  return result.data;
+}
+
+// Milestone 8 (independent audit correction, Issue #17 blocker 7): the
+// server-to-server Background Function invocation destination MUST come
+// from trusted server-side configuration, never from caller-supplied
+// request headers (Host/X-Forwarded-Proto) -- both
+// INTERNAL_FUNCTION_SECRET and the user's OpenRouter key are sent to
+// wherever this resolves, so an attacker-controlled Host could otherwise
+// redirect both secrets to a different origin. `URL` is Netlify's own
+// documented read-only runtime variable for "the main URL of the site"
+// -- populated automatically in every real Netlify context (production,
+// deploy previews, and `netlify dev`, which sets it to the local dev
+// server's own origin). No secret, so unlike the schemas above this is a
+// plain accessor with a documented local-fallback default, not a
+// throwing required-config check -- a missing value only arises outside
+// any real Netlify runtime (e.g. a bare `vitest run`), where the caller
+// is expected to inject an explicit override instead of relying on this
+// fallback at all.
+export function readBackgroundFunctionBaseUrl(
+  environment: ServerEnvironment = process.env
+): string {
+  const raw = (environment as Record<string, string | undefined>).URL;
+
+  return (raw && raw.trim().length > 0 ? raw : "http://localhost:8888").replace(/\/+$/, "");
 }

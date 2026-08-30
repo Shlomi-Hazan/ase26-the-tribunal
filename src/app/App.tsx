@@ -11,6 +11,7 @@ import { JudgesPage } from "../pages/JudgesPage";
 import { NotFoundPage } from "../pages/NotFoundPage";
 import { ResultPage } from "../pages/ResultPage";
 import { ReviewPage } from "../pages/ReviewPage";
+import { RunPage } from "../pages/RunPage";
 import { SmartImportPage } from "../pages/SmartImportPage";
 import { theme } from "../theme/theme";
 
@@ -25,6 +26,7 @@ export function AppRoutes() {
       <Route path="/new/review" element={<ReviewPage />} />
       <Route path="/demo/deliberation" element={<DeliberationPage />} />
       <Route path="/demo/result" element={<ResultPage />} />
+      <Route path="/runs/:runId" element={<RunPage />} />
       <Route path="/history" element={<HistoryPage />} />
       <Route path="/cases/:caseId" element={<CaseDetailPage />} />
       <Route path="*" element={<NotFoundPage />} />

@@ -16,6 +16,18 @@ export class FakeOpenRouterProvider implements OpenRouterProvider {
   listEndpointsCallCount = 0;
   createChatCompletionCallCount = 0;
 
+  // Milestone 8 -- additive, opt-in configuration for tests that DO need
+  // createChatCompletion to succeed/fail deterministically (the Tribunal
+  // execution worker). Both default to null, which preserves the exact
+  // original M7 behavior below (always throw) for every existing test
+  // that never sets them. When `createChatCompletionResults` is set, each
+  // call consumes the next entry in order (supporting a test that wants
+  // attempt #1 to fail and attempt #2 to succeed, for example); it falls
+  // back to `createChatCompletionResult` when exhausted.
+  createChatCompletionResult: ProviderChatResult | null = null;
+  createChatCompletionResults: Array<ProviderChatResult | ProviderError> | null = null;
+  createChatCompletionError: ProviderError | null = null;
+
   async listModels(): Promise<RawOpenRouterModel[]> {
     this.listModelsCallCount += 1;
 
@@ -39,13 +51,33 @@ export class FakeOpenRouterProvider implements OpenRouterProvider {
     return this.listEndpointsResult[`${author}/${slug}`] ?? [];
   }
 
-  // Intentionally never used by any M7 application code path -- present
-  // only so route-construction/request-builder tests can assert
-  // createChatCompletion is never invoked (Section 44 test guard). The
-  // request parameter is part of the OpenRouterProvider contract but
-  // unused here -- omitted rather than named-and-ignored.
+  // Never used by any M7 application code path -- M7 tests rely on the
+  // default (no configuration set) throwing, which is preserved exactly.
+  // Milestone 8's execution worker is the first real consumer; its tests
+  // configure one of the fields above first.
   async createChatCompletion(): Promise<ProviderChatResult> {
     this.createChatCompletionCallCount += 1;
+
+    if (this.createChatCompletionResults) {
+      const index = this.createChatCompletionCallCount - 1;
+      const next =
+        this.createChatCompletionResults[index] ??
+        this.createChatCompletionResults[this.createChatCompletionResults.length - 1];
+
+      if (next instanceof ProviderError) {
+        throw next;
+      }
+
+      return next;
+    }
+
+    if (this.createChatCompletionError) {
+      throw this.createChatCompletionError;
+    }
+
+    if (this.createChatCompletionResult) {
+      return this.createChatCompletionResult;
+    }
 
     throw new ProviderError(
       "UNKNOWN",

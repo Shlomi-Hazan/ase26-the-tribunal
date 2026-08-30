@@ -248,6 +248,10 @@ Rules:
 
 Zero means **known zero**, not “we do not know.”
 
+**Correction (M8 live-gate root cause, Issue #17):** "any returned usage/cost data is retained" applies to every terminal status, including `INVALID_STRUCTURED_OUTPUT` — a response whose content failed to parse/validate can still carry a real, provider-reported usage envelope, and that telemetry must never be discarded merely because the content itself was unusable. Execution captures usage/cost immediately once a response is received, before content/schema evaluation runs, so a failed attempt's real spend is never silently lost. The one exception remains unchanged: when the provider genuinely returns no usage envelope at all, the fields stay `null` — never invented as zero.
+
+**Reasoning-capable endpoints (M8 live-gate root cause, Issue #17):** an exact resolved endpoint that advertises OpenRouter's unified `reasoning` request parameter receives an explicit, conservative policy on every Tribunal participant call — `reasoning: { effort: "minimal", exclude: true }` — so a reasoning model cannot silently spend the entire fixed output cap (Advocate 1000 / Judge 1200, unchanged) on hidden reasoning tokens before ever producing the required visible structured output. Reasoning tokens remain inside the existing output cap; this policy is never sent to an endpoint that doesn't advertise support, and is always derived from the exact endpoint the same fresh preflight resolved, never inferred from a model or provider name.
+
 ---
 
 ## 8. Per-Attempt Cost Record
@@ -893,7 +897,16 @@ never about how much or how the guardrails compute.
   Supabase user authentication and no private ownership model (§18
   above, `SECURITY.md` §3.1) — the credential lives in the browser for
   the current tab session and nowhere else.
-- **M8 reuse**: the same per-request credential handoff is designed to
-  extend directly to M8's seven advocate/judge calls — one connected
-  user credential funds that entire frozen run, never the operator's.
-  Not implemented in this pass.
+- **M8 reuse**: the same per-request credential handoff extends directly
+  to M8's seven advocate/judge calls — one connected user credential
+  funds that entire frozen run, never the operator's. **Implemented in
+  M8** (`ARCHITECTURE.md` §7.4's corrected executable order,
+  [Issue #17](https://github.com/Shlomi-Hazan/ase26-the-tribunal/issues/17)):
+  `POST /api/runs` forwards the header server-to-server to the
+  Background Function; the worker builds every provider (including its
+  own execution-time re-preflight) from that one credential, never
+  `readOpenRouterServerConfig()`/`OPENROUTER_API_KEY`. Unlike the M7A
+  extraction endpoints, M8's execution-time re-preflight also uses the
+  user's own credential rather than the operator's, since the worker has
+  no metadata-only exemption to make — every OpenRouter call it makes at
+  all is on the path to a possible paid completion.

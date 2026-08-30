@@ -1,12 +1,23 @@
 import { fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithAppProviders } from "../../test/renderWithAppProviders";
 import { AppRoutes } from "../../app/App";
 import {
   personalityLimit,
   validateParticipantPersonality
 } from "./setupState";
+
+const FAKE_USER_OPENROUTER_KEY = "sk-or-v1-test-fake-user-key-case-setup";
+
+// Milestone 8 (user-funded BYOK): Convene is disabled until connected --
+// interacts with the real Connect UI, matching smartImport.test.tsx's own
+// connectOpenRouter helper (a direct sessionStorage write does not update
+// the component's React state).
+async function connectOpenRouter(user: ReturnType<typeof userEvent.setup>) {
+  await user.type(screen.getByLabelText(/openrouter api key/i), FAKE_USER_OPENROUTER_KEY);
+  await user.click(screen.getByRole("button", { name: /^connect$/i }));
+}
 
 const packageDraft = {
   chargeSheet: {
@@ -64,8 +75,80 @@ const packageDraft = {
   }
 };
 
+const FAKE_ELIGIBLE_MODEL = {
+  id: "openai/gpt-5",
+  canonicalModelId: "openai/gpt-5",
+  name: "GPT-5",
+  providerName: "OpenAI",
+  contextLength: 200_000,
+  promptPricePerMillion: "1.00",
+  completionPricePerMillion: "2.00",
+  isFree: false,
+  priceTier: "BUDGET",
+  conservativeFullTribunalEstimateUsd: "0.42",
+  supportsStructuredOutput: true
+};
+
+// Milestone 8 (independent audit correction, Issue #17 blocker 1):
+// ExecutionModeControl fetches the real GET /api/models catalog on
+// mount (zero-cost metadata), and re-fetches on every remount as the
+// user navigates between setup pages that render it (Advocates, Judges,
+// Review) -- interleaving with each test's own expected calls in a way
+// plain `vi.spyOn(...).mockResolvedValueOnce(...)` chaining cannot
+// handle (that queue is strictly FIFO by CALL ORDER, not by URL, so an
+// incidental /api/models call can silently consume a response a test
+// queued for its own POST /api/runs or /api/cases call). Every test in
+// this file therefore queues its own expected responses via
+// queueFetchResponse/queueFetchError below instead of calling
+// `mockResolvedValueOnce` directly -- GET /api/models is answered
+// out-of-band by this same mock, by URL, and never touches that queue.
+let fetchResponseQueue: Array<Response | Promise<Response> | Error> = [];
+
+function queueFetchResponse(response: Response | Promise<Response>) {
+  fetchResponseQueue.push(response);
+}
+
+function queueFetchError(error: Error) {
+  fetchResponseQueue.push(error);
+}
+
+// Calls other than the incidental /api/models ones -- what
+// `fetchSpy.mock.calls[N]`-style assertions actually mean in this file.
+function nonModelsFetchCalls(): Array<[string, RequestInit | undefined]> {
+  return (vi.mocked(globalThis.fetch).mock.calls as Array<[string, RequestInit | undefined]>).filter(
+    ([url]) => url !== "/api/models"
+  );
+}
+
+beforeEach(() => {
+  fetchResponseQueue = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const url = typeof input === "string" ? input : input.toString();
+
+    if (url === "/api/models") {
+      return new Response(JSON.stringify({ models: [FAKE_ELIGIBLE_MODEL] }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+
+    const next = fetchResponseQueue.shift();
+
+    if (next === undefined) {
+      throw new Error(`Unhandled fetch in test: ${url}`);
+    }
+
+    if (next instanceof Error) {
+      throw next;
+    }
+
+    return next;
+  });
+});
+
 afterEach(() => {
   vi.restoreAllMocks();
+  sessionStorage.clear();
 });
 
 describe("case setup workflow", () => {
@@ -418,27 +501,89 @@ describe("case setup workflow", () => {
     expect(screen.getByRole("heading", { name: "Judge III" })).toBeVisible();
   });
 
-  it("uses one shared selector in Shared mode and participant selectors in Separate mode", async () => {
-    const user = userEvent.setup();
+  it("shows the real Shared model selector and a disabled Separate Models option (M9 scope, independent audit correction)", async () => {
     renderWithAppProviders(<AppRoutes />, "/new/advocates");
 
-    expect(screen.getByLabelText("Shared mock model")).toBeVisible();
+    expect(await screen.findByLabelText("Shared model")).toBeVisible();
     expect(screen.queryByLabelText("PRO I mock model")).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("radio", { name: "Separate Models" }));
-
-    expect(screen.getByLabelText("PRO I mock model")).toBeVisible();
-    expect(screen.getByLabelText("PRO II mock model")).toBeVisible();
-    expect(screen.getByLabelText("CON I mock model")).toBeVisible();
-    expect(screen.getByLabelText("CON II mock model")).toBeVisible();
+    expect(screen.getByRole("radio", { name: "Separate Models" })).toBeDisabled();
+    expect(screen.getByText(/available in a future milestone/i)).toBeVisible();
   });
 
-  it("shows review gate geometry, budget policy, privacy warning, and mock economics", () => {
+  // Final micro-correction #3 (independent audit): validity means real
+  // CATALOG MEMBERSHIP, not merely a non-empty id. Auto-select on
+  // Advocates picks a real model from a first catalog fetch; by the time
+  // Review re-fetches on its own mount, the catalog has changed to no
+  // longer contain ANY model (the real-world case a stale/removed model
+  // id represents) -- Convene must stay disabled and no POST /api/runs
+  // may ever be attempted, even though sharedModelId is still a
+  // non-empty string left over from the earlier, now-stale selection.
+  it("a sharedModelId no longer present in a freshly re-fetched catalog keeps Convene disabled and makes zero POST /api/runs calls", async () => {
+    const user = userEvent.setup();
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = typeof input === "string" ? input : input.toString();
+
+      if (url === "/api/models") {
+        return new Response(JSON.stringify({ models: [FAKE_ELIGIBLE_MODEL] }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+
+      throw new Error(`Unhandled fetch in test: ${url}`);
+    });
+
+    renderWithAppProviders(<AppRoutes />);
+    await user.type(screen.getByLabelText(/defendant/i), "Alex Rowan");
+    await user.type(screen.getByLabelText(/^act/i), "Entered the restricted lab.");
+    await user.type(
+      screen.getByLabelText(/exact question/i),
+      "Did Alex knowingly violate the lab protocol?"
+    );
+    await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
+
+    // The real (fake, but non-empty) catalog auto-selected a real model.
+    expect(await screen.findByText("GPT-5")).toBeInTheDocument();
+
+    // By the time Review mounts and re-fetches on its own, the catalog
+    // has changed to return zero eligible models -- simulating the
+    // previously-selected model falling out of eligibility.
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = typeof input === "string" ? input : input.toString();
+
+      if (url === "/api/models") {
+        return new Response(JSON.stringify({ models: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+
+      throw new Error(`Unhandled fetch in test: ${url}`);
+    });
+
+    await user.click(screen.getByRole("link", { name: /continue to judges/i }));
+    await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+    await connectOpenRouter(user);
+
+    expect(
+      await screen.findByText(/select a shared model above/i)
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "Convene Tribunal" })).toBeDisabled();
+
+    // Convene is unreachable (disabled), so this is a defensive proof,
+    // not merely inferred from the disabled attribute.
+    expect(
+      vi.mocked(globalThis.fetch).mock.calls.some(([url]) => url === "/api/runs")
+    ).toBe(false);
+  });
+
+  it("shows review gate geometry, budget policy, and privacy warning", async () => {
     renderWithAppProviders(<AppRoutes />, "/new/review");
 
     expect(screen.getByText(/expected logical calls/i)).toHaveTextContent("7");
     expect(screen.getByText(/hard policy/i)).toHaveTextContent("$5.00");
-    expect(screen.getByText(/mock conservative estimate/i)).toBeVisible();
+    expect(await screen.findByText(/conservative full-Tribunal estimate/i)).toBeVisible();
     expect(screen.getByText(/do not submit sensitive/i)).toBeVisible();
     expect(
       within(screen.getByTestId("economics-section")).getByText(/mock fixture data/i)
@@ -447,7 +592,7 @@ describe("case setup workflow", () => {
 
   it("saves a valid normalized case without starting deliberation", async () => {
     const user = userEvent.setup();
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+    queueFetchResponse(
       new Response(
         JSON.stringify({
           case: {
@@ -494,7 +639,7 @@ describe("case setup workflow", () => {
     // source metadata). Participant configuration is not persisted/frozen
     // until M6, so Save Case must not require seven valid participants.
     const user = userEvent.setup();
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+    queueFetchResponse(
       new Response(
         JSON.stringify({
           case: {
@@ -545,8 +690,8 @@ describe("case setup workflow", () => {
 
     expect(await screen.findByText(/case saved to past cases/i)).toBeVisible();
 
-    const [, requestInit] = fetchSpy.mock.calls[0] as [string, RequestInit];
-    const requestBody = JSON.parse(requestInit.body as string);
+    const [, requestInit] = nonModelsFetchCalls()[0];
+    const requestBody = JSON.parse(requestInit!.body as string);
 
     expect(globalThis.fetch).toHaveBeenCalledWith(
       "/api/cases",
@@ -567,7 +712,7 @@ describe("case setup workflow", () => {
 
   it("imports a Charge Sheet file without applying participant configuration", async () => {
     const user = userEvent.setup();
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+    queueFetchResponse(
       new Response(
         JSON.stringify({
           chargeSheet: {
@@ -599,7 +744,7 @@ describe("case setup workflow", () => {
 
   it("imports a participant personality file only into the selected seat", async () => {
     const user = userEvent.setup();
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+    queueFetchResponse(
       new Response(
         JSON.stringify({
           personality: "Imported only for PRO I.",
@@ -625,7 +770,7 @@ describe("case setup workflow", () => {
 
   it("imports a complete Tribunal package atomically and reviews all seven participants", async () => {
     const user = userEvent.setup();
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+    queueFetchResponse(
       new Response(JSON.stringify({ draft: packageDraft }), { status: 200 })
     );
 
@@ -652,7 +797,7 @@ describe("case setup workflow", () => {
     // Package import preserves application-owned execution mode and model
     // assignment: the default Shared mode/model must still be in effect.
     expect(screen.getByText(/Shared Model —/)).toBeVisible();
-    expect(screen.getByText(/Shared mock model:/)).toBeVisible();
+    expect(await screen.findByText(/Shared model:/)).toBeVisible();
     expect(
       screen.queryByText(/deliberation is running/i)
     ).not.toBeInTheDocument();
@@ -681,7 +826,7 @@ describe("case setup workflow", () => {
 
   it("freezes a valid Tribunal configuration on Convene and remains on Review", async () => {
     const user = userEvent.setup();
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+    queueFetchResponse(
       new Response(
         JSON.stringify({
           run: {
@@ -707,13 +852,11 @@ describe("case setup workflow", () => {
     await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
     await user.click(screen.getByRole("link", { name: /continue to judges/i }));
     await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+    await connectOpenRouter(user);
     await user.click(screen.getByRole("button", { name: "Convene Tribunal" }));
 
     expect(
       await screen.findByText(/tribunal configuration frozen/i)
-    ).toBeVisible();
-    expect(
-      screen.getByText(/model execution is not enabled yet/i)
     ).toBeVisible();
     expect(
       screen.getByText(/33333333-3333-4333-8333-333333333333/)
@@ -722,11 +865,11 @@ describe("case setup workflow", () => {
       screen.queryByText(/deliberation is running/i)
     ).not.toBeInTheDocument();
 
-    const [url, requestInit] = fetchSpy.mock.calls[0] as [string, RequestInit];
-    const requestBody = JSON.parse(requestInit.body as string);
+    const [url, requestInit] = nonModelsFetchCalls()[0];
+    const requestBody = JSON.parse(requestInit!.body as string);
 
     expect(url).toBe("/api/runs");
-    expect(requestInit.method).toBe("POST");
+    expect(requestInit!.method).toBe("POST");
     expect(requestBody.case).toEqual({
       kind: "new",
       case: {
@@ -745,7 +888,7 @@ describe("case setup workflow", () => {
   it("disables Convene while pending and after success, without re-arming", async () => {
     const user = userEvent.setup();
     let resolveFetch: (response: Response) => void = () => {};
-    vi.spyOn(globalThis, "fetch").mockReturnValueOnce(
+    queueFetchResponse(
       new Promise((resolve) => {
         resolveFetch = resolve;
       })
@@ -761,6 +904,7 @@ describe("case setup workflow", () => {
     await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
     await user.click(screen.getByRole("link", { name: /continue to judges/i }));
     await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+    await connectOpenRouter(user);
 
     const conveneButton = screen.getByRole("button", { name: "Convene Tribunal" });
     await user.click(conveneButton);
@@ -786,16 +930,15 @@ describe("case setup workflow", () => {
     expect(
       await screen.findByRole("button", { name: "Configuration frozen" })
     ).toBeDisabled();
-    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    expect(nonModelsFetchCalls()).toHaveLength(1);
   });
 
   it("reuses the same client_request_id when retrying an unchanged submission after an ambiguous failure", async () => {
     const user = userEvent.setup();
-    const fetchSpy = vi.spyOn(globalThis, "fetch");
     // An ambiguous/network failure -- the client cannot tell whether the
     // server actually received and processed the request.
-    fetchSpy.mockRejectedValueOnce(new TypeError("Failed to fetch"));
-    fetchSpy.mockResolvedValueOnce(
+    queueFetchError(new TypeError("Failed to fetch"));
+    queueFetchResponse(
       new Response(
         JSON.stringify({
           run: {
@@ -821,6 +964,7 @@ describe("case setup workflow", () => {
     await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
     await user.click(screen.getByRole("link", { name: /continue to judges/i }));
     await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+    await connectOpenRouter(user);
 
     await user.click(screen.getByRole("button", { name: "Convene Tribunal" }));
     expect(
@@ -831,11 +975,13 @@ describe("case setup workflow", () => {
     await user.click(screen.getByRole("button", { name: "Convene Tribunal" }));
     expect(await screen.findByText(/tribunal configuration frozen/i)).toBeVisible();
 
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
-    const [, firstInit] = fetchSpy.mock.calls[0] as [string, RequestInit];
-    const [, secondInit] = fetchSpy.mock.calls[1] as [string, RequestInit];
-    const firstBody = JSON.parse(firstInit.body as string);
-    const secondBody = JSON.parse(secondInit.body as string);
+    const calls = nonModelsFetchCalls();
+
+    expect(calls).toHaveLength(2);
+    const [, firstInit] = calls[0];
+    const [, secondInit] = calls[1];
+    const firstBody = JSON.parse(firstInit!.body as string);
+    const secondBody = JSON.parse(secondInit!.body as string);
 
     expect(typeof firstBody.clientRequestId).toBe("string");
     expect(secondBody.clientRequestId).toBe(firstBody.clientRequestId);
@@ -843,9 +989,8 @@ describe("case setup workflow", () => {
 
   it("uses a fresh client_request_id after a failed submission is materially edited", async () => {
     const user = userEvent.setup();
-    const fetchSpy = vi.spyOn(globalThis, "fetch");
-    fetchSpy.mockRejectedValueOnce(new TypeError("Failed to fetch"));
-    fetchSpy.mockResolvedValueOnce(
+    queueFetchError(new TypeError("Failed to fetch"));
+    queueFetchResponse(
       new Response(
         JSON.stringify({
           run: {
@@ -871,6 +1016,7 @@ describe("case setup workflow", () => {
     await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
     await user.click(screen.getByRole("link", { name: /continue to judges/i }));
     await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+    await connectOpenRouter(user);
 
     await user.click(screen.getByRole("button", { name: "Convene Tribunal" }));
     expect(
@@ -895,19 +1041,20 @@ describe("case setup workflow", () => {
     );
     expect(await screen.findByText(/tribunal configuration frozen/i)).toBeVisible();
 
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
-    const [, firstInit] = fetchSpy.mock.calls[0] as [string, RequestInit];
-    const [, secondInit] = fetchSpy.mock.calls[1] as [string, RequestInit];
-    const firstBody = JSON.parse(firstInit.body as string);
-    const secondBody = JSON.parse(secondInit.body as string);
+    const calls = nonModelsFetchCalls();
+
+    expect(calls).toHaveLength(2);
+    const [, firstInit] = calls[0];
+    const [, secondInit] = calls[1];
+    const firstBody = JSON.parse(firstInit!.body as string);
+    const secondBody = JSON.parse(secondInit!.body as string);
 
     expect(secondBody.clientRequestId).not.toBe(firstBody.clientRequestId);
   });
 
   it("reuses the saved case identity on Convene after Save Case", async () => {
     const user = userEvent.setup();
-    const fetchSpy = vi.spyOn(globalThis, "fetch");
-    fetchSpy.mockResolvedValueOnce(
+    queueFetchResponse(
       new Response(
         JSON.stringify({
           case: {
@@ -923,7 +1070,7 @@ describe("case setup workflow", () => {
         { status: 201 }
       )
     );
-    fetchSpy.mockResolvedValueOnce(
+    queueFetchResponse(
       new Response(
         JSON.stringify({
           run: {
@@ -949,6 +1096,7 @@ describe("case setup workflow", () => {
     await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
     await user.click(screen.getByRole("link", { name: /continue to judges/i }));
     await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+    await connectOpenRouter(user);
     await user.click(screen.getByRole("button", { name: /save case/i }));
 
     expect(await screen.findByText(/case saved to past cases/i)).toBeVisible();
@@ -957,8 +1105,8 @@ describe("case setup workflow", () => {
 
     expect(await screen.findByText(/tribunal configuration frozen/i)).toBeVisible();
 
-    const [, requestInit] = fetchSpy.mock.calls[1] as [string, RequestInit];
-    const requestBody = JSON.parse(requestInit.body as string);
+    const [, requestInit] = nonModelsFetchCalls()[1];
+    const requestBody = JSON.parse(requestInit!.body as string);
 
     expect(requestBody.case).toEqual({
       kind: "existing",
@@ -968,8 +1116,7 @@ describe("case setup workflow", () => {
 
   it("sends a new case on Convene when the saved case was edited afterward", async () => {
     const user = userEvent.setup();
-    const fetchSpy = vi.spyOn(globalThis, "fetch");
-    fetchSpy.mockResolvedValueOnce(
+    queueFetchResponse(
       new Response(
         JSON.stringify({
           case: {
@@ -985,7 +1132,7 @@ describe("case setup workflow", () => {
         { status: 201 }
       )
     );
-    fetchSpy.mockResolvedValueOnce(
+    queueFetchResponse(
       new Response(
         JSON.stringify({
           run: {
@@ -1011,6 +1158,7 @@ describe("case setup workflow", () => {
     await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
     await user.click(screen.getByRole("link", { name: /continue to judges/i }));
     await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+    await connectOpenRouter(user);
     await user.click(screen.getByRole("button", { name: /save case/i }));
 
     expect(await screen.findByText(/case saved to past cases/i)).toBeVisible();
@@ -1034,8 +1182,8 @@ describe("case setup workflow", () => {
 
     expect(await screen.findByText(/tribunal configuration frozen/i)).toBeVisible();
 
-    const [, requestInit] = fetchSpy.mock.calls[1] as [string, RequestInit];
-    const requestBody = JSON.parse(requestInit.body as string);
+    const [, requestInit] = nonModelsFetchCalls()[1];
+    const requestBody = JSON.parse(requestInit!.body as string);
 
     expect(requestBody.case).toEqual({
       kind: "new",
@@ -1050,7 +1198,7 @@ describe("case setup workflow", () => {
 
   it("surfaces a server idempotency conflict honestly without navigating", async () => {
     const user = userEvent.setup();
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+    queueFetchResponse(
       new Response(
         JSON.stringify({ error: "idempotency_conflict", errors: [] }),
         { status: 409 }
@@ -1067,6 +1215,7 @@ describe("case setup workflow", () => {
     await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
     await user.click(screen.getByRole("link", { name: /continue to judges/i }));
     await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+    await connectOpenRouter(user);
     await user.click(screen.getByRole("button", { name: "Convene Tribunal" }));
 
     expect(
@@ -1085,7 +1234,7 @@ describe("case setup workflow", () => {
 
   it("surfaces server-side Convene validation errors honestly", async () => {
     const user = userEvent.setup();
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+    queueFetchResponse(
       new Response(
         JSON.stringify({
           error: "invalid_run",
@@ -1105,6 +1254,7 @@ describe("case setup workflow", () => {
     await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
     await user.click(screen.getByRole("link", { name: /continue to judges/i }));
     await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+    await connectOpenRouter(user);
     await user.click(screen.getByRole("button", { name: "Convene Tribunal" }));
 
     expect(
@@ -1117,7 +1267,7 @@ describe("case setup workflow", () => {
 
   it("keeps existing setup state when a Tribunal package import fails", async () => {
     const user = userEvent.setup();
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+    queueFetchResponse(
       new Response(
         JSON.stringify({
           error: "invalid_import",

@@ -43,7 +43,11 @@ import {
   requireCacheObservedAt,
   type Clock
 } from "./cache";
-import { checkAliasOrDynamicModel, evaluateEndpoint } from "./routeResolution";
+import {
+  checkAliasOrDynamicModel,
+  evaluateEndpoint,
+  toModelReasoningMetadata
+} from "./routeResolution";
 import type { PreflightReasonCode } from "./errors";
 import type { PriceTier } from "./pricing";
 import { classifyPriceTier, toDecimalString, TIER_THRESHOLDS_USD } from "./pricing";
@@ -193,6 +197,7 @@ export function resolveSharedTribunalRoute(params: {
   const reasonCodes = new Set<PreflightReasonCode>();
   const advocateInputTokens = worstCaseAdvocateInputTokens();
   const judgeInputTokens = worstCaseJudgeInputTokens();
+  const modelReasoning = toModelReasoningMetadata(model.reasoning);
 
   type Candidate = {
     endpoint: RawOpenRouterEndpoint;
@@ -209,7 +214,8 @@ export function resolveSharedTribunalRoute(params: {
       estimatedInputTokens: advocateInputTokens,
       outputCapTokens: ADVOCATE_OUTPUT_CAP_TOKENS,
       allTagsForModel,
-      observedAt
+      observedAt,
+      modelReasoning
     });
 
     if (!advocateEval.eligible) {
@@ -224,7 +230,8 @@ export function resolveSharedTribunalRoute(params: {
       estimatedInputTokens: judgeInputTokens,
       outputCapTokens: JUDGE_OUTPUT_CAP_TOKENS,
       allTagsForModel,
-      observedAt
+      observedAt,
+      modelReasoning
     });
 
     if (!judgeEval.eligible) {
@@ -248,6 +255,11 @@ export function resolveSharedTribunalRoute(params: {
       maxPromptTokens: endpoint.max_prompt_tokens ?? null,
       maxCompletionTokens: endpoint.max_completion_tokens ?? null,
       supportedParameters: endpoint.supported_parameters ?? [],
+      // Pricing is endpoint-specific, not role-specific -- both
+      // evaluations of the same endpoint necessarily produced the same
+      // reasoningEffort too (it never varies by role); either is
+      // authoritative here.
+      reasoningEffort: advocateEval.reasoningEffort,
       quantization: endpoint.quantization ?? null,
       pricing,
       observedAt
