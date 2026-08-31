@@ -356,3 +356,372 @@ function hexToRgb(hex: string): string {
 
   return `rgb(${r}, ${g}, ${b})`;
 }
+
+// ---------------------------------------------------------------------
+// Milestone 10 (Issue #23) -- Economics/Audit, Admission/Budget Safety,
+// and Protocol Result UX. Reuses baseRun()'s realistic 7-attempt default
+// and PR #22's established expand-affordance test style (accessible
+// queries, aria-expanded, click AND keyboard activation).
+// ---------------------------------------------------------------------
+
+function resolvedProtocolFixture(overrides: Partial<NonNullable<StoredRun["protocol"]>> = {}): NonNullable<
+  StoredRun["protocol"]
+> {
+  return {
+    schemaVersion: "tribunal-protocol-v1",
+    runId: RUN_ID,
+    caseId: "22222222-2222-4222-8222-222222222222",
+    executionMode: "shared",
+    majorityVerdict: "GUILTY",
+    chargeSheet: {
+      defendant: "Alex Rowan",
+      act: "Sold a mislabeled cake.",
+      exactQuestion: "Did Alex know the label was wrong?"
+    },
+    participants: [
+      {
+        participantId: "advocate-pro-1",
+        role: "ADVOCATE",
+        side: "PRO",
+        profileName: null,
+        personality: "A measured, professional demeanor.",
+        // Deliberately distinct from attemptAudit()'s default
+        // configuredModelId ("openai/gpt-5") so the two sections' model
+        // text never collides in an accessible-query test.
+        modelId: "openai/gpt-4.1-nano",
+        promptVersion: "advocate-v1"
+      }
+    ],
+    advocates: [{ participantId: "advocate-pro-1", side: "PRO", speech: "PRO I speech." }],
+    judges: [{ participantId: "judge-1", verdict: "GUILTY", reasoning: "Judge I reasoning." }],
+    economics: { logicalCallCount: 7, providerAttemptCount: 7, totalTokens: 1801, totalCostUsd: "0.05" },
+    ...overrides
+  };
+}
+
+describe("RunPage Economics/Audit summary (Milestone 10, Issue #23)", () => {
+  it("renders logical-call count, provider-attempt count, tokens, cost, and wall clock from real response values", async () => {
+    mockRunFetch(
+      baseRun({
+        logicalCallCount: 7,
+        providerAttemptCount: 8,
+        totalTokens: 18420,
+        totalCostUsd: "0.17",
+        wallClockMs: 7400
+      })
+    );
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    await screen.findByRole("heading", { name: "GUILTY" });
+
+    // The full compact line, matched as one string -- "$0.17" alone would
+    // also match the separate "Total model cost: $0.17" card above it.
+    expect(
+      screen.getByText(/7 logical calls · 8 attempts · 18,420 tokens · \$0\.17 · 7\.4s/)
+    ).toBeInTheDocument();
+  });
+
+  it("reflects a retry in the summary: 7 logical calls but 8 provider attempts, never 8 logical calls", async () => {
+    mockRunFetch(baseRun({ logicalCallCount: 7, providerAttemptCount: 8 }));
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    await screen.findByRole("heading", { name: "GUILTY" });
+
+    expect(screen.getByText(/7 logical calls · 8 attempts/)).toBeInTheDocument();
+  });
+});
+
+describe("RunPage Economics/Audit details Accordion (Milestone 10, Issue #23)", () => {
+  it("exposes a visible expand affordance, collapsed by default", async () => {
+    mockRunFetch(baseRun());
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    await screen.findByRole("heading", { name: "GUILTY" });
+
+    expect(screen.getByRole("button", { expanded: false, name: /Economics \/ Audit details/ })).toBeVisible();
+    expect(screen.getByText("View attempt-level detail")).toBeInTheDocument();
+  });
+
+  it("click reveals the attempt audit table", async () => {
+    const user = userEvent.setup();
+    mockRunFetch(baseRun());
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    await screen.findByRole("heading", { name: "GUILTY" });
+
+    // While the Accordion is collapsed, MUI's Collapse wrapper hides the
+    // subtree from the accessibility tree -- getByRole("table") cannot
+    // see it yet even though it exists in the DOM (a plain-text query
+    // still can, matching PR #22's own established pattern for judge/
+    // advocate accordions).
+    const firstRowLabel = screen.getByText("advocate-pro-1");
+
+    expect(firstRowLabel).not.toBeVisible();
+
+    await user.click(screen.getByRole("button", { expanded: false, name: /Economics \/ Audit details/ }));
+
+    expect(screen.getByRole("button", { expanded: true, name: /Economics \/ Audit details/ })).toBeInTheDocument();
+    expect(firstRowLabel).toBeVisible();
+    expect(screen.getByRole("table", { name: /Model call attempt audit/i })).toBeVisible();
+  });
+
+  it("keyboard activation reveals the attempt audit table", async () => {
+    const user = userEvent.setup();
+    mockRunFetch(baseRun());
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    await screen.findByRole("heading", { name: "GUILTY" });
+
+    const button = screen.getByRole("button", { expanded: false, name: /Economics \/ Audit details/ });
+    button.focus();
+    await user.keyboard("{Enter}");
+
+    expect(screen.getByRole("button", { expanded: true, name: /Economics \/ Audit details/ })).toBeInTheDocument();
+    expect(screen.getByRole("table", { name: /Model call attempt audit/i })).toBeVisible();
+  });
+
+  it("labels an actual-cost row as Actual, a derived-only row as Derived, and a telemetry-missing row as Unavailable -- never $0", async () => {
+    const run = baseRun({
+      attempts: [
+        attemptAudit("advocate-pro-1", { actualCostUsd: "0.0002", derivedCostUsd: "0.0002" }),
+        attemptAudit("advocate-pro-2", { actualCostUsd: null, derivedCostUsd: "0.0003" }),
+        attemptAudit("advocate-con-1", {
+          actualCostUsd: null,
+          derivedCostUsd: null,
+          inputTokens: null,
+          outputTokens: null,
+          totalTokens: null
+        }),
+        attemptAudit("advocate-con-2", { actualCostUsd: "0.0004", derivedCostUsd: "0.0004" }),
+        attemptAudit("judge-1", { actualCostUsd: "0.0005", derivedCostUsd: "0.0005" }),
+        attemptAudit("judge-2", { actualCostUsd: "0.0006", derivedCostUsd: "0.0006" }),
+        attemptAudit("judge-3", { actualCostUsd: "0.0007", derivedCostUsd: "0.0007" })
+      ]
+    });
+    mockRunFetch(run);
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    await screen.findByRole("heading", { name: "GUILTY" });
+    await userEvent.setup().click(screen.getByRole("button", { expanded: false, name: /Economics \/ Audit details/ }));
+
+    expect(screen.getByText("$0.0002").closest("td")?.textContent).toMatch(/Actual/);
+    expect(screen.getByText("$0.0003").closest("td")?.textContent).toMatch(/Derived/);
+    // The telemetry-missing row: Unavailable cost AND Unavailable tokens,
+    // never a fabricated $0/0.
+    const unavailableCells = screen.getAllByText("Unavailable");
+
+    expect(unavailableCells.length).toBeGreaterThanOrEqual(4); // cost + input + output + total for that one row
+    expect(screen.queryByText("$0")).not.toBeInTheDocument();
+  });
+});
+
+describe("RunPage Admission / Budget Safety (Milestone 10, Issue #23)", () => {
+  it("distinguishes the conservative admission bound from actual spend, and shows Policy V1/1.10/$5.00 evidence", async () => {
+    const run = baseRun({
+      totalCostUsd: "0.0014619",
+      admission: {
+        available: true,
+        economicsPolicyVersion: "tribunal-economics-policy-v1",
+        participantReserveSum: "0.00696652",
+        budgetSafetyFactor: "1.1",
+        authoritativeHistoricalBound: "0.007663172",
+        hardBudgetUsd: "5",
+        withinBudget: true
+      }
+    });
+    mockRunFetch(run);
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    await screen.findByRole("heading", { name: "GUILTY" });
+    await userEvent.setup().click(screen.getByRole("button", { expanded: false, name: /Economics \/ Audit details/ }));
+
+    expect(screen.getByText(/Economics policy:\s*V1/)).toBeInTheDocument();
+    expect(screen.getByText(/Conservative authorized maximum:\s*\$0\.007663172/)).toBeInTheDocument();
+    expect(screen.getByText(/Safety factor:\s*1\.1/)).toBeInTheDocument();
+    expect(screen.getByText(/Hard run ceiling:\s*\$5/)).toBeInTheDocument();
+    expect(screen.getByText(/Admission result:\s*Within budget/)).toBeInTheDocument();
+    // The actual total model cost (top of page) is a separate, distinctly
+    // labeled figure from the conservative authorized maximum.
+    expect(screen.getByText(/Total model cost: \$0\.0014619/)).toBeInTheDocument();
+    expect(screen.getByText(/not the actual amount charged/)).toBeInTheDocument();
+  });
+
+  it("renders an honest Unavailable when admission evidence could not be reconstructed", async () => {
+    mockRunFetch(baseRun({ admission: { available: false, reason: "incomplete evidence" } }));
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    await screen.findByRole("heading", { name: "GUILTY" });
+    await userEvent.setup().click(screen.getByRole("button", { expanded: false, name: /Economics \/ Audit details/ }));
+
+    expect(screen.getByText(/Admission evidence:\s*Unavailable/)).toBeInTheDocument();
+  });
+
+  it("renders nothing under Admission / Budget Safety when admission is not applicable (null)", async () => {
+    mockRunFetch(baseRun({ admission: null }));
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    await screen.findByRole("heading", { name: "GUILTY" });
+    await userEvent.setup().click(screen.getByRole("button", { expanded: false, name: /Economics \/ Audit details/ }));
+
+    expect(screen.queryByText("Admission / Budget Safety")).not.toBeInTheDocument();
+  });
+});
+
+describe("RunPage Protocol Accordion (Milestone 10, Issue #23)", () => {
+  it("exposes a visible expand affordance and is absent when no protocol is available", async () => {
+    mockRunFetch(baseRun({ protocol: null }));
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    await screen.findByRole("heading", { name: "GUILTY" });
+
+    expect(screen.queryByRole("button", { name: /^Protocol/ })).not.toBeInTheDocument();
+  });
+
+  it("click reveals the resolved Charge Sheet, participants, and judge reasoning", async () => {
+    const user = userEvent.setup();
+    mockRunFetch(baseRun({ protocol: resolvedProtocolFixture() }));
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    await screen.findByRole("heading", { name: "GUILTY" });
+
+    const protocolButton = screen.getByRole("button", { expanded: false, name: /^Protocol/ });
+    const chargeSheetHeading = screen.getByText("Charge Sheet");
+
+    expect(chargeSheetHeading).not.toBeVisible();
+
+    await user.click(protocolButton);
+
+    expect(screen.getByRole("button", { expanded: true, name: /^Protocol/ })).toBeInTheDocument();
+    expect(chargeSheetHeading).toBeVisible();
+    expect(screen.getByText(/Defendant: Alex Rowan/)).toBeVisible();
+    expect(screen.getByText(/openai\/gpt-4\.1-nano/)).toBeVisible();
+    expect(screen.getByText(/judge-1 \(GUILTY\): Judge I reasoning\./)).toBeVisible();
+  });
+
+  it("keyboard activation reveals the protocol content", async () => {
+    const user = userEvent.setup();
+    mockRunFetch(baseRun({ protocol: resolvedProtocolFixture() }));
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    await screen.findByRole("heading", { name: "GUILTY" });
+
+    const protocolButton = screen.getByRole("button", { expanded: false, name: /^Protocol/ });
+    protocolButton.focus();
+    await user.keyboard("{Enter}");
+
+    expect(screen.getByRole("button", { expanded: true, name: /^Protocol/ })).toBeInTheDocument();
+    expect(screen.getByText("Charge Sheet")).toBeVisible();
+  });
+});
+
+describe("RunPage FAILED partial-spend disclosure (Milestone 10, Issue #23 Finding 2)", () => {
+  it("shows a single honest line when every incurred attempt cost is known", async () => {
+    mockRunFetch(
+      baseRun({
+        status: "FAILED",
+        majorityVerdict: null,
+        failureCode: "ADVOCATE_TERMINAL_FAILURE",
+        failureMessage: "Advocate advocate-pro-1 did not produce a valid speech after the permitted retry.",
+        partialSpend: { knownCostUsd: "0.0003", hasUnknownCost: false },
+        admission: null,
+        protocol: null
+      })
+    );
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+
+    expect(await screen.findByText(/Partial model cost so far: \$0\.0003/)).toBeVisible();
+    expect(screen.queryByText(/Known partial model cost/)).not.toBeInTheDocument();
+  });
+
+  it("shows the known/unavailable split when at least one attempt's cost is genuinely unknown -- never a misleading single total", async () => {
+    mockRunFetch(
+      baseRun({
+        status: "FAILED",
+        majorityVerdict: null,
+        failureCode: "ADVOCATE_TERMINAL_FAILURE",
+        failureMessage: "Advocate advocate-pro-1 did not produce a valid speech after the permitted retry.",
+        partialSpend: { knownCostUsd: "0.0003", hasUnknownCost: true },
+        admission: null,
+        protocol: null
+      })
+    );
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+
+    expect(await screen.findByText(/Known partial model cost: \$0\.0003/)).toBeVisible();
+    expect(screen.getByText(/Additional attempt cost: Unavailable/)).toBeVisible();
+    expect(screen.queryByText(/Partial model cost so far/)).not.toBeInTheDocument();
+  });
+
+  it("never fabricates a $0 partial-spend line when zero provider attempts occurred", async () => {
+    mockRunFetch(
+      baseRun({
+        status: "FAILED",
+        majorityVerdict: null,
+        failureCode: "RUN_STATE_UNEXPECTED",
+        failureMessage: "The run could not complete.",
+        partialSpend: null,
+        admission: null,
+        attempts: [],
+        protocol: null
+      })
+    );
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+
+    await screen.findByText(/The Tribunal could not complete/i);
+
+    expect(screen.queryByText(/Partial model cost/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Known partial model cost/)).not.toBeInTheDocument();
+    expect(screen.queryByText("$0")).not.toBeInTheDocument();
+  });
+
+  it("offers the Economics / Audit details Accordion on a FAILED run with attempts, but never a verdict", async () => {
+    mockRunFetch(
+      baseRun({
+        status: "FAILED",
+        majorityVerdict: null,
+        failureCode: "ADVOCATE_TERMINAL_FAILURE",
+        failureMessage: "Advocate advocate-pro-1 did not produce a valid speech after the permitted retry.",
+        partialSpend: { knownCostUsd: "0.0003", hasUnknownCost: false },
+        admission: null,
+        protocol: null
+      })
+    );
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+
+    await screen.findByText(/The Tribunal could not complete/i);
+
+    expect(screen.getByRole("button", { name: /Economics \/ Audit details/ })).toBeInTheDocument();
+    expect(screen.queryByText("GUILTY")).not.toBeInTheDocument();
+    expect(screen.queryByText("NOT_GUILTY")).not.toBeInTheDocument();
+  });
+});
+
+describe("RunPage BLOCKED_BUDGET stays distinct from FAILED-with-spend (Milestone 10, Issue #23)", () => {
+  it("shows no cost line, no Economics/Audit Accordion, and no verdict", async () => {
+    mockRunFetch(
+      baseRun({
+        status: "BLOCKED_BUDGET",
+        majorityVerdict: null,
+        failureMessage: "Conservative preflight exceeded the $5.00 policy limit.",
+        totalCostUsd: null,
+        partialSpend: null,
+        admission: null,
+        attempts: [],
+        protocol: null,
+        participants: []
+      })
+    );
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+
+    expect(await screen.findByText(/this run cannot be executed/i)).toBeVisible();
+    expect(screen.queryByText(/Partial model cost/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Economics \/ Audit details/ })).not.toBeInTheDocument();
+    expect(screen.queryByText("GUILTY")).not.toBeInTheDocument();
+    expect(screen.queryByText("NOT_GUILTY")).not.toBeInTheDocument();
+  });
+});
