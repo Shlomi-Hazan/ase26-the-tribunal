@@ -737,15 +737,34 @@ function ProtocolAccordion({ protocol }: { protocol: StoredRun["protocol"] }) {
               Deterministic majority: {protocol.majorityVerdict}
             </Typography>
           </Stack>
-          <Stack spacing={0.5}>
+          <Stack spacing={1}>
             <Typography sx={{ fontWeight: 800 }} variant="body2">
               Frozen Participants
             </Typography>
+            {/* Corrected (final source re-review, "Frozen Participant
+               Micro-Correction"): the readable Full Protocol must expose
+               the complete human-configured participant context, not
+               only identity/model/prompt version -- profile name (when
+               set) and personality too. One small bordered block per
+               participant keeps long personality text readable rather
+               than squeezed into a single inline sentence. */}
             {protocol.participants.map((entry) => (
-              <Typography key={entry.participantId} variant="body2">
-                {entry.participantId} -- {entry.role}
-                {entry.side ? ` (${entry.side})` : ""} -- {entry.modelId} -- {entry.promptVersion}
-              </Typography>
+              <Stack
+                key={entry.participantId}
+                spacing={0.25}
+                sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2, p: 1.5 }}
+              >
+                <Typography sx={{ fontWeight: 700 }} variant="body2">
+                  {entry.participantId} -- {entry.role}
+                  {entry.side ? ` (${entry.side})` : ""}
+                </Typography>
+                {entry.profileName ? (
+                  <Typography variant="body2">Profile: {entry.profileName}</Typography>
+                ) : null}
+                <Typography variant="body2">Personality: {entry.personality}</Typography>
+                <Typography variant="body2">Model: {entry.modelId}</Typography>
+                <Typography variant="body2">Prompt version: {entry.promptVersion}</Typography>
+              </Stack>
             ))}
           </Stack>
           <Stack spacing={0.5}>

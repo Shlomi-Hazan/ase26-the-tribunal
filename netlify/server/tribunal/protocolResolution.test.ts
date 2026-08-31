@@ -49,10 +49,25 @@ function validProtocolJson() {
   };
 }
 
+// Mirrors validProtocolJson()'s own per-participant role/side/modelId/
+// promptVersion exactly, so the "valid" fixture's frozen evidence agrees
+// with its protocol_json by construction -- individual tests below
+// deliberately diverge one field at a time to prove the cross-check.
+function frozenParticipant(
+  id: ParticipantId
+): { role: "ADVOCATE" | "JUDGE"; side: "PRO" | "CON" | null; profileName: string | null; personality: string; modelId: string; promptVersion: string } {
+  return {
+    role: id.startsWith("judge") ? "JUDGE" : "ADVOCATE",
+    side: id.startsWith("advocate-pro") ? "PRO" : id.startsWith("advocate-con") ? "CON" : null,
+    profileName: null,
+    personality: "A measured demeanor.",
+    modelId: "openai/gpt-5-nano",
+    promptVersion: id.startsWith("judge") ? "judge-v1" : "advocate-v1"
+  };
+}
+
 function baseInput(overrides: Partial<ResolveProtocolInput> = {}): ResolveProtocolInput {
-  const participantsByParticipantId = new Map<ParticipantId, { profileName: string | null; personality: string }>(
-    participantIds.map((id) => [id, { profileName: null, personality: "A measured demeanor." }])
-  );
+  const participantsByParticipantId = new Map(participantIds.map((id) => [id, frozenParticipant(id)]));
   const judgeEvidenceByParticipantId = new Map<ParticipantId, { verdict: "GUILTY" | "NOT_GUILTY"; reasoning: string }>([
     ["judge-1", { verdict: "GUILTY", reasoning: "Judge I reasoning." }],
     ["judge-2", { verdict: "GUILTY", reasoning: "Judge II reasoning." }],
@@ -278,8 +293,8 @@ describe("resolveProtocol (Milestone 10, Issue #23)", () => {
   });
 
   it("2: fails closed when a referenced participant's frozen configuration was not persisted", () => {
-    const participantsByParticipantId = new Map<ParticipantId, { profileName: string | null; personality: string }>(
-      participantIds.filter((id) => id !== "advocate-pro-1").map((id) => [id, { profileName: null, personality: "x" }])
+    const participantsByParticipantId = new Map(
+      participantIds.filter((id) => id !== "advocate-pro-1").map((id) => [id, frozenParticipant(id)])
     );
 
     const result = resolveProtocol(baseInput({ participantsByParticipantId }));
@@ -304,6 +319,78 @@ describe("resolveProtocol (Milestone 10, Issue #23)", () => {
     if (result.ok) return;
     expect(result.reason).toMatch(/judge-3/);
     expect(result.reason).toMatch(/disagrees/i);
+  });
+
+  it("13: fails closed when the protocol's modelId disagrees with the persisted frozen participant's modelId", () => {
+    const participantsByParticipantId = new Map(
+      participantIds.map((id) => [
+        id,
+        id === "advocate-pro-1"
+          ? { ...frozenParticipant(id), modelId: "openai/gpt-4.1-nano" }
+          : frozenParticipant(id)
+      ])
+    );
+
+    const result = resolveProtocol(baseInput({ participantsByParticipantId }));
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/advocate-pro-1/);
+    expect(result.reason).toMatch(/model/i);
+  });
+
+  it("14: fails closed when the protocol's promptVersion disagrees with the persisted frozen participant's promptVersion", () => {
+    const participantsByParticipantId = new Map(
+      participantIds.map((id) => [
+        id,
+        id === "judge-1" ? { ...frozenParticipant(id), promptVersion: "judge-v2" } : frozenParticipant(id)
+      ])
+    );
+
+    const result = resolveProtocol(baseInput({ participantsByParticipantId }));
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/judge-1/);
+    expect(result.reason).toMatch(/prompt version/i);
+  });
+
+  it("15: fails closed when the protocol's role disagrees with the persisted frozen participant's role", () => {
+    const participantsByParticipantId = new Map(
+      participantIds.map((id) => [
+        id,
+        id === "advocate-con-1" ? { ...frozenParticipant(id), role: "JUDGE" as const } : frozenParticipant(id)
+      ])
+    );
+
+    const result = resolveProtocol(baseInput({ participantsByParticipantId }));
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/advocate-con-1/);
+    expect(result.reason).toMatch(/role/i);
+  });
+
+  it("16: fails closed when the protocol's side disagrees with the persisted frozen participant's side", () => {
+    const participantsByParticipantId = new Map(
+      participantIds.map((id) => [
+        id,
+        id === "advocate-pro-2" ? { ...frozenParticipant(id), side: "CON" as const } : frozenParticipant(id)
+      ])
+    );
+
+    const result = resolveProtocol(baseInput({ participantsByParticipantId }));
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/advocate-pro-2/);
+    expect(result.reason).toMatch(/side/i);
+  });
+
+  it("17: a valid protocol whose full frozen evidence agrees on role/side/modelId/promptVersion still resolves", () => {
+    const result = resolveProtocol(baseInput());
+
+    expect(result.ok).toBe(true);
   });
 
   it("never mutates the input protocolJsonRaw object", () => {

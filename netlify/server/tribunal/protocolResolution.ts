@@ -260,13 +260,31 @@ export type ResolveProtocolInput = {
     majorityVerdict: "GUILTY" | "NOT_GUILTY" | null;
   };
   chargeSheet: ResolvedProtocolChargeSheet;
-  // Frozen participant configuration/personality (already loaded by the
-  // repository for the existing participants[] response) -- reused here
-  // rather than re-queried. Every participant the protocol references
-  // must have an entry here, or resolution fails closed (Finding 1).
+  // Frozen participant configuration (already loaded by the repository
+  // for the existing participants[] response) -- reused here rather than
+  // re-queried. Every participant the protocol references must have an
+  // entry here, or resolution fails closed (Finding 1).
+  //
+  // Corrected (final source re-review, "Frozen Participant Micro-
+  // Correction"): carries the FULL frozen row -- role/side/modelId/
+  // promptVersion alongside profileName/personality -- not only the
+  // latter two. protocol_json.participants[] duplicates role/side/
+  // modelId/promptVersion (it has to, since the protocol is a
+  // self-contained historical record), which means those fields can
+  // silently drift from what participant_configs actually says unless
+  // the resolver cross-checks them. profileName/personality are never
+  // duplicated inside protocol_json V1 at all -- they are resolved from
+  // this map by reference only, exactly as SPEC.md Sec 13 intends.
   participantsByParticipantId: Map<
     ParticipantId,
-    { profileName: string | null; personality: string }
+    {
+      role: "ADVOCATE" | "JUDGE";
+      side: "PRO" | "CON" | null;
+      profileName: string | null;
+      personality: string;
+      modelId: string;
+      promptVersion: string;
+    }
   >;
   // Corrected (independent source audit, Finding 1): carries the
   // persisted judge_verdicts row's OWN verdict alongside its reasoning
@@ -319,15 +337,50 @@ export function resolveProtocol(input: ResolveProtocolInput): ResolveProtocolRes
     };
   }
 
-  // Cross-evidence (independent source audit, Finding 1): every
-  // participant the protocol references must have real, persisted
-  // frozen-configuration evidence -- never a silent `profileName: null,
-  // personality: ""` substitution when the lookup unexpectedly misses.
+  // Cross-evidence (independent source audit, Finding 1; extended by the
+  // final "Frozen Participant Micro-Correction"): every participant the
+  // protocol references must have real, persisted frozen-configuration
+  // evidence -- never a silent `profileName: null, personality: ""`
+  // substitution when the lookup unexpectedly misses -- AND the
+  // protocol's own role/side/modelId/promptVersion for that participant
+  // must agree with what participant_configs actually persisted. Neither
+  // side is silently preferred over the other; a disagreement is an
+  // audit inconsistency, full stop.
   for (const entry of protocol.participants) {
-    if (!input.participantsByParticipantId.has(entry.participantId)) {
+    const frozen = input.participantsByParticipantId.get(entry.participantId);
+
+    if (!frozen) {
       return {
         ok: false,
         reason: `No persisted frozen participant configuration found for ${entry.participantId}.`
+      };
+    }
+
+    if (frozen.role !== entry.role) {
+      return {
+        ok: false,
+        reason: `Persisted frozen role for ${entry.participantId} disagrees with the protocol's recorded role.`
+      };
+    }
+
+    if (frozen.side !== entry.side) {
+      return {
+        ok: false,
+        reason: `Persisted frozen side for ${entry.participantId} disagrees with the protocol's recorded side.`
+      };
+    }
+
+    if (frozen.modelId !== entry.modelId) {
+      return {
+        ok: false,
+        reason: `Persisted frozen model for ${entry.participantId} disagrees with the protocol's recorded model.`
+      };
+    }
+
+    if (frozen.promptVersion !== entry.promptVersion) {
+      return {
+        ok: false,
+        reason: `Persisted frozen prompt version for ${entry.participantId} disagrees with the protocol's recorded prompt version.`
       };
     }
   }

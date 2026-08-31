@@ -759,6 +759,76 @@ describe("RunPage Protocol Accordion (Milestone 10, Issue #23)", () => {
     expect(screen.getByRole("button", { expanded: true, name: /^Protocol/ })).toBeInTheDocument();
     expect(screen.getByText("Charge Sheet")).toBeVisible();
   });
+
+  it("shows profile name, personality, model, and prompt version for a frozen participant with a profile name set", async () => {
+    const user = userEvent.setup();
+    mockRunFetch(
+      baseRun({
+        protocol: resolvedProtocolFixture({
+          participants: [
+            {
+              participantId: "advocate-pro-1",
+              role: "ADVOCATE",
+              side: "PRO",
+              profileName: "The Zealous Prosecutor",
+              personality: "A measured, professional demeanor.",
+              // Deliberately distinct from attemptAudit()'s defaults
+              // ("openai/gpt-5" / "advocate-v1") so the Protocol
+              // section's own model/prompt-version text never
+              // collides with the (collapsed but still present)
+              // per-attempt pricing-detail rows.
+              modelId: "openai/gpt-4.1-nano",
+              promptVersion: "advocate-protocol-fixture-v1"
+            }
+          ]
+        })
+      })
+    );
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    await screen.findByRole("heading", { name: "GUILTY" });
+
+    await user.click(screen.getByRole("button", { expanded: false, name: /^Protocol/ }));
+
+    expect(screen.getByText("Profile: The Zealous Prosecutor")).toBeVisible();
+    expect(screen.getByText("Personality: A measured, professional demeanor.")).toBeVisible();
+    expect(screen.getByText("Model: openai/gpt-4.1-nano")).toBeVisible();
+    expect(screen.getByText("Prompt version: advocate-protocol-fixture-v1")).toBeVisible();
+  });
+
+  it("does not fabricate a profile name when the frozen participant has none, and renders personality as plain text", async () => {
+    const user = userEvent.setup();
+    mockRunFetch(
+      baseRun({
+        protocol: resolvedProtocolFixture({
+          participants: [
+            {
+              participantId: "advocate-pro-1",
+              role: "ADVOCATE",
+              side: "PRO",
+              profileName: null,
+              personality: "<script>alert('x')</script> & a measured demeanor.",
+              // Same disambiguation as the previous test.
+              modelId: "openai/gpt-4.1-nano",
+              promptVersion: "advocate-protocol-fixture-v1"
+            }
+          ]
+        })
+      })
+    );
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    await screen.findByRole("heading", { name: "GUILTY" });
+
+    await user.click(screen.getByRole("button", { expanded: false, name: /^Protocol/ }));
+
+    expect(screen.queryByText(/^Profile:/)).not.toBeInTheDocument();
+    expect(
+      screen.getByText("Personality: <script>alert('x')</script> & a measured demeanor.")
+    ).toBeVisible();
+    expect(screen.getByText("Model: openai/gpt-4.1-nano")).toBeVisible();
+    expect(screen.getByText("Prompt version: advocate-protocol-fixture-v1")).toBeVisible();
+  });
 });
 
 describe("RunPage FAILED partial-spend disclosure (Milestone 10, Issue #23 Finding 2)", () => {

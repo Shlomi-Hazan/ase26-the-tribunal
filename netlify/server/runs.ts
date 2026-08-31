@@ -786,10 +786,21 @@ export class SupabaseRunRepository implements RunRepository {
             act: resolvedCase.act,
             exactQuestion: resolvedCase.exactQuestion
           },
+          // Corrected (final source re-review, "Frozen Participant
+          // Micro-Correction"): the full frozen row -- role/side/
+          // modelId/promptVersion, not only profileName/personality --
+          // already loaded above (sortedParticipants), never re-queried.
           participantsByParticipantId: new Map(
             sortedParticipants.map((participant) => [
               participant.participantId,
-              { profileName: participant.profileName, personality: participant.personality }
+              {
+                role: participant.role,
+                side: participant.side,
+                profileName: participant.profileName,
+                personality: participant.personality,
+                modelId: participant.modelId,
+                promptVersion: participant.promptVersion
+              }
             ])
           ),
           // Corrected (independent source audit, Finding 1): carries the
