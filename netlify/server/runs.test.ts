@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { participantIds, type ParticipantId } from "../../src/schemas/tribunalSetup";
 import { ADVOCATE_PROMPT_VERSION, JUDGE_PROMPT_VERSION } from "../../src/prompts/versions";
@@ -762,5 +764,19 @@ describe("computeWallClockMs (Milestone 10, Issue #23 Sec 6/9)", () => {
 
   it("fails closed to null on an unparseable timestamp, never using browser/current time", () => {
     expect(computeWallClockMs("not-a-date", "2026-08-31T08:58:42.500Z")).toBeNull();
+  });
+});
+
+describe("historical pricing immutability (Milestone 10, Issue #23 Sec 14)", () => {
+  it("source-boundary proof: the run read path never imports an OpenRouterProvider or fetches from openrouter.ai", () => {
+    // A historical (or just-completed) run's exposed pricing snapshot
+    // must come only from what was persisted at claim time -- never
+    // refetched/recomputed against current OpenRouter metadata. Proven
+    // structurally: this module (the sole GET /api/runs/:id read path)
+    // has no import of the provider boundary and no raw fetch call at
+    // all -- SupabaseRunRepository is a pure Supabase read.
+    const source = readFileSync(path.resolve(__dirname, "runs.ts"), "utf8");
+
+    expect(source).not.toMatch(/OpenRouterProvider|openrouter\.ai|fetch\(/);
   });
 });
