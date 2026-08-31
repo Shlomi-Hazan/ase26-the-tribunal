@@ -37,6 +37,18 @@ function baseRun(): PersistedRun {
     totalCostUsd: null,
     advocateCostUsd: null,
     judgeCostUsd: null,
+    // Milestone 10 -- read-path-only derived/exposed fields, never read
+    // by triggerExecution.ts itself; neutral defaults.
+    totalInputTokens: null,
+    totalOutputTokens: null,
+    totalTokens: null,
+    logicalCallCount: 0,
+    providerAttemptCount: 0,
+    wallClockMs: null,
+    partialSpend: null,
+    admission: null,
+    attempts: [],
+    protocol: null,
     participants: []
   };
 }

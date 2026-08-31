@@ -7,6 +7,17 @@ import { RunPersistenceError, RunValidationError, type PersistedRun } from "./ru
 // of the M6 read contract, and there is no operational reason to expose
 // the fingerprint to the browser. No fake economics/speeches/verdicts
 // exist because they are never part of PersistedRun in the first place.
+//
+// Milestone 10 (Issue #23) -- additive only: every field below this
+// comment is new; every field above it is unchanged, so no existing
+// caller of GET /api/runs/:id breaks. `attempts`/`protocol`/`admission`
+// are already public-safe shapes by construction (AttemptAudit,
+// ResolvedProtocol, AdmissionReconstructionResult in runs.ts /
+// protocolResolution.ts / admissionReconstruction.ts never carry
+// participant_config_id, client_request_id, request_fingerprint, or any
+// raw provider payload -- see Issue #23's "Public audit field safety
+// review"), so they are passed through directly rather than re-mapped
+// field by field here.
 export function toRunResponse(run: PersistedRun) {
   return {
     id: run.id,
@@ -23,6 +34,16 @@ export function toRunResponse(run: PersistedRun) {
     totalCostUsd: run.totalCostUsd,
     advocateCostUsd: run.advocateCostUsd,
     judgeCostUsd: run.judgeCostUsd,
+    totalInputTokens: run.totalInputTokens,
+    totalOutputTokens: run.totalOutputTokens,
+    totalTokens: run.totalTokens,
+    logicalCallCount: run.logicalCallCount,
+    providerAttemptCount: run.providerAttemptCount,
+    wallClockMs: run.wallClockMs,
+    partialSpend: run.partialSpend,
+    admission: run.admission,
+    attempts: run.attempts,
+    protocol: run.protocol,
     participants: run.participants.map((participant) => ({
       participantId: participant.participantId,
       role: participant.role,
