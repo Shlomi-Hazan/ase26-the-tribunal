@@ -73,6 +73,21 @@ function buildRun(): PersistedRun {
     totalCostUsd: null,
     advocateCostUsd: null,
     judgeCostUsd: null,
+    // Milestone 10 -- execution.ts's own RunLoader never reads these
+    // (they are the read-path's own derived/exposed evidence, computed
+    // only by SupabaseRunRepository); neutral defaults keep this fixture
+    // a valid PersistedRun without implying anything about this test's
+    // actual scope.
+    totalInputTokens: null,
+    totalOutputTokens: null,
+    totalTokens: null,
+    logicalCallCount: 0,
+    providerAttemptCount: 0,
+    wallClockMs: null,
+    partialSpend: null,
+    admission: null,
+    attempts: [],
+    protocol: null,
     participants: participantIds.map((id) => ({
       id: `config-${id}`,
       participantId: id,

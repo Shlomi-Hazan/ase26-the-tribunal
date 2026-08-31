@@ -2,12 +2,17 @@ import { describe, expect, it } from "vitest";
 import { participantIds, type ParticipantId } from "../../src/schemas/tribunalSetup";
 import { ADVOCATE_PROMPT_VERSION, JUDGE_PROMPT_VERSION } from "../../src/prompts/versions";
 import {
+  buildAdmissionReserveEvidence,
+  buildAttemptAudits,
+  computePartialSpend,
   computeRequestFingerprint,
+  computeWallClockMs,
   PROMPT_VERSION_PLACEHOLDER,
   RunValidationError,
   sortParticipantsCanonically,
   validateCreateRunInput,
   validateRunId,
+  type AttemptRow,
   type CaseFingerprintInput,
   type ParticipantFingerprintInput,
   type PersistedParticipantConfig
@@ -578,5 +583,184 @@ describe("sortParticipantsCanonically", () => {
     expect(sortParticipantsCanonically(canonical).map((entry) => entry.participantId)).toEqual(
       participantIds
     );
+  });
+});
+
+// ---------------------------------------------------------------------
+// Milestone 10 -- Attempt Audit / partial spend / admission-evidence
+// pure functions (Issue #23). Deliberately tested directly, mirroring
+// sortParticipantsCanonically's own established pattern above, rather
+// than through a fake Supabase client -- this codebase has never mocked
+// the Supabase query-builder chain; every repository's own read-time
+// LOGIC is instead factored into plain, directly-testable functions.
+// ---------------------------------------------------------------------
+
+function attemptRow(participantConfigId: string, overrides: Partial<AttemptRow> = {}): AttemptRow {
+  return {
+    participant_config_id: participantConfigId,
+    attempt_number: 1,
+    status: "SUCCESS",
+    configured_model_id: "openai/gpt-5-nano",
+    canonical_model_id: "openai/gpt-5-nano-2025-08-07",
+    provider_endpoint_tag: "azure/swedencentral",
+    prompt_version: "advocate-v1",
+    conservative_max_cost_usd: "0.00098076",
+    provider_request_id: "gen-abc123",
+    input_tokens: 409,
+    output_tokens: 566,
+    total_tokens: 975,
+    input_price_per_million: "0.055",
+    output_price_per_million: "0.44",
+    request_price_usd: "0",
+    actual_cost_usd: "0.000271535",
+    derived_cost_usd: "0.000271535",
+    pricing_observed_at: "2026-08-31T08:58:30.06+00:00",
+    latency_ms: 5091,
+    error_category: null,
+    error_message: null,
+    started_at: "2026-08-31T08:58:30.402823+00:00",
+    completed_at: "2026-08-31T08:58:35.600479+00:00",
+    ...overrides
+  };
+}
+
+describe("buildAttemptAudits (Milestone 10, Issue #23 Finding 4)", () => {
+  const proI = persistedParticipant("advocate-pro-1");
+  const judge1 = persistedParticipant("judge-1");
+  const participantById = new Map([
+    [proI.id, proI],
+    [judge1.id, judge1]
+  ]);
+
+  it("normalizes shuffled DB rows into canonical-participant-then-attempt-number order", () => {
+    const shuffled: AttemptRow[] = [
+      attemptRow(judge1.id, { attempt_number: 1 }),
+      attemptRow(proI.id, { attempt_number: 2, status: "TIMEOUT" }),
+      attemptRow(proI.id, { attempt_number: 1 })
+    ];
+
+    const audits = buildAttemptAudits(shuffled, participantById);
+
+    expect(audits.map((entry) => `${entry.participantId}#${entry.attemptNumber}`)).toEqual([
+      "advocate-pro-1#1",
+      "advocate-pro-1#2",
+      "judge-1#1"
+    ]);
+  });
+
+  it("skips a row whose participant_config_id resolves to no known participant", () => {
+    const audits = buildAttemptAudits([attemptRow("unknown-config-id")], participantById);
+
+    expect(audits).toHaveLength(0);
+  });
+
+  it("carries every field through as a decimal-safe string or the raw null it persisted as", () => {
+    const audits = buildAttemptAudits(
+      [attemptRow(proI.id, { conservative_max_cost_usd: null, actual_cost_usd: null, derived_cost_usd: null })],
+      participantById
+    );
+
+    expect(audits[0].conservativeMaxCostUsd).toBeNull();
+    expect(audits[0].actualCostUsd).toBeNull();
+    expect(audits[0].derivedCostUsd).toBeNull();
+    expect(audits[0].configuredModelId).toBe("openai/gpt-5-nano");
+    expect(audits[0].providerRequestId).toBe("gen-abc123");
+  });
+
+  it("never fabricates zero for missing token/cost telemetry", () => {
+    const audits = buildAttemptAudits(
+      [attemptRow(proI.id, { input_tokens: null, output_tokens: null, total_tokens: null })],
+      participantById
+    );
+
+    expect(audits[0].inputTokens).toBeNull();
+    expect(audits[0].outputTokens).toBeNull();
+    expect(audits[0].totalTokens).toBeNull();
+  });
+});
+
+describe("computePartialSpend (Milestone 10, Issue #23 Finding 2)", () => {
+  it("returns null when zero attempt rows exist (BLOCKED_BUDGET / never-claimed) -- not a fabricated $0", () => {
+    expect(computePartialSpend([])).toBeNull();
+  });
+
+  it("sums known effective costs (actual ?? derived) when every attempt's cost is known", () => {
+    const result = computePartialSpend([
+      attemptRow("a", { actual_cost_usd: "0.001", derived_cost_usd: "0.001" }),
+      attemptRow("b", { actual_cost_usd: null, derived_cost_usd: "0.002" })
+    ]);
+
+    expect(result).toEqual({ knownCostUsd: "0.003", hasUnknownCost: false });
+  });
+
+  it("flags hasUnknownCost and still sums the known subset -- never discards known spend", () => {
+    const result = computePartialSpend([
+      attemptRow("a", { actual_cost_usd: "0.001", derived_cost_usd: null }),
+      attemptRow("b", { actual_cost_usd: "0.002", derived_cost_usd: null }),
+      attemptRow("c", { actual_cost_usd: null, derived_cost_usd: null })
+    ]);
+
+    expect(result).toEqual({ knownCostUsd: "0.003", hasUnknownCost: true });
+  });
+
+  it("prefers actual over derived when both are present", () => {
+    const result = computePartialSpend([attemptRow("a", { actual_cost_usd: "0.005", derived_cost_usd: "0.009" })]);
+
+    expect(result).toEqual({ knownCostUsd: "0.005", hasUnknownCost: false });
+  });
+});
+
+describe("buildAdmissionReserveEvidence (Milestone 10, Issue #23 Sec 8)", () => {
+  const proI = persistedParticipant("advocate-pro-1");
+  const judge1 = persistedParticipant("judge-1");
+  const participantById = new Map([
+    [proI.id, proI],
+    [judge1.id, judge1]
+  ]);
+
+  it("groups every attempt row's reserve by logical participant, preserving retries as separate entries", () => {
+    const evidence = buildAdmissionReserveEvidence(
+      [
+        attemptRow(proI.id, { attempt_number: 1, conservative_max_cost_usd: "0.001" }),
+        attemptRow(proI.id, { attempt_number: 2, conservative_max_cost_usd: "0.001" }),
+        attemptRow(judge1.id, { attempt_number: 1, conservative_max_cost_usd: "0.0015" })
+      ],
+      participantById
+    );
+
+    const proEntry = evidence.find((entry) => entry.participantId === "advocate-pro-1");
+
+    expect(proEntry?.conservativeMaxCostUsdByAttempt).toEqual(["0.001", "0.001"]);
+    expect(evidence.find((entry) => entry.participantId === "judge-1")?.conservativeMaxCostUsdByAttempt).toEqual([
+      "0.0015"
+    ]);
+  });
+
+  it("skips attempt rows for an unresolvable participant_config_id", () => {
+    const evidence = buildAdmissionReserveEvidence([attemptRow("unknown-config-id")], participantById);
+
+    expect(evidence).toHaveLength(0);
+  });
+});
+
+describe("computeWallClockMs (Milestone 10, Issue #23 Sec 6/9)", () => {
+  it("computes duration from valid started/completed timestamps", () => {
+    expect(
+      computeWallClockMs("2026-08-31T08:58:30.000Z", "2026-08-31T08:58:42.500Z")
+    ).toBe(12500);
+  });
+
+  it("returns null when either timestamp is missing", () => {
+    expect(computeWallClockMs(null, "2026-08-31T08:58:42.500Z")).toBeNull();
+    expect(computeWallClockMs("2026-08-31T08:58:30.000Z", null)).toBeNull();
+    expect(computeWallClockMs(null, null)).toBeNull();
+  });
+
+  it("fails closed to null on an anomalous negative duration rather than showing a negative number", () => {
+    expect(computeWallClockMs("2026-08-31T08:58:42.500Z", "2026-08-31T08:58:30.000Z")).toBeNull();
+  });
+
+  it("fails closed to null on an unparseable timestamp, never using browser/current time", () => {
+    expect(computeWallClockMs("not-a-date", "2026-08-31T08:58:42.500Z")).toBeNull();
   });
 });

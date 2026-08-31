@@ -86,6 +86,18 @@ class FakeRunRepository implements RunRepository {
       totalCostUsd: null,
       advocateCostUsd: null,
       judgeCostUsd: null,
+      // Milestone 10 -- read-path-only derived/exposed fields, never
+      // touched by this fake freeze repository; neutral defaults.
+      totalInputTokens: null,
+      totalOutputTokens: null,
+      totalTokens: null,
+      logicalCallCount: 0,
+      providerAttemptCount: 0,
+      wallClockMs: null,
+      partialSpend: null,
+      admission: null,
+      attempts: [],
+      protocol: null,
       participants: input.participants.map((entry) => ({
         id: randomUUID(),
         participantId: entry.participantId,
