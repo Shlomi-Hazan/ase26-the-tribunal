@@ -46,8 +46,8 @@ Do not begin later milestones by destabilizing incomplete earlier work.
 | 7 | OpenRouter Infrastructure | ✅ Complete |
 | 7A | Smart Tribunal Package Extraction | ✅ Complete |
 | 8 | Shared-Model Tribunal | ✅ Complete |
-| 9 | Separate-Model Tribunal | 🟡 Current |
-| 10 | Protocol & Economics | ⬜ Planned |
+| 9 | Separate-Model Tribunal | ✅ Complete |
+| 10 | Protocol & Economics | 🟡 Current |
 | 11 | Past Cases & Auditability | ⬜ Planned |
 | 12 | Agent Mode, If Confirmed | ⬜ Conditional |
 | 13 | Failure & Security Hardening | ⬜ Planned |
@@ -531,9 +531,15 @@ Mock responses prove each participant routes to its configured model and orchest
 
 The same Tribunal engine works with one shared model or seven independent assignments.
 
+### Closeout (2026-08-31)
+
+Complete. [PR #21](https://github.com/Shlomi-Hazan/ase26-the-tribunal/pull/21) merged at `ce7a103341447ae530714f7ef82c12013178d13e`. One human-authorized live gate (`7960fc37-28fd-4e01-9547-a1ce9687d6ec`, SEPARATE mode, two distinct real configured models, verdict independently reconciled from persisted evidence and the OpenRouter generation ledger) passed. A small follow-up Result-page UX fix ([PR #22](https://github.com/Shlomi-Hazan/ase26-the-tribunal/pull/22), verdict semantic coloring + expandable-reasoning affordance) was pulled forward from M14 and merged at `f89e0311b3a4de479a42fdfcabab5ecb42f05d96`.
+
 ---
 
 # M10 — Protocol & Economics
+
+**Planning:** [Issue #23](https://github.com/Shlomi-Hazan/ase26-the-tribunal/issues/23) records a source-truth audit of what M7–M9 already implemented before any M10 code is written. Summary: the execution engine, budget guard, pricing-precedence, and protocol-assembly logic below are already implemented and tested; M10's actual remaining work is almost entirely *exposing* that already-correct, already-persisted data through `GET /api/runs/:id` and the Result page, plus surfacing partial spend on a `FAILED` run. No database migration is expected. See the issue for the full per-requirement classification and decision record.
 
 ## Goal
 
