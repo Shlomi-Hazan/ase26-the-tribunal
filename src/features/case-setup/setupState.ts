@@ -1,7 +1,6 @@
 import {
   allParticipants,
   defaultPersonalityByParticipant,
-  mockModels,
   type ExecutionMode
 } from "../../mocks/tribunalMockData";
 import {
@@ -116,14 +115,26 @@ export type SetupContextValue = {
 // validate against the real catalog.
 const defaultModelId = "";
 
+// M9 correction (Separate-Model Tribunal, Issue #20 independent planning
+// review): every participant's starting modelId is likewise deliberately
+// empty now, never a mock catalog id. Before this correction, Separate
+// Mode's own submission payload (ReviewPage) read this same field
+// directly with nothing in between ever validating it against a real
+// catalog -- harmless only while Separate Mode's Convene was
+// unconditionally unreachable. The component layer (ParticipantCard,
+// mirroring useEligibleModels's own auto-select-only-when-invalid
+// pattern) is responsible for repairing/auto-selecting a real
+// role-eligible model once its role catalog loads -- this pure reducer
+// module has no network access and must never bake a stale/mock id into
+// state that could otherwise look like a deliberate user choice.
 const initialParticipants = allParticipants.reduce(
-  (configs, participant, index) => ({
+  (configs, participant) => ({
     ...configs,
     [participant.id]: {
       profileName: "",
       personality: defaultPersonalityByParticipant[participant.id],
       personalitySource: "manual",
-      modelId: mockModels[index % mockModels.length].id
+      modelId: defaultModelId
     }
   }),
   {} as SetupState["participants"]

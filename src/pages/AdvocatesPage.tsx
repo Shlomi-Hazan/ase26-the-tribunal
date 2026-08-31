@@ -8,12 +8,21 @@ import {
   areAdvocatePersonalitiesValid,
   SETUP_STEP_INDEX
 } from "../features/case-setup/setupState";
+import { useRoleEligibleModels } from "../features/case-setup/useRoleEligibleModels";
 import { useSetup } from "../features/case-setup/useSetup";
 import { advocateParticipants } from "../mocks/tribunalMockData";
 
 export function AdvocatesPage() {
   const { state, dispatch } = useSetup();
   const canContinue = areAdvocatePersonalitiesValid(state);
+  // M9 (Separate-Model Tribunal, Issue #20): one shared ADVOCATE role
+  // catalog fetch, reused by all four advocate cards below -- never one
+  // fetch per card.
+  const {
+    models: advocateModels,
+    loading: advocateModelsLoading,
+    error: advocateModelsError
+  } = useRoleEligibleModels("ADVOCATE");
 
   return (
     <Stack spacing={4}>
@@ -34,7 +43,13 @@ export function AdvocatesPage() {
         }}
       >
         {advocateParticipants.map((participant) => (
-          <ParticipantCard key={participant.id} participant={participant} />
+          <ParticipantCard
+            key={participant.id}
+            participant={participant}
+            roleModels={advocateModels}
+            roleModelsError={advocateModelsError}
+            roleModelsLoading={advocateModelsLoading}
+          />
         ))}
       </Box>
       <Stack direction="row" spacing={2}>

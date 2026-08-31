@@ -8,12 +8,21 @@ import {
   areJudgePersonalitiesValid,
   SETUP_STEP_INDEX
 } from "../features/case-setup/setupState";
+import { useRoleEligibleModels } from "../features/case-setup/useRoleEligibleModels";
 import { useSetup } from "../features/case-setup/useSetup";
 import { judgeParticipants } from "../mocks/tribunalMockData";
 
 export function JudgesPage() {
   const { state, dispatch } = useSetup();
   const canContinue = areJudgePersonalitiesValid(state);
+  // M9 (Separate-Model Tribunal, Issue #20): one shared JUDGE role
+  // catalog fetch, reused by all three judge cards below -- never one
+  // fetch per card.
+  const {
+    models: judgeModels,
+    loading: judgeModelsLoading,
+    error: judgeModelsError
+  } = useRoleEligibleModels("JUDGE");
 
   return (
     <Stack spacing={4}>
@@ -34,7 +43,13 @@ export function JudgesPage() {
         }}
       >
         {judgeParticipants.map((participant) => (
-          <ParticipantCard key={participant.id} participant={participant} />
+          <ParticipantCard
+            key={participant.id}
+            participant={participant}
+            roleModels={judgeModels}
+            roleModelsError={judgeModelsError}
+            roleModelsLoading={judgeModelsLoading}
+          />
         ))}
       </Box>
       <Stack direction="row" spacing={2}>

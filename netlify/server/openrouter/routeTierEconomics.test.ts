@@ -8,7 +8,10 @@ import {
 } from "./economicsConstants";
 import { buildPricingSnapshot } from "./pricing";
 import { computeCandidateAttemptCostUsd } from "./routeResolution";
-import { computeConservativeFullTribunalCostForRoute } from "./routeTierEconomics";
+import {
+  computeConservativeFullTribunalCostForRoute,
+  computeConservativeParticipantEstimateForRoute
+} from "./routeTierEconomics";
 import {
   ADVOCATE_OUTPUT_CAP_TOKENS,
   JUDGE_OUTPUT_CAP_TOKENS,
@@ -143,6 +146,70 @@ describe("computeConservativeFullTribunalCostForRoute (Section 9's centralized h
 
     expect(
       computeConservativeFullTribunalCostForRoute(free.snapshot).equals(new Decimal(0))
+    ).toBe(true);
+  });
+});
+
+// M9 (Separate-Model Tribunal, Issue #20), Test Plan item Z2:
+// "role-specific participant estimate semantics are mathematically
+// consistent with the existing Shared full-Tribunal estimate for an
+// otherwise identical pricing route."
+describe("computeConservativeParticipantEstimateForRoute (M9 role-aware discovery)", () => {
+  it("4x(ADVOCATE participant estimate) + 3x(JUDGE participant estimate) exactly equals the full-Tribunal estimate for the same pricing", () => {
+    const pricing = pricingSnapshotFixture();
+
+    const advocateEstimate = computeConservativeParticipantEstimateForRoute(pricing, "ADVOCATE");
+    const judgeEstimate = computeConservativeParticipantEstimateForRoute(pricing, "JUDGE");
+    const reconstructedFullTribunal = advocateEstimate.times(4).plus(judgeEstimate.times(3));
+
+    expect(reconstructedFullTribunal.equals(computeConservativeFullTribunalCostForRoute(pricing))).toBe(
+      true
+    );
+  });
+
+  it("matches the exact x2-retry, x1.10-safety-factor formula for a single participant", () => {
+    const pricing = pricingSnapshotFixture();
+
+    const advocateAttemptCost = computeCandidateAttemptCostUsd(
+      pricing,
+      worstCaseAdvocateInputTokens(),
+      ADVOCATE_OUTPUT_CAP_TOKENS
+    );
+    const expected = advocateAttemptCost
+      .times(MAX_PROVIDER_ATTEMPTS_PER_LOGICAL_CALL)
+      .times(BUDGET_SAFETY_FACTOR);
+
+    expect(
+      computeConservativeParticipantEstimateForRoute(pricing, "ADVOCATE").equals(expected)
+    ).toBe(true);
+  });
+
+  it("the judge participant estimate is strictly larger than the advocate participant estimate (same reserve as the full-Tribunal formula)", () => {
+    const pricing = pricingSnapshotFixture();
+
+    const advocateEstimate = computeConservativeParticipantEstimateForRoute(pricing, "ADVOCATE");
+    const judgeEstimate = computeConservativeParticipantEstimateForRoute(pricing, "JUDGE");
+
+    expect(judgeEstimate.greaterThan(advocateEstimate)).toBe(true);
+  });
+
+  it("returns Decimal(0) for a genuinely free route, for either role", () => {
+    const free = buildPricingSnapshot(
+      "openai/gpt-5",
+      "openai",
+      { prompt: "0", completion: "0" },
+      "2026-08-26T00:00:00.000Z"
+    );
+
+    if (!free.eligible) {
+      throw new Error("expected a resolvable free pricing fixture");
+    }
+
+    expect(
+      computeConservativeParticipantEstimateForRoute(free.snapshot, "ADVOCATE").equals(new Decimal(0))
+    ).toBe(true);
+    expect(
+      computeConservativeParticipantEstimateForRoute(free.snapshot, "JUDGE").equals(new Decimal(0))
     ).toBe(true);
   });
 });

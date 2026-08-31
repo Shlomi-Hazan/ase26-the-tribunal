@@ -445,14 +445,67 @@ describe("executeTribunalRun", () => {
     expect(provider.createChatCompletionCallCount).toBe(0);
   });
 
-  it("SEPARATE-mode run -> separate_mode_not_enabled, zero completion calls (M8 is Shared-Model only, M9 scope)", async () => {
-    const run = { ...buildRun(), executionMode: "separate" as const };
+  // M9 (Separate-Model Tribunal, Issue #20), Test Plan item P: the M8-
+  // only "reject every SEPARATE run outright" gate is gone --
+  // executeTribunalRun itself (not only triggerExecutionIfEligible)
+  // accepts a genuinely valid SEPARATE run using two distinct configured
+  // models across the seven seats.
+  it("P: a valid SEPARATE-mode run with two distinct configured models across seats completes normally", async () => {
+    const SECOND_MODEL_ID = "openai/gpt-5-nano";
+    const twoModelFixture = {
+      models: [
+        ...eligibleFixture().models,
+        { id: SECOND_MODEL_ID, canonical_slug: SECOND_MODEL_ID, name: "Second Model", context_length: 200_000 }
+      ],
+      endpoints: eligibleFixture().endpoints
+    };
+    const run = {
+      ...buildRun(),
+      executionMode: "separate" as const,
+      participants: buildRun().participants.map((p) => ({
+        ...p,
+        // Advocates use MODEL_ID, judges use SECOND_MODEL_ID -- two
+        // genuinely distinct configured models in the same run.
+        modelId: p.role === "JUDGE" ? SECOND_MODEL_ID : p.modelId
+      }))
+    };
+    const provider = new ScriptedOpenRouterProvider(twoModelFixture, allEligibleScripts());
+    const { deps, repository } = buildDeps(run, provider);
+
+    const outcome = await executeTribunalRun(run.id, deps);
+
+    expect(outcome).toEqual({ outcome: "completed", majorityVerdict: "GUILTY" });
+    expect(provider.createChatCompletionCallCount).toBe(7);
+
+    const advocateAttempts = [...repository.attempts.values()].filter((a) =>
+      a.participantConfigId.startsWith("config-advocate")
+    );
+    const judgeAttempts = [...repository.attempts.values()].filter((a) =>
+      a.participantConfigId.startsWith("config-judge")
+    );
+
+    expect(advocateAttempts.every((a) => a.configuredModelId === MODEL_ID)).toBe(true);
+    expect(judgeAttempts.every((a) => a.configuredModelId === SECOND_MODEL_ID)).toBe(true);
+  });
+
+  // Test Plan item Q: the worker still fails closed on an invalid
+  // SEPARATE configuration -- not via the removed M8-only gate, but
+  // through the normal execution-time preflight invariant (every
+  // participant must independently resolve an eligible route).
+  it("Q: a SEPARATE-mode run where one seat's configured model is ineligible fails closed via normal preflight, zero completion calls", async () => {
+    const run = {
+      ...buildRun(),
+      executionMode: "separate" as const,
+      participants: buildRun().participants.map((p) =>
+        p.participantId === "judge-2" ? { ...p, modelId: "unknown/does-not-exist" } : p
+      )
+    };
     const provider = new ScriptedOpenRouterProvider(eligibleFixture(), allEligibleScripts());
     const { deps } = buildDeps(run, provider);
 
     const outcome = await executeTribunalRun(run.id, deps);
 
-    expect(outcome).toEqual({ outcome: "separate_mode_not_enabled" });
+    expect(outcome.outcome).toBe("blocked_budget");
     expect(provider.createChatCompletionCallCount).toBe(0);
   });
 

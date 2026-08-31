@@ -1,12 +1,50 @@
 import type { Handler, HandlerEvent } from "@netlify/functions";
 import { readOpenRouterServerConfig } from "../server/env";
 import { RealOpenRouterProvider } from "../server/openrouter/provider";
-import { listEligibleModels, type ModelDiscoveryDeps } from "../server/openrouter/modelDiscovery";
+import {
+  listEligibleModels,
+  listRoleEligibleModels,
+  type ModelDiscoveryDeps
+} from "../server/openrouter/modelDiscovery";
+import type { RouteRole } from "../server/openrouter/routeResolution";
 import {
   sharedEndpointCache,
   sharedModelCache
 } from "../server/openrouter/sharedMetadataCache";
 import { preflightErrorResponse, preflightJsonResponse } from "../server/openrouter/preflightResponses";
+
+// M9 (Separate-Model Tribunal, Issue #20): the only two accepted role
+// values, matching routeResolution.ts's RouteRole exactly. An explicit
+// allowlist, never a loose string cast -- any other value (including a
+// near-miss like lowercase "advocate") fails closed with a 400, never
+// silently falls back to Shared discovery.
+const VALID_ROLES: readonly RouteRole[] = ["ADVOCATE", "JUDGE"];
+
+type RoleQueryParamResult =
+  | { present: false }
+  | { present: true; valid: true; role: RouteRole }
+  | { present: true; valid: false };
+
+function parseRoleQueryParam(event: HandlerEvent): RoleQueryParamResult {
+  const raw = event.queryStringParameters?.role;
+
+  // M9 pre-live audit correction (Issue #20): "absent" means ONLY
+  // genuinely absent per the Netlify event contract (the query string
+  // key itself never appears, or the parsed object is missing/null) --
+  // never an explicitly supplied empty string. `?role=` and `?role= `
+  // (whitespace-only) are both a PRESENT, INVALID role: they fail closed
+  // with a 400 below, exactly like any other malformed value, rather
+  // than silently falling back to Shared discovery.
+  if (raw === undefined || raw === null) {
+    return { present: false };
+  }
+
+  if ((VALID_ROLES as readonly string[]).includes(raw)) {
+    return { present: true, valid: true, role: raw as RouteRole };
+  }
+
+  return { present: true, valid: false };
+}
 
 export async function handleModelsRequest(
   event: HandlerEvent,
@@ -17,7 +55,26 @@ export async function handleModelsRequest(
       return preflightJsonResponse(405, { error: "method_not_allowed" });
     }
 
-    const models = await listEligibleModels(deps);
+    const roleParam = parseRoleQueryParam(event);
+
+    // No role query param -- exact, unmodified M8 Shared-Tribunal
+    // discovery response shape/semantics.
+    if (!roleParam.present) {
+      const models = await listEligibleModels(deps);
+
+      return preflightJsonResponse(200, { models });
+    }
+
+    if (!roleParam.valid) {
+      return preflightJsonResponse(400, {
+        error: "invalid_role",
+        message: "role must be exactly \"ADVOCATE\" or \"JUDGE\" when provided."
+      });
+    }
+
+    // M9: role-aware discovery -- reuses the same centralized eligibility
+    // primitives (see modelDiscovery.ts), never a second implementation.
+    const models = await listRoleEligibleModels(roleParam.role, deps);
 
     return preflightJsonResponse(200, { models });
   } catch (error) {
