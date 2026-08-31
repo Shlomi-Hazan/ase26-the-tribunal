@@ -687,6 +687,17 @@ purely a discoverability gap. Preferred future direction: a visible
 expand chevron and/or an explicit "View reasoning" / "View argument"
 affordance.
 
+**Pulled forward and completed early** (`fix/result-verdict-affordances`,
+post-M9): two specific items from this note were addressed ahead of the
+rest of M14's broader polish/accessibility scope -- an explicit
+chevron + "View reasoning" / "View argument" affordance on every Judge
+and Advocate Accordion, and semantic GUILTY (error) / NOT_GUILTY
+(success) verdict coloring on the large verdict, the judge vote cards,
+and each Judge Accordion summary, with the literal verdict text always
+retained. The rest of M14's scope (typography, spacing, responsive
+behaviour, card density, motion, contrast, reduced-motion, etc.) remains
+future work -- M14 as a whole is still Planned, not Current or Complete.
+
 ## Exit condition
 
 The application feels intentionally designed on desktop and mobile while preserving the simple interaction model.
