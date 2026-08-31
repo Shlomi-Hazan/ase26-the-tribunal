@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppRoutes } from "../app/App";
 import { renderWithAppProviders } from "../test/renderWithAppProviders";
 import { theme } from "../theme/theme";
-import type { StoredRun } from "../services/runApi";
+import type { AttemptAudit, StoredRun } from "../services/runApi";
 
 const RUN_ID = "11111111-1111-4111-8111-111111111111";
 
@@ -31,6 +31,20 @@ function baseRun(overrides: Partial<StoredRun> = {}): StoredRun {
     totalCostUsd: "0.05",
     advocateCostUsd: "0.03",
     judgeCostUsd: "0.02",
+    // Milestone 10 (Issue #23) -- a realistic, self-consistent default:
+    // 7 logical calls / 7 provider attempts (no retry), matching
+    // ATTEMPT_PARTICIPANT_IDS below, real-shaped totals, no admission/
+    // protocol by default (individual tests override where needed).
+    totalInputTokens: 1234,
+    totalOutputTokens: 567,
+    totalTokens: 1801,
+    logicalCallCount: 7,
+    providerAttemptCount: 7,
+    wallClockMs: 4200,
+    partialSpend: { knownCostUsd: "0.05", hasUnknownCost: false },
+    admission: null,
+    attempts: ATTEMPT_PARTICIPANT_IDS.map((id) => attemptAudit(id)),
+    protocol: null,
     participants: [
       participant("advocate-pro-1", "ADVOCATE", "PRO", { speech: "PRO I speech." }),
       participant("advocate-pro-2", "ADVOCATE", "PRO", { speech: "PRO II speech." }),
@@ -40,6 +54,49 @@ function baseRun(overrides: Partial<StoredRun> = {}): StoredRun {
       participant("judge-2", "JUDGE", null, { verdict: "GUILTY", reasoning: "Judge II reasoning." }),
       participant("judge-3", "JUDGE", null, { verdict: "NOT_GUILTY", reasoning: "Judge III reasoning." })
     ],
+    ...overrides
+  };
+}
+
+const ATTEMPT_PARTICIPANT_IDS = [
+  "advocate-pro-1",
+  "advocate-pro-2",
+  "advocate-con-1",
+  "advocate-con-2",
+  "judge-1",
+  "judge-2",
+  "judge-3"
+] as const;
+
+function attemptAudit(participantId: string, overrides: Partial<AttemptAudit> = {}): AttemptAudit {
+  const role = participantId.startsWith("advocate") ? "ADVOCATE" : "JUDGE";
+
+  return {
+    participantId: participantId as AttemptAudit["participantId"],
+    role,
+    side: participantId.includes("-pro-") ? "PRO" : participantId.includes("-con-") ? "CON" : null,
+    attemptNumber: 1,
+    status: "SUCCESS",
+    configuredModelId: "openai/gpt-5",
+    canonicalModelId: "openai/gpt-5-2026-01-01",
+    providerEndpointTag: "azure/swedencentral",
+    promptVersion: role === "ADVOCATE" ? "advocate-v1" : "judge-v1",
+    conservativeMaxCostUsd: "0.001",
+    inputTokens: 400,
+    outputTokens: 500,
+    totalTokens: 900,
+    inputPricePerMillion: "0.055",
+    outputPricePerMillion: "0.44",
+    requestPriceUsd: "0",
+    pricingObservedAt: "2026-08-29T00:00:00.000Z",
+    actualCostUsd: "0.0002",
+    derivedCostUsd: "0.0002",
+    latencyMs: 600,
+    providerRequestId: `gen-${participantId}`,
+    errorCategory: null,
+    errorMessage: null,
+    startedAt: "2026-08-29T00:00:01.000Z",
+    completedAt: "2026-08-29T00:00:02.000Z",
     ...overrides
   };
 }
