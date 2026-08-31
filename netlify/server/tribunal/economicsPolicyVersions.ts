@@ -33,32 +33,45 @@
 // ever grows by addition; `ECONOMICS_POLICY_V1`'s three values below must
 // never be edited once a real run exists under them.
 
+// Corrected (independent source audit, Finding 2): `readonly` fields plus
+// `Object.freeze` below make this registry MATERIALLY immutable, not
+// merely `const`-bound. `const` only prevents rebinding the exported
+// name -- it does nothing to stop `ECONOMICS_POLICY_V1.hardBudgetUsd =
+// "50.00"` from silently corrupting the historical record for every
+// caller for the rest of the process's lifetime. A frozen object throws
+// in strict mode (this codebase's TS output) on an attempted mutation,
+// and silently no-ops rather than corrupting state even where it
+// wouldn't throw -- either way, the historical values below can never
+// actually change once this module has loaded.
 export type EconomicsPolicy = {
-  economicsPolicyVersion: "tribunal-economics-policy-v1";
-  hardBudgetUsd: string;
-  budgetSafetyFactor: string;
-  maxProviderAttemptsPerLogicalCall: number;
+  readonly economicsPolicyVersion: "tribunal-economics-policy-v1";
+  readonly hardBudgetUsd: string;
+  readonly budgetSafetyFactor: string;
+  readonly maxProviderAttemptsPerLogicalCall: number;
 };
 
-// Permanently frozen. Every M8/M9 COMPLETED run (and every M10-forward
-// run whose `protocols.schema_version` is still `"tribunal-protocol-v1"`)
+// Permanently frozen, both at the type level (readonly) and at runtime
+// (Object.freeze). Every M8/M9 COMPLETED run (and every M10-forward run
+// whose `protocols.schema_version` is still `"tribunal-protocol-v1"`)
 // was admitted under exactly this policy -- matches
 // `economicsConstants.ts`'s CURRENT values at the time of writing only by
 // coincidence of timing, never by reference.
-export const ECONOMICS_POLICY_V1: EconomicsPolicy = {
+export const ECONOMICS_POLICY_V1: EconomicsPolicy = Object.freeze({
   economicsPolicyVersion: "tribunal-economics-policy-v1",
   hardBudgetUsd: "5.00",
   budgetSafetyFactor: "1.10",
   maxProviderAttemptsPerLogicalCall: 2
-};
+});
 
 // The only selector that exists today: `protocols.schema_version`, already
 // persisted on every completed run. Resolving an unrecognized/future
 // schema version returns `undefined` -- callers must fail closed
-// (`admission: Unavailable`), never silently assume V1.
-const ECONOMICS_POLICY_BY_PROTOCOL_SCHEMA_VERSION: Readonly<Record<string, EconomicsPolicy>> = {
+// (`admission: Unavailable`), never silently assume V1. The registry
+// itself is also frozen -- a future version is added by editing source
+// (a new entry, reviewed and merged), never by runtime mutation.
+const ECONOMICS_POLICY_BY_PROTOCOL_SCHEMA_VERSION: Readonly<Record<string, EconomicsPolicy>> = Object.freeze({
   "tribunal-protocol-v1": ECONOMICS_POLICY_V1
-};
+});
 
 export function resolveEconomicsPolicyForProtocolSchemaVersion(
   protocolSchemaVersion: string

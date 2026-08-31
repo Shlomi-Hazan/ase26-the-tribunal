@@ -13,6 +13,8 @@ import {
   Card,
   CardContent,
   CircularProgress,
+  Collapse,
+  IconButton,
   Stack,
   Table,
   TableBody,
@@ -516,6 +518,142 @@ function AdmissionBudgetSafety({ admission }: { admission: StoredRun["admission"
   );
 }
 
+// Milestone 10 (independent source audit, Finding 3): docs/economics.md
+// Sec 18 requires the detailed audit to include a pricing SNAPSHOT, not
+// only actual/derived cost -- the primary table stays compact (per
+// docs/ui-spec.md Sec 15's own "do not overload the first view"
+// guidance), and each row gets its own expandable detail exposing the
+// full per-attempt evidence: configured/canonical model, provider
+// endpoint, prompt version, the historical pricing snapshot (explicitly
+// labeled as such -- never "current price", never recomputed against
+// today's OpenRouter pricing), the conservative admission reserve,
+// actual/derived cost kept separately labeled, and provider/audit
+// metadata. A missing field is always `Unavailable`, never `0`/`$0`.
+function formatPricePerMillion(value: string | null): string {
+  return value === null ? "Unavailable" : `$${value} / 1M tokens`;
+}
+
+function attemptDetailId(attempt: AttemptAudit): string {
+  return `attempt-detail-${attempt.participantId}-${attempt.attemptNumber}`;
+}
+
+function AttemptDetailField({ label, value }: { label: string; value: string | null }) {
+  return (
+    <Typography variant="body2">
+      {label}: {value ?? "Unavailable"}
+    </Typography>
+  );
+}
+
+function AttemptDetailRow({ attempt }: { attempt: AttemptAudit }) {
+  const [expanded, setExpanded] = useState(false);
+  const detailId = attemptDetailId(attempt);
+  const rowLabel = `${attempt.participantId} attempt ${attempt.attemptNumber}`;
+  const cost = attemptCostDisplay(attempt);
+
+  return (
+    <>
+      <TableRow>
+        <TableCell sx={{ pr: 0 }}>
+          <IconButton
+            aria-controls={detailId}
+            aria-expanded={expanded}
+            // Stable label regardless of expanded state -- aria-expanded
+            // alone communicates the toggle, matching PR #22's own
+            // established "smallest accessible implementation" choice
+            // for the Judge/Advocate Accordion affordances.
+            aria-label={`View pricing detail for ${rowLabel}`}
+            onClick={() => setExpanded((current) => !current)}
+            size="small"
+            sx={{
+              transform: expanded ? "rotate(180deg)" : "none",
+              transition: "transform 0.15s"
+            }}
+          >
+            <AccordionExpandIcon />
+          </IconButton>
+        </TableCell>
+        <TableCell>{attempt.participantId}</TableCell>
+        <TableCell>{attempt.attemptNumber}</TableCell>
+        <TableCell>{attempt.configuredModelId}</TableCell>
+        <TableCell>{formatTokenCount(attempt.inputTokens)}</TableCell>
+        <TableCell>{formatTokenCount(attempt.outputTokens)}</TableCell>
+        <TableCell>{formatTokenCount(attempt.totalTokens)}</TableCell>
+        <TableCell>
+          {cost.text}
+          {cost.source ? (
+            <Typography color="text.secondary" component="span" sx={{ ml: 0.5 }} variant="caption">
+              ({cost.source})
+            </Typography>
+          ) : null}
+        </TableCell>
+        <TableCell>{formatLatency(attempt.latencyMs)}</TableCell>
+        <TableCell>{attempt.status}</TableCell>
+      </TableRow>
+      <TableRow>
+        <TableCell colSpan={10} sx={{ border: expanded ? undefined : "none", p: 0 }}>
+          <Collapse in={expanded} unmountOnExit={false}>
+            <Box id={detailId} sx={{ p: 2 }}>
+              <Stack spacing={2} sx={{ whiteSpace: "normal" }}>
+                <Stack spacing={0.5}>
+                  <Typography sx={{ fontWeight: 800 }} variant="body2">
+                    Model / routing
+                  </Typography>
+                  <AttemptDetailField label="Configured model" value={attempt.configuredModelId} />
+                  <AttemptDetailField label="Canonical model" value={attempt.canonicalModelId} />
+                  <AttemptDetailField label="Provider endpoint" value={attempt.providerEndpointTag} />
+                  <AttemptDetailField label="Prompt version" value={attempt.promptVersion} />
+                </Stack>
+                <Stack spacing={0.5}>
+                  <Typography sx={{ fontWeight: 800 }} variant="body2">
+                    Historical pricing snapshot
+                  </Typography>
+                  <Typography color="text.secondary" variant="caption">
+                    Prices recorded when this attempt was authorized -- never today's current price.
+                  </Typography>
+                  <AttemptDetailField label="Input price" value={formatPricePerMillion(attempt.inputPricePerMillion)} />
+                  <AttemptDetailField
+                    label="Output price"
+                    value={formatPricePerMillion(attempt.outputPricePerMillion)}
+                  />
+                  <AttemptDetailField label="Request fee" value={formatCostUsd(attempt.requestPriceUsd)} />
+                  <AttemptDetailField label="Pricing observed at" value={attempt.pricingObservedAt} />
+                </Stack>
+                <Stack spacing={0.5}>
+                  <Typography sx={{ fontWeight: 800 }} variant="body2">
+                    Authorization
+                  </Typography>
+                  <AttemptDetailField
+                    label="Conservative participant reserve"
+                    value={formatCostUsd(attempt.conservativeMaxCostUsd)}
+                  />
+                </Stack>
+                <Stack spacing={0.5}>
+                  <Typography sx={{ fontWeight: 800 }} variant="body2">
+                    Cost audit
+                  </Typography>
+                  <AttemptDetailField label="Actual provider cost" value={formatCostUsd(attempt.actualCostUsd)} />
+                  <AttemptDetailField label="Derived comparison" value={formatCostUsd(attempt.derivedCostUsd)} />
+                </Stack>
+                <Stack spacing={0.5}>
+                  <Typography sx={{ fontWeight: 800 }} variant="body2">
+                    Provider / audit metadata
+                  </Typography>
+                  <AttemptDetailField label="Provider request ID" value={attempt.providerRequestId} />
+                  <AttemptDetailField label="Error category" value={attempt.errorCategory} />
+                  <AttemptDetailField label="Error message" value={attempt.errorMessage} />
+                  <AttemptDetailField label="Started at" value={attempt.startedAt} />
+                  <AttemptDetailField label="Completed at" value={attempt.completedAt} />
+                </Stack>
+              </Stack>
+            </Box>
+          </Collapse>
+        </TableCell>
+      </TableRow>
+    </>
+  );
+}
+
 function EconomicsAuditAccordion({ run }: { run: StoredRun }) {
   return (
     <Accordion>
@@ -530,9 +668,10 @@ function EconomicsAuditAccordion({ run }: { run: StoredRun }) {
       <AccordionDetails>
         <Stack spacing={3}>
           <TableContainer sx={{ maxWidth: "100%", overflowX: "auto" }}>
-            <Table aria-label="Model call attempt audit" sx={{ minWidth: 840, whiteSpace: "nowrap" }}>
+            <Table aria-label="Model call attempt audit" sx={{ minWidth: 900, whiteSpace: "nowrap" }}>
               <TableHead>
                 <TableRow>
+                  <TableCell aria-label="Detail" />
                   <TableCell>Participant</TableCell>
                   <TableCell>Attempt</TableCell>
                   <TableCell>Model</TableCell>
@@ -545,30 +684,9 @@ function EconomicsAuditAccordion({ run }: { run: StoredRun }) {
                 </TableRow>
               </TableHead>
               <TableBody>
-                {run.attempts.map((attempt) => {
-                  const cost = attemptCostDisplay(attempt);
-
-                  return (
-                    <TableRow key={`${attempt.participantId}-${attempt.attemptNumber}`}>
-                      <TableCell>{attempt.participantId}</TableCell>
-                      <TableCell>{attempt.attemptNumber}</TableCell>
-                      <TableCell>{attempt.configuredModelId}</TableCell>
-                      <TableCell>{formatTokenCount(attempt.inputTokens)}</TableCell>
-                      <TableCell>{formatTokenCount(attempt.outputTokens)}</TableCell>
-                      <TableCell>{formatTokenCount(attempt.totalTokens)}</TableCell>
-                      <TableCell>
-                        {cost.text}
-                        {cost.source ? (
-                          <Typography color="text.secondary" component="span" sx={{ ml: 0.5 }} variant="caption">
-                            ({cost.source})
-                          </Typography>
-                        ) : null}
-                      </TableCell>
-                      <TableCell>{formatLatency(attempt.latencyMs)}</TableCell>
-                      <TableCell>{attempt.status}</TableCell>
-                    </TableRow>
-                  );
-                })}
+                {run.attempts.map((attempt) => (
+                  <AttemptDetailRow key={`${attempt.participantId}-${attempt.attemptNumber}`} attempt={attempt} />
+                ))}
               </TableBody>
             </Table>
           </TableContainer>

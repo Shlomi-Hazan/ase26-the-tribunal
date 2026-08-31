@@ -792,14 +792,28 @@ export class SupabaseRunRepository implements RunRepository {
               { profileName: participant.profileName, personality: participant.personality }
             ])
           ),
-          reasoningByParticipantId: new Map(
+          // Corrected (independent source audit, Finding 1): carries the
+          // persisted verdict alongside the reasoning so resolveProtocol
+          // can cross-check it against the protocol's own recorded
+          // verdict, not merely supply display text.
+          judgeEvidenceByParticipantId: new Map(
             [...verdictByParticipant.entries()]
               .map(([participantConfigId, entry]) => {
                 const participant = participantById.get(participantConfigId);
 
-                return participant ? ([participant.participantId, entry.reasoning] as const) : null;
+                return participant
+                  ? ([
+                      participant.participantId,
+                      { verdict: entry.verdict as "GUILTY" | "NOT_GUILTY", reasoning: entry.reasoning }
+                    ] as const)
+                  : null;
               })
-              .filter((entry): entry is readonly [ParticipantId, string] => entry !== null)
+              .filter(
+                (
+                  entry
+                ): entry is readonly [ParticipantId, { verdict: "GUILTY" | "NOT_GUILTY"; reasoning: string }] =>
+                  entry !== null
+              )
           ),
           economics: {
             logicalCallCount,

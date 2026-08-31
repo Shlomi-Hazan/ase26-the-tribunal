@@ -2,7 +2,7 @@
 // audit correction, Issue #17 blocker 6). Zero real network calls --
 // fetch is mocked directly.
 
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppRoutes } from "../app/App";
@@ -512,6 +512,153 @@ describe("RunPage Economics/Audit details Accordion (Milestone 10, Issue #23)", 
 
     expect(unavailableCells.length).toBeGreaterThanOrEqual(4); // cost + input + output + total for that one row
     expect(screen.queryByText("$0")).not.toBeInTheDocument();
+  });
+});
+
+describe("RunPage per-attempt pricing-snapshot detail (Milestone 10, independent source audit Finding 3)", () => {
+  const FIRST_DETAIL_ID = "attempt-detail-advocate-pro-1-1";
+
+  async function expandEconomicsAndOpenFirstDetail(run: StoredRun) {
+    const user = userEvent.setup();
+    mockRunFetch(run);
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    await screen.findByRole("heading", { name: "GUILTY" });
+    await user.click(screen.getByRole("button", { expanded: false, name: /Economics \/ Audit details/ }));
+
+    const detailButton = screen.getByRole("button", {
+      expanded: false,
+      name: /View pricing detail for advocate-pro-1 attempt 1/
+    });
+    // Scoped to THIS row's own detail box (its id is unique per
+    // participant+attempt) -- every row shares the same field labels/
+    // values in the default fixture, so an unscoped screen.getByText
+    // would be ambiguous across all seven rows' (collapsed) detail boxes.
+    const detailBox = document.getElementById(FIRST_DETAIL_ID) as HTMLElement;
+
+    return { user, detailButton, detailBox };
+  }
+
+  it("exposes a visible, collapsed-by-default detail affordance per attempt row", async () => {
+    const { detailButton, detailBox } = await expandEconomicsAndOpenFirstDetail(baseRun());
+
+    expect(detailButton).toBeVisible();
+    expect(within(detailBox).getByText(/Canonical model:/)).not.toBeVisible();
+  });
+
+  it("click reveals the pricing-snapshot detail", async () => {
+    const { user, detailButton, detailBox } = await expandEconomicsAndOpenFirstDetail(baseRun());
+
+    await user.click(detailButton);
+
+    expect(screen.getByRole("button", { expanded: true, name: /View pricing detail for advocate-pro-1/ })).toBeInTheDocument();
+    expect(within(detailBox).getByText(/Canonical model:/)).toBeVisible();
+  });
+
+  it("keyboard activation reveals the pricing-snapshot detail", async () => {
+    const { user, detailButton, detailBox } = await expandEconomicsAndOpenFirstDetail(baseRun());
+
+    detailButton.focus();
+    await user.keyboard("{Enter}");
+
+    expect(screen.getByRole("button", { expanded: true, name: /View pricing detail for advocate-pro-1/ })).toBeInTheDocument();
+    expect(within(detailBox).getByText(/Canonical model:/)).toBeVisible();
+  });
+
+  it("renders canonical model, provider endpoint, prompt version, pricing snapshot, and conservative reserve", async () => {
+    const run = baseRun({
+      attempts: [
+        attemptAudit("advocate-pro-1", {
+          canonicalModelId: "openai/gpt-4.1-nano-2025-04-14",
+          providerEndpointTag: "azure/swedencentral",
+          promptVersion: "advocate-v1",
+          inputPricePerMillion: "0.055",
+          outputPricePerMillion: "0.44",
+          requestPriceUsd: "0",
+          pricingObservedAt: "2026-08-29T00:00:00.000Z",
+          conservativeMaxCostUsd: "0.00098076"
+        }),
+        ...ATTEMPT_PARTICIPANT_IDS.slice(1).map((id) => attemptAudit(id))
+      ]
+    });
+    const { user, detailButton, detailBox } = await expandEconomicsAndOpenFirstDetail(run);
+
+    await user.click(detailButton);
+
+    const detail = within(detailBox);
+
+    expect(detail.getByText("Canonical model: openai/gpt-4.1-nano-2025-04-14")).toBeVisible();
+    expect(detail.getByText("Provider endpoint: azure/swedencentral")).toBeVisible();
+    expect(detail.getByText("Prompt version: advocate-v1")).toBeVisible();
+    expect(detail.getByText("Historical pricing snapshot")).toBeVisible();
+    expect(detail.getByText(/Prices recorded when this attempt was authorized/)).toBeVisible();
+    expect(detail.getByText("Input price: $0.055 / 1M tokens")).toBeVisible();
+    expect(detail.getByText("Output price: $0.44 / 1M tokens")).toBeVisible();
+    expect(detail.getByText("Request fee: $0")).toBeVisible();
+    expect(detail.getByText("Pricing observed at: 2026-08-29T00:00:00.000Z")).toBeVisible();
+    expect(detail.getByText("Conservative participant reserve: $0.00098076")).toBeVisible();
+  });
+
+  it("keeps actual and derived cost separately labeled in the detail view, never merged into one ambiguous figure", async () => {
+    const run = baseRun({
+      attempts: [
+        attemptAudit("advocate-pro-1", { actualCostUsd: "0.0002", derivedCostUsd: "0.00025" }),
+        ...ATTEMPT_PARTICIPANT_IDS.slice(1).map((id) => attemptAudit(id))
+      ]
+    });
+    const { user, detailButton, detailBox } = await expandEconomicsAndOpenFirstDetail(run);
+
+    await user.click(detailButton);
+
+    const detail = within(detailBox);
+
+    expect(detail.getByText("Actual provider cost: $0.0002")).toBeVisible();
+    expect(detail.getByText("Derived comparison: $0.00025")).toBeVisible();
+  });
+
+  it("renders Unavailable, never $0/blank, for a missing pricing field", async () => {
+    const run = baseRun({
+      attempts: [
+        attemptAudit("advocate-pro-1", {
+          canonicalModelId: null,
+          providerEndpointTag: null,
+          inputPricePerMillion: null,
+          outputPricePerMillion: null,
+          requestPriceUsd: null,
+          pricingObservedAt: null,
+          conservativeMaxCostUsd: null,
+          providerRequestId: null,
+          errorCategory: null,
+          errorMessage: null
+        }),
+        ...ATTEMPT_PARTICIPANT_IDS.slice(1).map((id) => attemptAudit(id))
+      ]
+    });
+    const { user, detailButton, detailBox } = await expandEconomicsAndOpenFirstDetail(run);
+
+    await user.click(detailButton);
+
+    const detail = within(detailBox);
+
+    expect(detail.getByText("Canonical model: Unavailable")).toBeVisible();
+    expect(detail.getByText("Provider endpoint: Unavailable")).toBeVisible();
+    expect(detail.getByText("Input price: Unavailable")).toBeVisible();
+    expect(detail.getByText("Output price: Unavailable")).toBeVisible();
+    expect(detail.getByText("Request fee: Unavailable")).toBeVisible();
+    expect(detail.getByText("Pricing observed at: Unavailable")).toBeVisible();
+    expect(detail.getByText("Conservative participant reserve: Unavailable")).toBeVisible();
+    expect(detail.getByText("Provider request ID: Unavailable")).toBeVisible();
+    expect(detail.queryByText(/: \$0(?!\.)/)).not.toBeInTheDocument();
+  });
+
+  it("makes no current-price/network call when rendering pricing detail (structural -- no fetch beyond the initial run poll)", async () => {
+    const { user, detailButton } = await expandEconomicsAndOpenFirstDetail(baseRun());
+    const fetchSpy = vi.mocked(globalThis.fetch);
+    const callsBeforeExpand = fetchSpy.mock.calls.length;
+
+    await user.click(detailButton);
+
+    expect(fetchSpy.mock.calls.length).toBe(callsBeforeExpand);
   });
 });
 

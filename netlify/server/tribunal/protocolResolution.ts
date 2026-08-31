@@ -4,34 +4,67 @@
 // runtime schema before any of it is exposed, exactly like any other
 // external/persisted data this application never blindly trusts. The
 // resolved view then combines the validated protocol with its REFERENCED
-// evidence (canonical case via caseId, judge reasonings via runId,
-// economics summary via runId) -- SPEC.md Sec 13's "include or reference"
-// contract, satisfied by resolving those references at read time rather
-// than embedding them inline in the immutable, already-real
-// `protocol_json` rows (Issue #23 Sec 11).
+// evidence -- canonical case via caseId, judge reasonings via runId,
+// economics summary via runId (SPEC.md Sec 13's "include or reference"
+// contract). Cross-checks the protocol's own runId/caseId/executionMode/
+// majorityVerdict against the containing run and protocols.schema_version
+// against protocol_json.schemaVersion -- any mismatch fails closed as an
+// audit inconsistency, never repaired.
 //
-// This module never mutates a stored protocol row and never makes a
-// model call. A mismatch between the protocol's own fields and the
-// containing run's fields (runId/caseId/executionMode/majorityVerdict)
-// or between `protocols.schema_version` and `protocol_json.schemaVersion`
-// is treated as an audit inconsistency and fails closed -- never
-// "repaired."
+// Corrected (independent source audit, Finding 1): every failure mode
+// below now returns `{ ok: false, reason }` rather than silently
+// substituting a fabricated value -- missing judge reasoning, a missing
+// frozen participant snapshot, a persisted judge verdict that disagrees
+// with the protocol's own recorded verdict, a duplicate/missing
+// participant identity, a speech under the wrong side, a Judge ID inside
+// `speeches`, an Advocate ID inside `judgeVerdicts`, or an unexpected
+// extra JSON property anywhere in the persisted shape (every object-level
+// schema is now `z.strictObject`, not `z.object`). This module never
+// mutates a stored protocol row and never makes a model call.
 
 import { z } from "zod";
 import { participantIds, type ParticipantId } from "../../../src/schemas/tribunalSetup";
 
-const protocolSpeechSchema = z.object({
+// Local, self-contained canonical identity map -- deliberately not
+// imported from runs.ts (which imports resolveProtocol from this module;
+// importing back would be a cycle). Matches the same fixed mapping
+// execution.ts and runs.ts each already define locally for the same
+// reason.
+const ROLE_BY_PARTICIPANT_ID: Record<ParticipantId, "ADVOCATE" | "JUDGE"> = {
+  "advocate-pro-1": "ADVOCATE",
+  "advocate-pro-2": "ADVOCATE",
+  "advocate-con-1": "ADVOCATE",
+  "advocate-con-2": "ADVOCATE",
+  "judge-1": "JUDGE",
+  "judge-2": "JUDGE",
+  "judge-3": "JUDGE"
+};
+
+const SIDE_BY_PARTICIPANT_ID: Record<ParticipantId, "PRO" | "CON" | null> = {
+  "advocate-pro-1": "PRO",
+  "advocate-pro-2": "PRO",
+  "advocate-con-1": "CON",
+  "advocate-con-2": "CON",
+  "judge-1": null,
+  "judge-2": null,
+  "judge-3": null
+};
+
+const ADVOCATE_IDS: ParticipantId[] = participantIds.filter((id) => ROLE_BY_PARTICIPANT_ID[id] === "ADVOCATE");
+const JUDGE_IDS: ParticipantId[] = participantIds.filter((id) => ROLE_BY_PARTICIPANT_ID[id] === "JUDGE");
+
+const protocolSpeechSchema = z.strictObject({
   participantId: z.enum(participantIds),
   side: z.enum(["PRO", "CON"]),
   speech: z.string().min(1)
 });
 
-const protocolJudgeVerdictSchema = z.object({
+const protocolJudgeVerdictSchema = z.strictObject({
   participantId: z.enum(participantIds),
   verdict: z.enum(["GUILTY", "NOT_GUILTY"])
 });
 
-const protocolParticipantSchema = z.object({
+const protocolParticipantSchema = z.strictObject({
   participantId: z.enum(participantIds),
   role: z.enum(["ADVOCATE", "JUDGE"]),
   side: z.enum(["PRO", "CON"]).nullable(),
@@ -43,16 +76,129 @@ const protocolParticipantSchema = z.object({
 // see netlify/server/tribunal/execution.ts, end of executeTribunalRun.
 // Only the `"tribunal-protocol-v1"` shape is understood; a future schema
 // version needs its own schema/branch here, never a loosened superset.
-export const protocolJsonV1Schema = z.object({
-  schemaVersion: z.literal("tribunal-protocol-v1"),
-  runId: z.string().uuid(),
-  caseId: z.string().uuid(),
-  executionMode: z.enum(["shared", "separate"]),
-  majorityVerdict: z.enum(["GUILTY", "NOT_GUILTY"]),
-  speeches: z.array(protocolSpeechSchema).length(4),
-  judgeVerdicts: z.array(protocolJudgeVerdictSchema).length(3),
-  participants: z.array(protocolParticipantSchema).length(7)
-});
+//
+// `.superRefine` proves the SEMANTIC fixed Tribunal shape, not merely
+// array lengths (independent source audit, Finding 1): speeches are
+// exactly the 4 fixed Advocate IDs, each once, on their own correct
+// side; judgeVerdicts are exactly the 3 fixed Judge IDs, each once;
+// participants are exactly all 7 canonical IDs, each once, with
+// role/side agreeing with that participant's own fixed identity. None of
+// this is a caller-supplied assumption -- every expected ID/role/side is
+// this same local, hand-written canonical map every other module in this
+// codebase already uses.
+export const protocolJsonV1Schema = z
+  .strictObject({
+    schemaVersion: z.literal("tribunal-protocol-v1"),
+    runId: z.string().uuid(),
+    caseId: z.string().uuid(),
+    executionMode: z.enum(["shared", "separate"]),
+    majorityVerdict: z.enum(["GUILTY", "NOT_GUILTY"]),
+    speeches: z.array(protocolSpeechSchema).length(4),
+    judgeVerdicts: z.array(protocolJudgeVerdictSchema).length(3),
+    participants: z.array(protocolParticipantSchema).length(7)
+  })
+  .superRefine((value, ctx) => {
+    const seenSpeechIds = new Set<ParticipantId>();
+
+    for (const speech of value.speeches) {
+      if (!ADVOCATE_IDS.includes(speech.participantId)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["speeches"],
+          message: `${speech.participantId} is not a valid Advocate participant -- no Judge ID may appear in speeches.`
+        });
+        continue;
+      }
+
+      if (seenSpeechIds.has(speech.participantId)) {
+        ctx.addIssue({ code: "custom", path: ["speeches"], message: `Duplicate speech for ${speech.participantId}.` });
+      }
+
+      seenSpeechIds.add(speech.participantId);
+
+      if (SIDE_BY_PARTICIPANT_ID[speech.participantId] !== speech.side) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["speeches"],
+          message: `${speech.participantId}'s speech carries the wrong side.`
+        });
+      }
+    }
+
+    for (const id of ADVOCATE_IDS) {
+      if (!seenSpeechIds.has(id)) {
+        ctx.addIssue({ code: "custom", path: ["speeches"], message: `Missing speech for ${id}.` });
+      }
+    }
+
+    const seenJudgeVerdictIds = new Set<ParticipantId>();
+
+    for (const verdict of value.judgeVerdicts) {
+      if (!JUDGE_IDS.includes(verdict.participantId)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["judgeVerdicts"],
+          message: `${verdict.participantId} is not a valid Judge participant -- no Advocate ID may appear in judgeVerdicts.`
+        });
+        continue;
+      }
+
+      if (seenJudgeVerdictIds.has(verdict.participantId)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["judgeVerdicts"],
+          message: `Duplicate verdict for ${verdict.participantId}.`
+        });
+      }
+
+      seenJudgeVerdictIds.add(verdict.participantId);
+    }
+
+    for (const id of JUDGE_IDS) {
+      if (!seenJudgeVerdictIds.has(id)) {
+        ctx.addIssue({ code: "custom", path: ["judgeVerdicts"], message: `Missing verdict for ${id}.` });
+      }
+    }
+
+    const seenParticipantIds = new Set<ParticipantId>();
+
+    for (const participant of value.participants) {
+      if (seenParticipantIds.has(participant.participantId)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["participants"],
+          message: `Duplicate participant snapshot for ${participant.participantId}.`
+        });
+      }
+
+      seenParticipantIds.add(participant.participantId);
+
+      const expectedRole = ROLE_BY_PARTICIPANT_ID[participant.participantId];
+      const expectedSide = SIDE_BY_PARTICIPANT_ID[participant.participantId];
+
+      if (participant.role !== expectedRole) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["participants"],
+          message: `${participant.participantId} has the wrong role (expected ${expectedRole}).`
+        });
+      }
+
+      if (participant.side !== expectedSide) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["participants"],
+          message: `${participant.participantId} has the wrong side (expected ${expectedSide ?? "null"}).`
+        });
+      }
+    }
+
+    for (const id of participantIds) {
+      if (!seenParticipantIds.has(id)) {
+        ctx.addIssue({ code: "custom", path: ["participants"], message: `Missing participant snapshot for ${id}.` });
+      }
+    }
+  });
 
 export type ProtocolJsonV1 = z.infer<typeof protocolJsonV1Schema>;
 
@@ -116,14 +262,19 @@ export type ResolveProtocolInput = {
   chargeSheet: ResolvedProtocolChargeSheet;
   // Frozen participant configuration/personality (already loaded by the
   // repository for the existing participants[] response) -- reused here
-  // rather than re-queried.
+  // rather than re-queried. Every participant the protocol references
+  // must have an entry here, or resolution fails closed (Finding 1).
   participantsByParticipantId: Map<
     ParticipantId,
     { profileName: string | null; personality: string }
   >;
-  // Persisted judge reasonings (already loaded via judge_verdicts) --
-  // keyed by participantId, reused rather than re-queried.
-  reasoningByParticipantId: Map<ParticipantId, string>;
+  // Corrected (independent source audit, Finding 1): carries the
+  // persisted judge_verdicts row's OWN verdict alongside its reasoning
+  // (previously reasoning-only), so the resolver can cross-check the
+  // protocol's recorded verdict against what was actually persisted --
+  // not merely supply display text. Reused from the same already-loaded
+  // judge_verdicts query, never re-queried.
+  judgeEvidenceByParticipantId: Map<ParticipantId, { verdict: "GUILTY" | "NOT_GUILTY"; reasoning: string }>;
   economics: ResolvedProtocolEconomicsReference;
 };
 
@@ -135,7 +286,9 @@ export function resolveProtocol(input: ResolveProtocolInput): ResolveProtocolRes
   const parsed = protocolJsonV1Schema.safeParse(input.protocolJsonRaw);
 
   if (!parsed.success) {
-    return { ok: false, reason: "Stored protocol_json failed schema validation." };
+    const firstIssue = parsed.error.issues[0]?.message ?? "invalid shape";
+
+    return { ok: false, reason: `Stored protocol_json failed schema validation: ${firstIssue}` };
   }
 
   const protocol = parsed.data;
@@ -166,15 +319,49 @@ export function resolveProtocol(input: ResolveProtocolInput): ResolveProtocolRes
     };
   }
 
+  // Cross-evidence (independent source audit, Finding 1): every
+  // participant the protocol references must have real, persisted
+  // frozen-configuration evidence -- never a silent `profileName: null,
+  // personality: ""` substitution when the lookup unexpectedly misses.
+  for (const entry of protocol.participants) {
+    if (!input.participantsByParticipantId.has(entry.participantId)) {
+      return {
+        ok: false,
+        reason: `No persisted frozen participant configuration found for ${entry.participantId}.`
+      };
+    }
+  }
+
+  // Cross-evidence: every judge verdict the protocol references must
+  // have real persisted reasoning, AND the persisted verdict itself must
+  // agree with what the protocol recorded -- a disagreement is an audit
+  // inconsistency, not something to silently prefer one side of.
+  for (const entry of protocol.judgeVerdicts) {
+    const evidence = input.judgeEvidenceByParticipantId.get(entry.participantId);
+
+    if (!evidence || evidence.reasoning.trim().length === 0) {
+      return { ok: false, reason: `No persisted judge reasoning found for ${entry.participantId}.` };
+    }
+
+    if (evidence.verdict !== entry.verdict) {
+      return {
+        ok: false,
+        reason: `Persisted judge verdict for ${entry.participantId} disagrees with the protocol's recorded verdict.`
+      };
+    }
+  }
+
+  // Every lookup below is now guaranteed present by the cross-evidence
+  // checks above -- no `?? null`/`?? ""` fallback is reachable.
   const resolvedParticipants: ResolvedProtocolParticipant[] = protocol.participants.map((entry) => {
-    const frozen = input.participantsByParticipantId.get(entry.participantId);
+    const frozen = input.participantsByParticipantId.get(entry.participantId)!;
 
     return {
       participantId: entry.participantId,
       role: entry.role,
       side: entry.side,
-      profileName: frozen?.profileName ?? null,
-      personality: frozen?.personality ?? "",
+      profileName: frozen.profileName,
+      personality: frozen.personality,
       modelId: entry.modelId,
       promptVersion: entry.promptVersion
     };
@@ -187,17 +374,9 @@ export function resolveProtocol(input: ResolveProtocolInput): ResolveProtocolRes
   }));
 
   const resolvedJudges: ResolvedProtocolJudge[] = protocol.judgeVerdicts.map((entry) => {
-    const reasoning = input.reasoningByParticipantId.get(entry.participantId);
+    const evidence = input.judgeEvidenceByParticipantId.get(entry.participantId)!;
 
-    if (!reasoning) {
-      // Should be structurally impossible for a COMPLETED run (the same
-      // persist_judge_verdict call that wrote protocol.judgeVerdicts also
-      // wrote judge_verdicts.reasoning), but never fabricate a value if
-      // it somehow is missing.
-      return { participantId: entry.participantId, verdict: entry.verdict, reasoning: "" };
-    }
-
-    return { participantId: entry.participantId, verdict: entry.verdict, reasoning };
+    return { participantId: entry.participantId, verdict: entry.verdict, reasoning: evidence.reasoning };
   });
 
   return {

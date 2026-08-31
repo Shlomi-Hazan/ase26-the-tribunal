@@ -1,6 +1,14 @@
 // Milestone 10 -- deterministic Tribunal protocol validation and
 // read-time resolution (Issue #23). Never mutates persistence, never
 // makes a model call; a mismatch fails closed rather than being repaired.
+//
+// Corrected (independent source audit, Finding 1): exhaustive fail-closed
+// coverage -- missing judge reasoning, missing frozen participant,
+// duplicate/missing speech or verdict or participant identity, a Judge ID
+// in speeches, an Advocate ID in judgeVerdicts, wrong PRO/CON side, wrong
+// role, an unexpected extra JSON property (strict schema), and a
+// persisted judge verdict disagreeing with the protocol's own recorded
+// verdict. Valid real-shaped fixtures still resolve.
 
 import { describe, expect, it } from "vitest";
 import { resolveProtocol, protocolJsonV1Schema, type ResolveProtocolInput } from "./protocolResolution";
@@ -45,10 +53,10 @@ function baseInput(overrides: Partial<ResolveProtocolInput> = {}): ResolveProtoc
   const participantsByParticipantId = new Map<ParticipantId, { profileName: string | null; personality: string }>(
     participantIds.map((id) => [id, { profileName: null, personality: "A measured demeanor." }])
   );
-  const reasoningByParticipantId = new Map<ParticipantId, string>([
-    ["judge-1", "Judge I reasoning."],
-    ["judge-2", "Judge II reasoning."],
-    ["judge-3", "Judge III reasoning."]
+  const judgeEvidenceByParticipantId = new Map<ParticipantId, { verdict: "GUILTY" | "NOT_GUILTY"; reasoning: string }>([
+    ["judge-1", { verdict: "GUILTY", reasoning: "Judge I reasoning." }],
+    ["judge-2", { verdict: "GUILTY", reasoning: "Judge II reasoning." }],
+    ["judge-3", { verdict: "NOT_GUILTY", reasoning: "Judge III reasoning." }]
   ]);
 
   return {
@@ -57,7 +65,7 @@ function baseInput(overrides: Partial<ResolveProtocolInput> = {}): ResolveProtoc
     run: { id: RUN_ID, caseId: CASE_ID, executionMode: "shared", majorityVerdict: "GUILTY" },
     chargeSheet: { defendant: "Alex Rowan", act: "Sold a mislabeled cake.", exactQuestion: "Did Alex know?" },
     participantsByParticipantId,
-    reasoningByParticipantId,
+    judgeEvidenceByParticipantId,
     economics: { logicalCallCount: 7, providerAttemptCount: 7, totalTokens: 1234, totalCostUsd: "0.0014619" },
     ...overrides
   };
@@ -78,6 +86,97 @@ describe("protocolJsonV1Schema (Milestone 10, Issue #23)", () => {
     const missingSpeech = { ...validProtocolJson(), speeches: validProtocolJson().speeches.slice(0, 3) };
 
     expect(protocolJsonV1Schema.safeParse(missingSpeech).success).toBe(false);
+  });
+
+  it("3: rejects a duplicate speech participant (even if the array is still length 4)", () => {
+    const json = validProtocolJson();
+    // Two entries for advocate-pro-1, none for advocate-con-2.
+    json.speeches = [json.speeches[0], json.speeches[0], json.speeches[1], json.speeches[2]] as never;
+
+    expect(protocolJsonV1Schema.safeParse(json).success).toBe(false);
+  });
+
+  it("4: rejects a Judge ID appearing in speeches", () => {
+    const json = validProtocolJson();
+    json.speeches = [
+      { participantId: "judge-1", side: "PRO", speech: "not a real advocate" },
+      json.speeches[1],
+      json.speeches[2],
+      json.speeches[3]
+    ] as never;
+
+    expect(protocolJsonV1Schema.safeParse(json).success).toBe(false);
+  });
+
+  it("5: rejects a speech with the wrong PRO/CON side for its participant", () => {
+    const json = validProtocolJson();
+    json.speeches = [
+      { ...json.speeches[0], side: "CON" }, // advocate-pro-1 is PRO, not CON
+      json.speeches[1],
+      json.speeches[2],
+      json.speeches[3]
+    ] as never;
+
+    expect(protocolJsonV1Schema.safeParse(json).success).toBe(false);
+  });
+
+  it("6: rejects a duplicate judge-verdict participant", () => {
+    const json = validProtocolJson();
+    json.judgeVerdicts = [json.judgeVerdicts[0], json.judgeVerdicts[0], json.judgeVerdicts[1]] as never;
+
+    expect(protocolJsonV1Schema.safeParse(json).success).toBe(false);
+  });
+
+  it("7: rejects an Advocate ID appearing in judgeVerdicts", () => {
+    const json = validProtocolJson();
+    json.judgeVerdicts = [
+      { participantId: "advocate-pro-1", verdict: "GUILTY" },
+      json.judgeVerdicts[1],
+      json.judgeVerdicts[2]
+    ] as never;
+
+    expect(protocolJsonV1Schema.safeParse(json).success).toBe(false);
+  });
+
+  it("8: rejects a duplicate participant snapshot", () => {
+    const json = validProtocolJson();
+    json.participants = [json.participants[0], json.participants[0], ...json.participants.slice(2)] as never;
+
+    expect(protocolJsonV1Schema.safeParse(json).success).toBe(false);
+  });
+
+  it("9: rejects a participant snapshot with the wrong role for its identity", () => {
+    const json = validProtocolJson();
+    json.participants = json.participants.map((p) =>
+      p.participantId === "judge-1" ? { ...p, role: "ADVOCATE" } : p
+    ) as never;
+
+    expect(protocolJsonV1Schema.safeParse(json).success).toBe(false);
+  });
+
+  it("10: rejects a participant snapshot with the wrong side for its identity", () => {
+    const json = validProtocolJson();
+    json.participants = json.participants.map((p) =>
+      p.participantId === "advocate-con-1" ? { ...p, side: "PRO" } : p
+    ) as never;
+
+    expect(protocolJsonV1Schema.safeParse(json).success).toBe(false);
+  });
+
+  it("11: rejects an unexpected extra JSON property at the top level and within a speech (strict schema)", () => {
+    const jsonWithExtraTopLevel = { ...validProtocolJson(), unexpectedField: "should be rejected" };
+
+    expect(protocolJsonV1Schema.safeParse(jsonWithExtraTopLevel).success).toBe(false);
+
+    const jsonWithExtraSpeechField = validProtocolJson();
+    jsonWithExtraSpeechField.speeches = [
+      { ...jsonWithExtraSpeechField.speeches[0], unexpected: "nope" },
+      jsonWithExtraSpeechField.speeches[1],
+      jsonWithExtraSpeechField.speeches[2],
+      jsonWithExtraSpeechField.speeches[3]
+    ] as never;
+
+    expect(protocolJsonV1Schema.safeParse(jsonWithExtraSpeechField).success).toBe(false);
   });
 });
 
@@ -149,6 +248,62 @@ describe("resolveProtocol (Milestone 10, Issue #23)", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toMatch(/majority/i);
+  });
+
+  it("1: fails closed when a referenced judge's reasoning was not persisted -- never fabricates an empty reasoning", () => {
+    const judgeEvidenceByParticipantId = new Map<ParticipantId, { verdict: "GUILTY" | "NOT_GUILTY"; reasoning: string }>([
+      ["judge-1", { verdict: "GUILTY", reasoning: "Judge I reasoning." }],
+      ["judge-2", { verdict: "GUILTY", reasoning: "Judge II reasoning." }]
+      // judge-3's reasoning is missing entirely.
+    ]);
+
+    const result = resolveProtocol(baseInput({ judgeEvidenceByParticipantId }));
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/judge-3/);
+    expect(result.reason).toMatch(/reasoning/i);
+  });
+
+  it("1b: fails closed when a referenced judge's persisted reasoning is present but blank", () => {
+    const judgeEvidenceByParticipantId = new Map<ParticipantId, { verdict: "GUILTY" | "NOT_GUILTY"; reasoning: string }>([
+      ["judge-1", { verdict: "GUILTY", reasoning: "Judge I reasoning." }],
+      ["judge-2", { verdict: "GUILTY", reasoning: "Judge II reasoning." }],
+      ["judge-3", { verdict: "NOT_GUILTY", reasoning: "   " }]
+    ]);
+
+    const result = resolveProtocol(baseInput({ judgeEvidenceByParticipantId }));
+
+    expect(result.ok).toBe(false);
+  });
+
+  it("2: fails closed when a referenced participant's frozen configuration was not persisted", () => {
+    const participantsByParticipantId = new Map<ParticipantId, { profileName: string | null; personality: string }>(
+      participantIds.filter((id) => id !== "advocate-pro-1").map((id) => [id, { profileName: null, personality: "x" }])
+    );
+
+    const result = resolveProtocol(baseInput({ participantsByParticipantId }));
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/advocate-pro-1/);
+  });
+
+  it("12: fails closed when the persisted judge verdict disagrees with the protocol's own recorded verdict", () => {
+    const judgeEvidenceByParticipantId = new Map<ParticipantId, { verdict: "GUILTY" | "NOT_GUILTY"; reasoning: string }>([
+      ["judge-1", { verdict: "GUILTY", reasoning: "Judge I reasoning." }],
+      ["judge-2", { verdict: "GUILTY", reasoning: "Judge II reasoning." }],
+      // The protocol records judge-3 as NOT_GUILTY; persisted evidence
+      // disagrees.
+      ["judge-3", { verdict: "GUILTY", reasoning: "Judge III reasoning." }]
+    ]);
+
+    const result = resolveProtocol(baseInput({ judgeEvidenceByParticipantId }));
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/judge-3/);
+    expect(result.reason).toMatch(/disagrees/i);
   });
 
   it("never mutates the input protocolJsonRaw object", () => {
