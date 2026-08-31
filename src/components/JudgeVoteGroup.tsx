@@ -1,5 +1,6 @@
 import { Box, Card, CardContent, Stack, Typography } from "@mui/material";
 import type { MockJudgeVote } from "../mocks/tribunalMockData";
+import { verdictColor } from "./verdictColor";
 
 export function JudgeVoteGroup({ votes }: { votes: MockJudgeVote[] }) {
   return (
@@ -28,7 +29,7 @@ export function JudgeVoteGroup({ votes }: { votes: MockJudgeVote[] }) {
               }}
             >
               <Typography sx={{ fontWeight: 800 }}>{vote.judge}</Typography>
-              <Typography color="primary" sx={{ fontWeight: 900 }}>
+              <Typography color={verdictColor(vote.verdict)} sx={{ fontWeight: 900 }}>
                 {vote.verdict}
               </Typography>
             </Stack>

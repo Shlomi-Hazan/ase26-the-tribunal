@@ -21,6 +21,7 @@ import { useParams } from "react-router-dom";
 import { JudgeVoteGroup } from "../components/JudgeVoteGroup";
 import { PageHeader } from "../components/PageHeader";
 import { StatusBadge } from "../components/StatusBadge";
+import { verdictColor } from "../components/verdictColor";
 import {
   advocateParticipants,
   judgeParticipants,
@@ -34,6 +35,31 @@ import {
 
 const POLL_INTERVAL_MS = 2000;
 const TERMINAL_STATUSES = new Set(["COMPLETED", "FAILED", "BLOCKED_BUDGET"]);
+
+// Post-M9 Result UX follow-up: a plain chevron-down glyph, not an
+// @mui/icons-material dependency (none is installed and this is the
+// only place one would be needed). `currentColor` inherits
+// AccordionSummary's own expandIconWrapper color/rotation styling, so it
+// stays theme-consistent without any extra CSS. Purely decorative --
+// `aria-hidden` keeps it out of the accessible name, which is already
+// carried by the visible text next to it.
+function AccordionExpandIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      fill="none"
+      height="20"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+      width="20"
+    >
+      <path d="M6 9l6 6 6-6" />
+    </svg>
+  );
+}
 
 const STATUS_MAP: Record<ParticipantAttemptStatus, ParticipantStatus> = {
   PENDING: "Waiting",
@@ -288,6 +314,9 @@ function CompletedResult({ run }: { run: StoredRun }) {
     );
   }
 
+  // Safe: checkResultIntegrity already proved majorityVerdict is GUILTY
+  // or NOT_GUILTY above.
+  const majorityVerdict = run.majorityVerdict as "GUILTY" | "NOT_GUILTY";
   const votes = judgeParticipants.map((judge) => {
     // Safe: checkResultIntegrity already proved every judge has a valid
     // verdict/non-empty reasoning above.
@@ -322,8 +351,13 @@ function CompletedResult({ run }: { run: StoredRun }) {
           <Typography color="text.secondary" sx={{ fontWeight: 800 }}>
             TRIBUNAL VERDICT
           </Typography>
-          <Typography component="h1" sx={{ mt: 1 }} variant="h2">
-            {run.majorityVerdict}
+          <Typography
+            color={verdictColor(majorityVerdict)}
+            component="h1"
+            sx={{ mt: 1 }}
+            variant="h2"
+          >
+            {majorityVerdict}
           </Typography>
           <Typography color="text.secondary">
             Deterministic majority of the three judge votes -- real execution, user-funded.
@@ -338,10 +372,18 @@ function CompletedResult({ run }: { run: StoredRun }) {
       <JudgeVoteGroup votes={votes} />
       {votes.map((vote) => (
         <Accordion key={vote.judge}>
-          <AccordionSummary>
-            <Typography sx={{ fontWeight: 800 }}>
-              {vote.judge} -- {vote.verdict}
-            </Typography>
+          <AccordionSummary expandIcon={<AccordionExpandIcon />}>
+            <Stack spacing={0.25}>
+              <Typography sx={{ fontWeight: 800 }}>
+                {vote.judge} --{" "}
+                <Typography color={verdictColor(vote.verdict)} component="span" sx={{ fontWeight: 800 }}>
+                  {vote.verdict}
+                </Typography>
+              </Typography>
+              <Typography color="text.secondary" variant="caption">
+                View reasoning
+              </Typography>
+            </Stack>
           </AccordionSummary>
           <AccordionDetails>
             <Typography>{vote.reasoning}</Typography>
@@ -350,10 +392,15 @@ function CompletedResult({ run }: { run: StoredRun }) {
       ))}
       {speeches.map((speech) => (
         <Accordion key={speech.participant}>
-          <AccordionSummary>
-            <Typography sx={{ fontWeight: 800 }}>
-              {speech.participant} -- {speech.side}
-            </Typography>
+          <AccordionSummary expandIcon={<AccordionExpandIcon />}>
+            <Stack spacing={0.25}>
+              <Typography sx={{ fontWeight: 800 }}>
+                {speech.participant} -- {speech.side}
+              </Typography>
+              <Typography color="text.secondary" variant="caption">
+                View argument
+              </Typography>
+            </Stack>
           </AccordionSummary>
           <AccordionDetails>
             <Typography>{speech.speech}</Typography>
