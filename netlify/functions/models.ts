@@ -28,7 +28,14 @@ type RoleQueryParamResult =
 function parseRoleQueryParam(event: HandlerEvent): RoleQueryParamResult {
   const raw = event.queryStringParameters?.role;
 
-  if (raw === undefined || raw === null || raw === "") {
+  // M9 pre-live audit correction (Issue #20): "absent" means ONLY
+  // genuinely absent per the Netlify event contract (the query string
+  // key itself never appears, or the parsed object is missing/null) --
+  // never an explicitly supplied empty string. `?role=` and `?role= `
+  // (whitespace-only) are both a PRESENT, INVALID role: they fail closed
+  // with a 400 below, exactly like any other malformed value, rather
+  // than silently falling back to Shared discovery.
+  if (raw === undefined || raw === null) {
     return { present: false };
   }
 

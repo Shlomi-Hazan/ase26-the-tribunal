@@ -104,6 +104,44 @@ export function ReviewPage() {
     );
   }
 
+  // M9 pre-live audit correction (Issue #20): never render a stale/
+  // no-longer-eligible/mock historical id as though it were a valid
+  // selected model. Three explicit states, never a raw-id fallback:
+  // empty -> "Not selected"; a current role-catalog member -> its real
+  // name; a non-empty id that is NOT a current catalog member (stale,
+  // removed, or a leftover mock id) -> an explicit "No longer eligible"
+  // state. This never mutates/freezes/submits anything -- canConvene
+  // (above) already independently requires every seat to be a current
+  // catalog member, so a "No longer eligible" seat here is always
+  // already reflected in a blocked Convene.
+  function describeSeparateModelSelection(participant: Participant): string {
+    const modelId = state.participants[participant.id].modelId;
+
+    if (!modelId) {
+      return "Not selected";
+    }
+
+    const roleLoading =
+      participant.kind === "advocate" ? advocateModelsLoading : judgeModelsLoading;
+    const roleError = participant.kind === "advocate" ? advocateModelsError : judgeModelsError;
+
+    // While that seat's own role catalog is still loading (or failed to
+    // load), an already-chosen id cannot yet be confirmed either way --
+    // never claim "no longer eligible" merely because the catalog hasn't
+    // arrived, that would misrepresent a genuinely still-valid selection.
+    if (roleLoading || roleError) {
+      return "Checking eligibility…";
+    }
+
+    const resolved = resolvedSeparateModel(participant);
+
+    if (resolved) {
+      return resolved.name;
+    }
+
+    return "No longer eligible — select a current eligible model";
+  }
+
   const separateModelsLoading = advocateModelsLoading || judgeModelsLoading;
   const separateModelsError = advocateModelsError || judgeModelsError;
   // M9 correction (Issue #20 independent planning review, Correction 3):
@@ -330,8 +368,7 @@ export function ReviewPage() {
                 const displayModelName =
                   state.executionMode === "shared"
                     ? (sharedModel?.name ?? (state.sharedModelId || "Not selected yet"))
-                    : (resolvedSeparateModel(participant)?.name ??
-                        (state.participants[participant.id].modelId || "Not selected yet"));
+                    : describeSeparateModelSelection(participant);
 
                 return (
                   <Box

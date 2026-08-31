@@ -1,4 +1,4 @@
-import { fireEvent, screen, within } from "@testing-library/react";
+import { act, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithAppProviders } from "../../test/renderWithAppProviders";
@@ -257,8 +257,16 @@ describe("case setup workflow", () => {
     ).toBeVisible();
   });
 
-  it("does not mark invalid setup steps complete and blocks invalid review convening", () => {
+  it("does not mark invalid setup steps complete and blocks invalid review convening", async () => {
     renderWithAppProviders(<AppRoutes />, "/new/review");
+    // M9 pre-live audit correction (Issue #20): Review now also fetches
+    // its own ADVOCATE/JUDGE role catalogs on mount (unused while Shared
+    // Mode is active, but still in flight) -- flush them before this
+    // synchronous-assertion test ends, rather than leaving the
+    // now-unmounted-by-the-time-they-resolve act(...) warning this
+    // correction closes. Never asserts on the catalogs themselves; this
+    // test's own behavior is otherwise unchanged.
+    await act(async () => {});
 
     const setupProgress = screen.getByLabelText("Case setup progress");
     expect(
@@ -438,8 +446,13 @@ describe("case setup workflow", () => {
       ).toHaveTextContent("Complete");
     }, 15000);
 
-    it("does not fabricate completion history merely from directly visiting a later route", () => {
+    it("does not fabricate completion history merely from directly visiting a later route", async () => {
       renderWithAppProviders(<AppRoutes />, "/new/judges");
+      // M9 pre-live audit correction (Issue #20): JudgesPage now also
+      // fetches its own JUDGE role catalog on mount -- flush it before
+      // this synchronous-assertion test ends (see the equivalent Review
+      // correction above for the full rationale).
+      await act(async () => {});
 
       const setupProgress = screen.getByLabelText("Case setup progress");
 
@@ -528,8 +541,13 @@ describe("case setup workflow", () => {
     });
   });
 
-  it("renders exactly four fixed advocates and exactly three fixed judges", () => {
+  it("renders exactly four fixed advocates and exactly three fixed judges", async () => {
     renderWithAppProviders(<AppRoutes />, "/new/advocates");
+    // M9 pre-live audit correction (Issue #20): AdvocatesPage now also
+    // fetches its own ADVOCATE role catalog on mount -- flush it before
+    // asserting (see the equivalent Review correction above for the
+    // full rationale).
+    await act(async () => {});
 
     expect(screen.getByRole("heading", { name: "PRO I" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "PRO II" })).toBeVisible();
@@ -538,6 +556,8 @@ describe("case setup workflow", () => {
     expect(screen.getAllByText(/fixed side/i)).toHaveLength(4);
 
     renderWithAppProviders(<AppRoutes />, "/new/judges");
+    // Same flush for JudgesPage's own JUDGE role catalog fetch.
+    await act(async () => {});
     expect(screen.getByRole("heading", { name: "Judge I" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "Judge II" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "Judge III" })).toBeVisible();
@@ -1012,7 +1032,7 @@ describe("case setup workflow", () => {
     expect(new Set(modelIdsByParticipant.values()).size).toBe(2);
   });
 
-  it("M9-V: Convene stays blocked while even one seat's model is stale/not a member of its role catalog, with a per-seat reason", async () => {
+  it("M9-V (whole-catalog case): Convene stays blocked while the entire ADVOCATE catalog goes empty, with a per-seat reason for all four advocates", async () => {
     const user = userEvent.setup();
 
     renderWithAppProviders(<AppRoutes />);
@@ -1071,6 +1091,128 @@ describe("case setup workflow", () => {
     expect(screen.getByText(/CON I requires a current eligible Advocate model\./i)).toBeVisible();
     expect(screen.getByText(/CON II requires a current eligible Advocate model\./i)).toBeVisible();
     expect(screen.getByRole("button", { name: "Convene Tribunal" })).toBeDisabled();
+  });
+
+  // M9 pre-live audit correction (Issue #20): a genuine ONE-seat stale
+  // scenario, distinct from the whole-catalog-empty case above -- PRO I
+  // alone selects a model that is later removed from the catalog while
+  // the other three advocates (on a different, still-eligible model) and
+  // all three judges remain valid.
+  it("M9-V (single-seat case): Convene stays blocked when exactly one seat's own model is removed from the catalog while the other six seats remain valid", async () => {
+    const user = userEvent.setup();
+    const MODEL_A_ID = "openai/gpt-5-advocate-a";
+    const MODEL_B_ID = "openai/gpt-5-advocate-b";
+
+    function roleModelFixture(id: string, name: string) {
+      return {
+        id,
+        canonicalModelId: id,
+        name,
+        providerName: "OpenAI",
+        contextLength: 200_000,
+        promptPricePerMillion: "1.00",
+        completionPricePerMillion: "2.00",
+        isFree: false,
+        role: "ADVOCATE" as const,
+        conservativeParticipantEstimateUsd: "0.10",
+        supportsStructuredOutput: true
+      };
+    }
+
+    function mockFetchWithAdvocateCatalog(advocateModels: unknown[]) {
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+        const url = typeof input === "string" ? input : input.toString();
+
+        if (url === "/api/models") {
+          return new Response(JSON.stringify({ models: [FAKE_ELIGIBLE_MODEL] }), {
+            status: 200,
+            headers: { "content-type": "application/json" }
+          });
+        }
+
+        if (url === "/api/models?role=ADVOCATE") {
+          return new Response(JSON.stringify({ models: advocateModels }), {
+            status: 200,
+            headers: { "content-type": "application/json" }
+          });
+        }
+
+        if (url === "/api/models?role=JUDGE") {
+          return fakeRoleEligibleModelResponse("JUDGE");
+        }
+
+        throw new Error(`Unhandled fetch in test: ${url}`);
+      });
+    }
+
+    // ADVOCATE catalog starts with two eligible models.
+    mockFetchWithAdvocateCatalog([
+      roleModelFixture(MODEL_A_ID, "Model A"),
+      roleModelFixture(MODEL_B_ID, "Model B")
+    ]);
+
+    renderWithAppProviders(<AppRoutes />);
+    await user.type(screen.getByLabelText(/defendant/i), "Alex Rowan");
+    await user.type(screen.getByLabelText(/^act/i), "Entered the restricted lab.");
+    await user.type(
+      screen.getByLabelText(/exact question/i),
+      "Did Alex knowingly violate the lab protocol?"
+    );
+    await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
+    await user.click(screen.getByRole("radio", { name: "Separate Models" }));
+
+    // Every advocate auto-selects the first catalog entry (Model A).
+    expect((await screen.findAllByText("Model A")).length).toBe(4);
+
+    // PRO I alone is changed to Model B via the real UI.
+    await user.click(screen.getByRole("combobox", { name: "PRO I model" }));
+    await user.click(await screen.findByRole("option", { name: /Model B/i }));
+    expect(await screen.findByText("Model B")).toBeVisible();
+    // The other three advocates remain on Model A.
+    expect(screen.getAllByText("Model A")).toHaveLength(3);
+
+    await user.click(screen.getByRole("link", { name: /continue to judges/i }));
+    await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+
+    // Everything is currently valid (Model B still exists in the
+    // catalog at this point).
+    expect(
+      screen.queryByText(/tribunal configuration cannot be frozen yet/i)
+    ).not.toBeInTheDocument();
+
+    // The ADVOCATE catalog refreshes to remove Model B, keeping Model A
+    // -- simulated by re-fetching (Back to Judges, then Review again),
+    // never by revisiting AdvocatesPage (which would let ParticipantCard's
+    // own repair effect silently "fix" PRO I before this test can observe
+    // the stale state Review must correctly report).
+    mockFetchWithAdvocateCatalog([roleModelFixture(MODEL_A_ID, "Model A")]);
+    await user.click(screen.getByRole("link", { name: "Back" }));
+    await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+
+    // Only PRO I is reported invalid; the other six seats remain valid.
+    expect(await screen.findByText(/PRO I requires a current eligible Advocate model\./i)).toBeVisible();
+    expect(
+      screen.queryByText(/PRO II requires a current eligible Advocate model\./i)
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/CON I requires a current eligible Advocate model\./i)
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/CON II requires a current eligible Advocate model\./i)
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/Judge .* requires/i)).not.toBeInTheDocument();
+
+    // Review does not display the removed Model B as though still valid.
+    expect(screen.queryByText(/Model B/)).not.toBeInTheDocument();
+    expect(screen.getByText(/No longer eligible/i)).toBeVisible();
+    // The other three advocates still correctly show Model A.
+    expect(screen.getAllByText(/^Model: Model A$/)).toHaveLength(3);
+
+    expect(screen.getByRole("button", { name: "Convene Tribunal" })).toBeDisabled();
+
+    // No POST /api/runs occurs -- Convene was never clicked and stayed
+    // disabled throughout.
+    expect(nonModelsFetchCalls().filter(([url]) => url === "/api/runs")).toHaveLength(0);
   });
 
   it("M9-X: Shared -> Separate -> Shared -> Separate preserves the already-valid per-seat Separate assignments", async () => {

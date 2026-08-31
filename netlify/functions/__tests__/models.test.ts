@@ -229,7 +229,45 @@ describe("GET /api/models?role=... (M9 role-aware discovery)", () => {
     return provider;
   }
 
-  it("Z1: rejects an unknown/malformed role with a safe 400, never silently falling back to Shared behavior", async () => {
+  // M9 pre-live audit correction (Issue #20): the exact locked contract
+  // -- A/B/C confirm the two valid states, D/E/F/G confirm every invalid
+  // shape (including the previously-mishandled explicit empty string and
+  // whitespace-only value) fails closed with a 400, never a silent
+  // Shared fallback. Case sensitivity is never loosened.
+  it("A: no role param -> existing Shared behavior unchanged", async () => {
+    const response = await handleModelsRequest(
+      { httpMethod: "GET", queryStringParameters: null } as unknown as HandlerEvent,
+      { provider: providerWithModels() }
+    );
+    const payload = JSON.parse(response.body ?? "");
+
+    expect(response.statusCode).toBe(200);
+    expect(payload.models[0]).toHaveProperty("conservativeFullTribunalEstimateUsd");
+  });
+
+  it("B: role=ADVOCATE -> the ADVOCATE role catalog", async () => {
+    const response = await handleModelsRequest(
+      { httpMethod: "GET", queryStringParameters: { role: "ADVOCATE" } } as unknown as HandlerEvent,
+      { provider: providerWithModels() }
+    );
+    const payload = JSON.parse(response.body ?? "");
+
+    expect(response.statusCode).toBe(200);
+    expect(payload.models[0].role).toBe("ADVOCATE");
+  });
+
+  it("C: role=JUDGE -> the JUDGE role catalog", async () => {
+    const response = await handleModelsRequest(
+      { httpMethod: "GET", queryStringParameters: { role: "JUDGE" } } as unknown as HandlerEvent,
+      { provider: providerWithModels() }
+    );
+    const payload = JSON.parse(response.body ?? "");
+
+    expect(response.statusCode).toBe(200);
+    expect(payload.models[0].role).toBe("JUDGE");
+  });
+
+  it("D: role=advocate (wrong case) -> 400, never silently falling back to Shared behavior", async () => {
     const response = await handleModelsRequest(
       { httpMethod: "GET", queryStringParameters: { role: "advocate" } } as unknown as HandlerEvent,
       { provider: providerWithModels() }
@@ -240,13 +278,35 @@ describe("GET /api/models?role=... (M9 role-aware discovery)", () => {
     expect(payload.error).toBe("invalid_role");
   });
 
-  it("Z1: rejects a completely unrelated role value with the same safe 400", async () => {
+  it("E: role=EVERYONE (unrelated value) -> 400", async () => {
     const response = await handleModelsRequest(
       { httpMethod: "GET", queryStringParameters: { role: "EVERYONE" } } as unknown as HandlerEvent,
       { provider: providerWithModels() }
     );
 
     expect(response.statusCode).toBe(400);
+  });
+
+  it("F: role= (explicitly supplied empty string) -> 400, never a silent Shared fallback", async () => {
+    const response = await handleModelsRequest(
+      { httpMethod: "GET", queryStringParameters: { role: "" } } as unknown as HandlerEvent,
+      { provider: providerWithModels() }
+    );
+
+    expect(response.statusCode).toBe(400);
+    const payload = JSON.parse(response.body ?? "");
+    expect(payload.error).toBe("invalid_role");
+  });
+
+  it("G: whitespace-only role -> 400, never a silent Shared fallback", async () => {
+    const response = await handleModelsRequest(
+      { httpMethod: "GET", queryStringParameters: { role: "   " } } as unknown as HandlerEvent,
+      { provider: providerWithModels() }
+    );
+
+    expect(response.statusCode).toBe(400);
+    const payload = JSON.parse(response.body ?? "");
+    expect(payload.error).toBe("invalid_role");
   });
 
   it("R: no role query param still returns exactly the M8 Shared-Tribunal response shape", async () => {
