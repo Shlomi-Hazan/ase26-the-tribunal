@@ -28,6 +28,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { JudgeVoteGroup } from "../components/JudgeVoteGroup";
 import { PageHeader } from "../components/PageHeader";
+import { PublicDemoRetentionNotice } from "../components/PublicDemoRetentionNotice";
 import { StatusBadge } from "../components/StatusBadge";
 import { verdictColor } from "../components/verdictColor";
 import {
@@ -130,6 +131,7 @@ export function RunPage() {
   if (error) {
     return (
       <Stack spacing={4}>
+        <PublicDemoRetentionNotice />
         <Alert severity="error">{error}</Alert>
       </Stack>
     );
@@ -147,6 +149,7 @@ export function RunPage() {
   if (run.status === "BLOCKED_BUDGET") {
     return (
       <Stack spacing={4}>
+        <PublicDemoRetentionNotice />
         <PageHeader
           description="Budget blocking happens before model execution and is not a participant failure."
           eyebrow="Budget Gate"
@@ -164,6 +167,7 @@ export function RunPage() {
   if (run.status === "FAILED") {
     return (
       <Stack spacing={4}>
+        <PublicDemoRetentionNotice />
         <PageHeader
           description={run.failureMessage ?? "The run could not complete."}
           eyebrow="Run Failed"
@@ -185,6 +189,7 @@ export function RunPage() {
 
   return (
     <Stack spacing={4}>
+      <PublicDemoRetentionNotice />
       <PageHeader
         description={`Status: ${run.status}`}
         eyebrow="The Tribunal is in session"
@@ -315,6 +320,7 @@ function CompletedResult({ run }: { run: StoredRun }) {
   if (!integrity.valid) {
     return (
       <Stack spacing={4}>
+        <PublicDemoRetentionNotice />
         <PageHeader
           description="This completed run's stored result is incomplete or corrupted -- it is not displayed as a verdict."
           eyebrow="Result Data Integrity Error"
@@ -357,6 +363,7 @@ function CompletedResult({ run }: { run: StoredRun }) {
 
   return (
     <Stack spacing={4}>
+      <PublicDemoRetentionNotice />
       <Card component="section">
         <CardContent>
           <Typography color="text.secondary" sx={{ fontWeight: 800 }}>
