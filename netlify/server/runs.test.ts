@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { describe, expect, it } from "vitest";
 import { participantIds, type ParticipantId } from "../../src/schemas/tribunalSetup";
 import { ADVOCATE_PROMPT_VERSION, JUDGE_PROMPT_VERSION } from "../../src/prompts/versions";
@@ -10,14 +11,18 @@ import {
   computeRequestFingerprint,
   computeWallClockMs,
   PROMPT_VERSION_PLACEHOLDER,
+  RunPersistenceError,
   RunValidationError,
   sortParticipantsCanonically,
+  SupabaseRunRepository,
+  toRunSummary,
   validateCreateRunInput,
   validateRunId,
   type AttemptRow,
   type CaseFingerprintInput,
   type ParticipantFingerprintInput,
-  type PersistedParticipantConfig
+  type PersistedParticipantConfig,
+  type RunSummary
 } from "./runs";
 
 function persistedParticipant(id: ParticipantId): PersistedParticipantConfig {
@@ -778,5 +783,275 @@ describe("historical pricing immutability (Milestone 10, Issue #23 Sec 14)", () 
     const source = readFileSync(path.resolve(__dirname, "runs.ts"), "utf8");
 
     expect(source).not.toMatch(/OpenRouterProvider|openrouter\.ai|fetch\(/);
+  });
+});
+
+function runSummaryRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: "00000000-0000-4000-8000-000000000001",
+    case_id: "00000000-0000-4000-8000-0000000000ca",
+    status: "COMPLETED",
+    execution_mode: "SHARED",
+    created_at: "2026-08-29T00:00:00.000Z",
+    started_at: "2026-08-29T00:00:01.000Z",
+    completed_at: "2026-08-29T00:00:05.000Z",
+    ...overrides
+  };
+}
+
+// Milestone 11 (Issue #27) -- toRunSummary is the pure mapping unit
+// behind RunRepository.listByCaseId, testable directly without mocking
+// the Supabase query builder (this codebase's established convention).
+describe("toRunSummary (Milestone 11, Issue #27)", () => {
+  it("maps a valid row to the exact safe RunSummary shape", () => {
+    const summary = toRunSummary(runSummaryRow());
+
+    expect(summary).toEqual<RunSummary>({
+      runId: "00000000-0000-4000-8000-000000000001",
+      caseId: "00000000-0000-4000-8000-0000000000ca",
+      status: "COMPLETED",
+      executionMode: "shared",
+      createdAt: "2026-08-29T00:00:00.000Z",
+      startedAt: "2026-08-29T00:00:01.000Z",
+      completedAt: "2026-08-29T00:00:05.000Z"
+    });
+  });
+
+  it("never contains majorityVerdict, cost, attempts, protocol, participant data, or internal request/fingerprint fields", () => {
+    const summary = toRunSummary(runSummaryRow()) as Record<string, unknown>;
+
+    expect(Object.keys(summary).sort()).toEqual(
+      [
+        "caseId",
+        "completedAt",
+        "createdAt",
+        "executionMode",
+        "runId",
+        "startedAt",
+        "status"
+      ].sort()
+    );
+    expect(summary).not.toHaveProperty("majorityVerdict");
+    expect(summary).not.toHaveProperty("totalCostUsd");
+    expect(summary).not.toHaveProperty("partialSpend");
+    expect(summary).not.toHaveProperty("attempts");
+    expect(summary).not.toHaveProperty("participants");
+    expect(summary).not.toHaveProperty("protocol");
+    expect(summary).not.toHaveProperty("clientRequestId");
+    expect(summary).not.toHaveProperty("requestFingerprint");
+  });
+
+  it.each([
+    ["DRAFT"],
+    ["READY"],
+    ["ADVOCATES_RUNNING"],
+    ["JUDGES_RUNNING"],
+    ["COMPLETED"],
+    ["FAILED"],
+    ["BLOCKED_BUDGET"]
+  ])("accepts the valid persisted status %s", (status) => {
+    expect(toRunSummary(runSummaryRow({ status })).status).toBe(status);
+  });
+
+  it("fails closed (RunPersistenceError) on an unrecognized persisted status, never a generic label", () => {
+    expect(() => toRunSummary(runSummaryRow({ status: "RUNNING" }))).toThrow(RunPersistenceError);
+    expect(() => toRunSummary(runSummaryRow({ status: "UNKNOWN" }))).toThrow(RunPersistenceError);
+  });
+
+  it("fails closed (RunPersistenceError) on an unsupported execution mode", () => {
+    expect(() => toRunSummary(runSummaryRow({ execution_mode: "HYBRID" }))).toThrow(
+      RunPersistenceError
+    );
+  });
+
+  it("maps SHARED -> shared and SEPARATE -> separate honestly", () => {
+    expect(toRunSummary(runSummaryRow({ execution_mode: "SHARED" })).executionMode).toBe("shared");
+    expect(toRunSummary(runSummaryRow({ execution_mode: "SEPARATE" })).executionMode).toBe("separate");
+  });
+
+  it("fails closed (RunPersistenceError) on a malformed required identifier", () => {
+    expect(() => toRunSummary(runSummaryRow({ id: "not-a-uuid" }))).toThrow(RunPersistenceError);
+    expect(() => toRunSummary(runSummaryRow({ case_id: "not-a-uuid" }))).toThrow(RunPersistenceError);
+  });
+
+  it("fails closed (RunPersistenceError) on a missing required field", () => {
+    const row = runSummaryRow();
+
+    delete row.created_at;
+
+    expect(() => toRunSummary(row)).toThrow(RunPersistenceError);
+  });
+
+  it("preserves null startedAt/completedAt rather than fabricating a value", () => {
+    const summary = toRunSummary(runSummaryRow({ started_at: null, completed_at: null }));
+
+    expect(summary.startedAt).toBeNull();
+    expect(summary.completedAt).toBeNull();
+  });
+
+  // Corrected (independent source review): timestamp fields must fail
+  // closed on a malformed/non-timestamp string, not merely on a
+  // non-string value.
+  it("fails closed (RunPersistenceError) on a malformed created_at", () => {
+    expect(() => toRunSummary(runSummaryRow({ created_at: "not-a-date" }))).toThrow(
+      RunPersistenceError
+    );
+  });
+
+  it("fails closed (RunPersistenceError) on a malformed non-null started_at", () => {
+    expect(() => toRunSummary(runSummaryRow({ started_at: "not-a-date" }))).toThrow(
+      RunPersistenceError
+    );
+  });
+
+  it("fails closed (RunPersistenceError) on a malformed non-null completed_at", () => {
+    expect(() => toRunSummary(runSummaryRow({ completed_at: "not-a-date" }))).toThrow(
+      RunPersistenceError
+    );
+  });
+
+  it("accepts the real PostgREST timestamptz shape (offset, not Z, with microsecond precision)", () => {
+    const summary = toRunSummary(
+      runSummaryRow({
+        created_at: "2026-08-30T15:06:03.994125+00:00",
+        started_at: "2026-08-30T15:06:06.511679+00:00",
+        completed_at: "2026-08-30T15:06:15.110752+00:00"
+      })
+    );
+
+    expect(summary.createdAt).toBe("2026-08-30T15:06:03.994125+00:00");
+    expect(summary.startedAt).toBe("2026-08-30T15:06:06.511679+00:00");
+    expect(summary.completedAt).toBe("2026-08-30T15:06:15.110752+00:00");
+  });
+
+  it("preserves the exact original timestamp string, including fractional/microsecond precision -- never converts through JS Date", () => {
+    const summary = toRunSummary(runSummaryRow({ created_at: "2026-08-30T15:06:03.994125+00:00" }));
+
+    // A round-trip through JS Date would normalize this to millisecond
+    // precision (".994Z") and silently drop the real microsecond value.
+    expect(summary.createdAt).toBe("2026-08-30T15:06:03.994125+00:00");
+    expect(summary.createdAt).not.toBe(new Date("2026-08-30T15:06:03.994125+00:00").toISOString());
+  });
+});
+
+// Corrected (independent source review): sortRunSummariesDeterministically
+// was removed -- PostgreSQL's own ORDER BY (created_at DESC, id DESC) is
+// the sole, authoritative ordering. A JS-side re-sort keyed on
+// Date.parse(createdAt) would be lossy against timestamptz's microsecond
+// resolution (JS Date is millisecond-precision) and could incorrectly
+// reorder two rows Postgres had already ordered correctly within the
+// same millisecond. These are narrow, purpose-built recording-fake
+// query-contract tests -- not a general mock of the Supabase query
+// builder's return-value semantics (this codebase deliberately avoids
+// that elsewhere) -- used only to assert the exact query shape/order
+// requested from Postgres, and that the repository never reorders what
+// the query builder handed back.
+type RecordedRunQueryCall = { method: string; args: unknown[] };
+
+class RecordingRunQueryBuilder {
+  readonly calls: RecordedRunQueryCall[] = [];
+
+  constructor(
+    private readonly rows: unknown[],
+    private readonly queryError: unknown = null
+  ) {}
+
+  from(table: string) {
+    this.calls.push({ method: "from", args: [table] });
+    return this;
+  }
+
+  select(columns: string) {
+    this.calls.push({ method: "select", args: [columns] });
+    return this;
+  }
+
+  eq(column: string, value: unknown) {
+    this.calls.push({ method: "eq", args: [column, value] });
+    return this;
+  }
+
+  order(column: string, options: unknown) {
+    this.calls.push({ method: "order", args: [column, options] });
+    return this;
+  }
+
+  then<T>(onFulfilled?: (value: { data: unknown[] | null; error: unknown }) => T) {
+    return Promise.resolve({
+      data: this.queryError ? null : this.rows,
+      error: this.queryError
+    }).then(onFulfilled);
+  }
+}
+
+function fakeRunClientReturning(rows: unknown[], queryError: unknown = null) {
+  const builder = new RecordingRunQueryBuilder(rows, queryError);
+  const client = { from: () => builder } as unknown as SupabaseClient;
+
+  return { client, builder };
+}
+
+describe("SupabaseRunRepository.listByCaseId query contract (Milestone 11, Issue #27)", () => {
+  const CASE_ID = "00000000-0000-4000-8000-0000000000ca";
+
+  it("requests created_at DESC, then id DESC directly from Postgres, filtered by exact case_id", async () => {
+    const { client, builder } = fakeRunClientReturning([runSummaryRow()]);
+    const repository = new SupabaseRunRepository(client);
+
+    await repository.listByCaseId(CASE_ID);
+
+    expect(builder.calls.find((call) => call.method === "eq")).toEqual({
+      method: "eq",
+      args: ["case_id", CASE_ID]
+    });
+    expect(builder.calls.filter((call) => call.method === "order")).toEqual([
+      { method: "order", args: ["created_at", { ascending: false }] },
+      { method: "order", args: ["id", { ascending: false }] }
+    ]);
+  });
+
+  it("does not re-sort the rows returned by the query builder client-side", async () => {
+    const older = runSummaryRow({
+      id: "00000000-0000-4000-8000-000000000001",
+      created_at: "2026-08-29T00:00:00.000Z"
+    });
+    const newer = runSummaryRow({
+      id: "00000000-0000-4000-8000-000000000002",
+      created_at: "2026-08-30T00:00:00.000Z"
+    });
+    const { client } = fakeRunClientReturning([older, newer]);
+    const repository = new SupabaseRunRepository(client);
+
+    const result = await repository.listByCaseId(CASE_ID);
+
+    expect(result.map((row) => row.runId)).toEqual([older.id, newer.id]);
+  });
+
+  it("preserves the query builder's exact order even when two rows' timestamps differ only by microseconds", async () => {
+    // Deliberately fed in an order a lexicographic-id tie-break would
+    // NOT produce, to prove no such reordering happens even though a
+    // millisecond-precision JS Date would collapse these two
+    // timestamps to the identical millisecond.
+    const a = runSummaryRow({
+      id: "aaaaaaaa-0000-4000-8000-000000000001",
+      created_at: "2026-08-29T00:00:00.000001+00:00"
+    });
+    const b = runSummaryRow({
+      id: "bbbbbbbb-0000-4000-8000-000000000002",
+      created_at: "2026-08-29T00:00:00.000002+00:00"
+    });
+    const { client } = fakeRunClientReturning([a, b]);
+    const repository = new SupabaseRunRepository(client);
+
+    const result = await repository.listByCaseId(CASE_ID);
+
+    expect(result.map((row) => row.runId)).toEqual([a.id, b.id]);
+  });
+
+  it("throws RunPersistenceError when the query builder reports an error", async () => {
+    const { client } = fakeRunClientReturning([], { message: "db down" });
+    const repository = new SupabaseRunRepository(client);
+
+    await expect(repository.listByCaseId(CASE_ID)).rejects.toThrow(RunPersistenceError);
   });
 });

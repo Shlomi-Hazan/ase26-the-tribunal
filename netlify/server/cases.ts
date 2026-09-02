@@ -177,11 +177,20 @@ export class SupabaseCaseRepository implements IdempotentCaseRepository {
     return parseCaseRow(data);
   }
 
+  // Milestone 11 (Issue #27) -- the compound ORDER BY created_at DESC,
+  // id DESC requested from Postgres is the sole, authoritative
+  // ordering. Corrected (independent source review): the returned rows
+  // are mapped only, never re-sorted client-side -- a JS-side re-sort
+  // keyed on Date.parse(createdAt) would be lossy against timestamptz's
+  // microsecond resolution (JS Date is millisecond-precision) and could
+  // incorrectly reorder two rows Postgres had already ordered correctly
+  // within the same millisecond.
   async list(): Promise<PersistedCase[]> {
     const { data, error } = await this.client
       .from("cases")
       .select(caseSelectColumns)
-      .order("created_at", { ascending: false });
+      .order("created_at", { ascending: false })
+      .order("id", { ascending: false });
 
     if (error || !data) {
       throw new CasePersistenceError();

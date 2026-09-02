@@ -11,6 +11,7 @@ import {
 import { useEffect, useState } from "react";
 import { Link as RouterLink } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
+import { PublicDemoRetentionNotice } from "../components/PublicDemoRetentionNotice";
 import { EmptyHistoryState } from "../features/history/EmptyHistoryState";
 import {
   CaseApiError,
@@ -57,8 +58,9 @@ export function HistoryPage() {
       <PageHeader
         eyebrow="Past Cases"
         title="Past Cases"
-        description="Stored case drafts can be reopened for inspection. No Tribunal run or model output is persisted in this milestone."
+        description="Stored cases can be reopened for inspection. Open a case to see any Tribunal runs associated with it."
       />
+      <PublicDemoRetentionNotice />
       {isLoading ? (
         <Stack direction="row" spacing={2} sx={{ alignItems: "center" }}>
           <CircularProgress aria-label="Loading past cases" size={24} />
@@ -91,7 +93,6 @@ export function HistoryPage() {
                     Source: {formatSourceType(item.sourceType)}
                     {item.sourceFilename ? ` (${item.sourceFilename})` : ""}
                   </Typography>
-                  <Typography sx={{ fontWeight: 800 }}>No verdict yet</Typography>
                   <Button
                     component={RouterLink}
                     to={`/cases/${item.id}`}

@@ -136,6 +136,35 @@ export type ResolvedProtocol = {
   };
 };
 
+// Milestone 11 (Issue #27) -- the closed seven-value persisted Run
+// status vocabulary, mirroring the server's RunStatus exactly. There is
+// no persisted generic "RUNNING" state.
+export type RunStatus =
+  | "DRAFT"
+  | "READY"
+  | "ADVOCATES_RUNNING"
+  | "JUDGES_RUNNING"
+  | "COMPLETED"
+  | "FAILED"
+  | "BLOCKED_BUDGET";
+
+// Milestone 11 (Issue #27) -- the narrow historical Run summary contract
+// returned by GET /api/cases/:id/runs, used only to discover/navigate a
+// Case's Runs. Deliberately excludes majorityVerdict, cost, attempts,
+// participant data, and protocol -- see the server's RunSummary for the
+// full rationale. Case Detail must never assert an authoritative
+// Tribunal verdict from this type; the verdict remains exclusively a
+// StoredRun/RunPage concern, behind its existing result-integrity check.
+export type RunSummary = {
+  runId: string;
+  caseId: string;
+  status: RunStatus;
+  executionMode: "shared" | "separate";
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+};
+
 export type StoredRun = {
   id: string;
   caseId: string;
@@ -222,6 +251,32 @@ export async function getRun(runId: string): Promise<StoredRun | null> {
   }
 
   return (await parseRunPayload(response)).run;
+}
+
+type RunSummariesResponse = {
+  runs: RunSummary[];
+};
+
+// Milestone 11 (Issue #27) -- the Case -> Run discovery read. Plain GET,
+// no BYOK/OpenRouter credential header, no POST, no execution trigger,
+// no mutation -- mirrors getRun's own read-only shape exactly.
+export async function listRunsForCase(caseId: string): Promise<RunSummary[]> {
+  const response = await fetch(`/api/cases/${encodeURIComponent(caseId)}/runs`);
+  const payload = (await response.json().catch(() => ({}))) as
+    | RunSummariesResponse
+    | ErrorResponse;
+
+  if (!response.ok) {
+    const errorPayload = payload as ErrorResponse;
+
+    throw new RunApiError(
+      response.status,
+      errorPayload.error ?? "case_runs_request_failed",
+      errorPayload.errors ?? []
+    );
+  }
+
+  return (payload as RunSummariesResponse).runs;
 }
 
 async function parseRunPayload(response: Response): Promise<RunResponse> {

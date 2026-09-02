@@ -531,10 +531,121 @@ export type FreezeRunInput = {
   }>;
 };
 
+// Milestone 11 (Issue #27) -- the closed seven-value persisted Run
+// status vocabulary, mirroring tribunal_runs_status_check exactly
+// (supabase/migrations/20260825214212_participant_configuration.sql).
+// There is no persisted generic "RUNNING" state -- RunSummary.status
+// must always be one of these seven, never an arbitrary string, and
+// must never collapse FAILED/BLOCKED_BUDGET into an in-progress label.
+const RUN_STATUS_VALUES = [
+  "DRAFT",
+  "READY",
+  "ADVOCATES_RUNNING",
+  "JUDGES_RUNNING",
+  "COMPLETED",
+  "FAILED",
+  "BLOCKED_BUDGET"
+] as const;
+
+export type RunStatus = (typeof RUN_STATUS_VALUES)[number];
+
+const runStatusSchema = z.enum(RUN_STATUS_VALUES);
+
+// Milestone 11 (Issue #27) -- the narrow historical Run summary contract
+// used only to discover/navigate a Case's Runs (GET /api/cases/:id/runs).
+// Deliberately excludes majorityVerdict, cost, partialSpend, attempts,
+// participant data, protocol, pricing data, and provider/request-
+// fingerprint identifiers: this summary query never loads the evidence
+// RunPage's checkResultIntegrity() independently proves before showing a
+// verdict (valid majority + four non-empty speeches + three valid/
+// reasoned judge verdicts), so it must never assert a verdict a full
+// audit might, given the same underlying data, correctly refuse to
+// show. See Issue #27 "Run summary contract" for the full rationale.
+export type RunSummary = {
+  runId: string;
+  caseId: string;
+  status: RunStatus;
+  executionMode: "shared" | "separate";
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+};
+
 export type RunRepository = {
   freeze(input: FreezeRunInput): Promise<PersistedRun>;
   getById(id: string): Promise<PersistedRun | null>;
+  // Milestone 11 -- one narrow read query filtered by case_id (no index
+  // exists on tribunal_runs.case_id today; not required at V1's
+  // public-demo scale -- see Issue #27 Database Decision). Ordered
+  // created_at DESC, id DESC by Postgres itself (a compound ORDER BY
+  // via two chained .order() calls) -- PostgreSQL's own ORDER BY is the
+  // sole, authoritative sort. Corrected (independent source review):
+  // the returned rows are never re-sorted client-side through
+  // JavaScript's millisecond-precision Date/Date.parse, which would be
+  // lossy against timestamptz's microsecond resolution and could
+  // silently reorder two rows that differ only within one millisecond.
+  listByCaseId(caseId: string): Promise<RunSummary[]>;
 };
+
+// Milestone 11 -- the narrow row shape backing RunSummary. Deliberately
+// separate from runRowSchema (which carries the much wider full-Run
+// column set) so the summary query only ever selects the seven columns
+// runSummarySelectColumns actually lists.
+//
+// Corrected (independent source review): the timestamp columns are
+// validated as real ISO 8601 timestamps (z.iso.datetime({ offset: true })
+// accepts both the "+00:00"-offset shape PostgREST actually returns --
+// verified directly against the real Supabase response, e.g.
+// "2026-08-30T15:06:03.994125+00:00" -- and a "Z"-suffixed shape),
+// never an arbitrary string such as "not-a-date". This is a narrow,
+// RunSummary-only tightening -- runRowSchema/persistedCaseSchema and
+// every other historical timestamp field elsewhere in the repository
+// are deliberately left unchanged.
+const runSummaryRowSchema = z.object({
+  id: z.string().uuid(),
+  case_id: z.string().uuid(),
+  status: z.string(),
+  execution_mode: z.string(),
+  created_at: z.iso.datetime({ offset: true }),
+  started_at: z.iso.datetime({ offset: true }).nullable(),
+  completed_at: z.iso.datetime({ offset: true }).nullable()
+});
+
+// Milestone 11 -- pure, exported so it is directly unit-testable without
+// mocking the Supabase query builder (this codebase's established
+// convention). Fails closed (RunPersistenceError) on a malformed row
+// shape, an unrecognized persisted status, or an unsupported execution
+// mode -- never silently coerces an unknown stored value into a generic
+// label (Issue #27 Slice 2).
+export function toRunSummary(row: unknown): RunSummary {
+  const parsed = runSummaryRowSchema.safeParse(row);
+
+  if (!parsed.success) {
+    throw new RunPersistenceError("Stored run summary record is invalid.");
+  }
+
+  const statusResult = runStatusSchema.safeParse(parsed.data.status);
+
+  if (!statusResult.success) {
+    throw new RunPersistenceError("Stored run has an unrecognized status.");
+  }
+
+  const executionMode = EXECUTION_MODE_FROM_DB[parsed.data.execution_mode];
+
+  if (!executionMode) {
+    throw new RunPersistenceError("Stored run has an unknown execution mode.");
+  }
+
+  return {
+    runId: parsed.data.id,
+    caseId: parsed.data.case_id,
+    status: statusResult.data,
+    executionMode,
+    createdAt: parsed.data.created_at,
+    startedAt: parsed.data.started_at,
+    completedAt: parsed.data.completed_at
+  };
+}
 
 const runRowSchema = z.object({
   id: z.string().uuid(),
@@ -691,6 +802,32 @@ export class SupabaseRunRepository implements RunRepository {
     }
 
     return this.loadRun(runResult.data);
+  }
+
+  // Milestone 11 (Issue #27) -- one narrow read query filtered by
+  // case_id, no join into participant_configs/model_call_attempts/
+  // advocate_speeches/judge_verdicts/protocols. The compound
+  // ORDER BY created_at DESC, id DESC requested from Postgres is the
+  // sole, authoritative ordering. Corrected (independent source
+  // review): the returned rows are mapped through toRunSummary only,
+  // never re-sorted client-side -- a JS-side re-sort keyed on
+  // Date.parse(createdAt) would be lossy against timestamptz's
+  // microsecond resolution (JS Date is millisecond-precision) and could
+  // incorrectly reorder two rows Postgres had already ordered correctly
+  // within the same millisecond.
+  async listByCaseId(caseId: string): Promise<RunSummary[]> {
+    const { data, error } = await this.client
+      .from("tribunal_runs")
+      .select(runSummarySelectColumns)
+      .eq("case_id", caseId)
+      .order("created_at", { ascending: false })
+      .order("id", { ascending: false });
+
+    if (error || !data) {
+      throw new RunPersistenceError();
+    }
+
+    return data.map((row) => toRunSummary(row));
   }
 
   private async loadRun(
@@ -1149,6 +1286,20 @@ export function sortParticipantsCanonically(
       participantIds.indexOf(b.participantId)
   );
 }
+
+// Milestone 11 -- the narrow seven-column selection backing RunSummary
+// (matches runSummaryRowSchema exactly). Deliberately does not select
+// majority_verdict, any cost column, or client_request_id/
+// request_fingerprint.
+const runSummarySelectColumns = [
+  "id",
+  "case_id",
+  "status",
+  "execution_mode",
+  "created_at",
+  "started_at",
+  "completed_at"
+].join(",");
 
 const runSelectColumns = [
   "id",
