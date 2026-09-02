@@ -125,6 +125,11 @@ function fakeRunRepository(run: PersistedRun): RunRepository {
     },
     async getById() {
       return run;
+    },
+    // Milestone 11 -- not exercised by these execution-trigger tests;
+    // present only to satisfy the RunRepository contract.
+    async listByCaseId() {
+      return [];
     }
   };
 }

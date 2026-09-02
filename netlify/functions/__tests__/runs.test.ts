@@ -18,7 +18,8 @@ import {
   toParticipantFingerprintInputs,
   type FreezeRunInput,
   type PersistedRun,
-  type RunRepository
+  type RunRepository,
+  type RunSummary
 } from "../../server/runs";
 import { ADVOCATE_PROMPT_VERSION, JUDGE_PROMPT_VERSION } from "../../../src/prompts/versions";
 import type { ParticipantId } from "../../../src/schemas/tribunalSetup";
@@ -132,6 +133,12 @@ class FakeRunRepository implements RunRepository {
     }
 
     return null;
+  }
+
+  // Milestone 11 -- not exercised by these acceptance-flow tests; present
+  // only to satisfy the RunRepository contract.
+  async listByCaseId(): Promise<RunSummary[]> {
+    return [];
   }
 }
 

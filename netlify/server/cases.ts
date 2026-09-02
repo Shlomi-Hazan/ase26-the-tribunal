@@ -181,13 +181,14 @@ export class SupabaseCaseRepository implements IdempotentCaseRepository {
     const { data, error } = await this.client
       .from("cases")
       .select(caseSelectColumns)
-      .order("created_at", { ascending: false });
+      .order("created_at", { ascending: false })
+      .order("id", { ascending: false });
 
     if (error || !data) {
       throw new CasePersistenceError();
     }
 
-    return data.map((row) => parseCaseRow(row));
+    return sortCasesDeterministically(data.map((row) => parseCaseRow(row)));
   }
 
   async getById(id: string): Promise<PersistedCase | null> {
@@ -283,6 +284,26 @@ function toCaseRowInput(input: CreateCaseInput) {
     source_type: input.sourceType,
     source_filename: input.sourceType === "MANUAL" ? null : input.sourceFilename
   };
+}
+
+// Milestone 11 (Issue #27) -- deterministic total ordering:
+// cases.created_at is NOT NULL but not UNIQUE, so two cases can
+// legitimately share a timestamp and created_at DESC alone is not
+// deterministic. Applied in-memory as a defense-in-depth guarantee
+// alongside the equivalent ORDER BY list() also requests from Postgres
+// -- pure and exported so the tie-break itself is directly
+// unit-testable without mocking the Supabase query builder. The id
+// comparison is a stability device only, never a chronological claim.
+export function sortCasesDeterministically(cases: PersistedCase[]): PersistedCase[] {
+  return [...cases].sort((a, b) => {
+    const createdDelta = Date.parse(b.createdAt) - Date.parse(a.createdAt);
+
+    if (createdDelta !== 0) {
+      return createdDelta;
+    }
+
+    return b.id.localeCompare(a.id);
+  });
 }
 
 function parseCaseRow(row: unknown): PersistedCase {
