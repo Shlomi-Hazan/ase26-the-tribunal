@@ -15,6 +15,10 @@ import {
   validateParticipantPersonality
 } from "../features/case-setup/setupState";
 import { useSetup } from "../features/case-setup/useSetup";
+import {
+  CURRENT_ADVOCATE_SIDE_DESCRIPTION,
+  CURRENT_ADVOCATE_SIDE_HEADING
+} from "./advocateSideCopy";
 import type { Participant } from "../mocks/tribunalMockData";
 import type { RoleEligibleModel } from "../services/modelsApi";
 import {
@@ -138,11 +142,18 @@ export function ParticipantCard({
             <Typography component="h2" variant="h5">
               {participant.label}
             </Typography>
-            <Typography color="text.secondary">
-              {participant.side
-                ? `${participant.side} advocate — fixed side`
-                : "Independent judge"}
-            </Typography>
+            {participant.side ? (
+              <>
+                <Typography color="text.secondary">
+                  {CURRENT_ADVOCATE_SIDE_HEADING[participant.side]}
+                </Typography>
+                <Typography color="text.secondary" variant="body2">
+                  {CURRENT_ADVOCATE_SIDE_DESCRIPTION[participant.side]}
+                </Typography>
+              </>
+            ) : (
+              <Typography color="text.secondary">Independent judge</Typography>
+            )}
           </Stack>
           <TextField
             error={hasProfileNameError}

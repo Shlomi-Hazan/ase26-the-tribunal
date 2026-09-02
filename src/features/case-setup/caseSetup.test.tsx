@@ -553,7 +553,14 @@ describe("case setup workflow", () => {
     expect(screen.getByRole("heading", { name: "PRO II" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "CON I" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "CON II" })).toBeVisible();
-    expect(screen.getAllByText(/fixed side/i)).toHaveLength(4);
+    // PRO/CON semantic correction (Issue #30): the corrected, text-based
+    // (never color-only) side explanation is now shown on every
+    // advocate card -- two PRO ("PRO — Defense") and two CON
+    // ("CON — Opposition").
+    expect(screen.getAllByText("PRO — Defense")).toHaveLength(2);
+    expect(screen.getAllByText("CON — Opposition")).toHaveLength(2);
+    expect(screen.getAllByText("Supports the defendant · argues NOT_GUILTY")).toHaveLength(2);
+    expect(screen.getAllByText("Argues against the defendant · argues GUILTY")).toHaveLength(2);
 
     renderWithAppProviders(<AppRoutes />, "/new/judges");
     // Same flush for JudgesPage's own JUDGE role catalog fetch.

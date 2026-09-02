@@ -1007,3 +1007,79 @@ describe("RunPage public-demo retention notice (Milestone 11, Issue #27)", () =>
     expect(screen.queryByText("GUILTY")).not.toBeInTheDocument();
   });
 });
+
+describe("RunPage historical Advocate side meaning (PRO/CON semantic correction, Issue #30)", () => {
+  // All four Advocate participants are set to the SAME promptVersion per
+  // scenario, and assertions check the resulting count across all four
+  // -- this both avoids any ambiguity between individual advocates and
+  // proves the fail-closed/legacy/current policy applies consistently,
+  // not merely to one participant.
+  function runWithAllAdvocatesPromptVersion(promptVersion: string): StoredRun {
+    const run = baseRun();
+
+    run.participants = run.participants.map((entry) =>
+      entry.role === "ADVOCATE" ? { ...entry, promptVersion } : entry
+    );
+
+    return run;
+  }
+
+  it("advocate-v1 (the true historical value) shows the legacy caption -- PRO argued for the charge (GUILTY), CON argued against it (NOT_GUILTY)", async () => {
+    mockRunFetch(runWithAllAdvocatesPromptVersion("advocate-v1"));
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+
+    await screen.findByRole("heading", { name: "GUILTY" });
+    expect(screen.getAllByText("PRO — Legacy semantics (advocate-v1)")).toHaveLength(2);
+    expect(screen.getAllByText("CON — Legacy semantics (advocate-v1)")).toHaveLength(2);
+    expect(
+      screen.getAllByText("Historical: assigned to argue for the charge (GUILTY)")
+    ).toHaveLength(2);
+    expect(
+      screen.getAllByText("Historical: assigned to argue against the charge (NOT_GUILTY)")
+    ).toHaveLength(2);
+    expect(screen.queryByText("PRO — Defense")).not.toBeInTheDocument();
+    expect(screen.queryByText("CON — Opposition")).not.toBeInTheDocument();
+  });
+
+  it("advocate-v2 shows the corrected caption -- PRO is Defense/NOT_GUILTY, CON is Opposition/GUILTY", async () => {
+    mockRunFetch(runWithAllAdvocatesPromptVersion("advocate-v2"));
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+
+    await screen.findByRole("heading", { name: "GUILTY" });
+    expect(screen.getAllByText("PRO — Defense")).toHaveLength(2);
+    expect(screen.getAllByText("CON — Opposition")).toHaveLength(2);
+    expect(screen.getAllByText("Supports the defendant · argues NOT_GUILTY")).toHaveLength(2);
+    expect(screen.getAllByText("Argues against the defendant · argues GUILTY")).toHaveLength(2);
+    expect(screen.queryByText(/Legacy semantics/)).not.toBeInTheDocument();
+  });
+
+  it("the true pre-M7 placeholder never fabricates a legacy or corrected claim -- fails closed", async () => {
+    mockRunFetch(runWithAllAdvocatesPromptVersion("unassigned-pre-m7"));
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+
+    await screen.findByRole("heading", { name: "GUILTY" });
+    expect(
+      screen.getAllByText('Semantic mapping unavailable for prompt version "unassigned-pre-m7".')
+    ).toHaveLength(4);
+    expect(screen.queryByText("PRO — Defense")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Legacy semantics/)).not.toBeInTheDocument();
+  });
+
+  it("an arbitrary unrecognized version never defaults to the current (advocate-v2) meaning -- fails closed identically to the placeholder", async () => {
+    mockRunFetch(runWithAllAdvocatesPromptVersion("advocate-v99-totally-unknown"));
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+
+    await screen.findByRole("heading", { name: "GUILTY" });
+    expect(
+      screen.getAllByText(
+        'Semantic mapping unavailable for prompt version "advocate-v99-totally-unknown".'
+      )
+    ).toHaveLength(4);
+    expect(screen.queryByText("PRO — Defense")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Legacy semantics/)).not.toBeInTheDocument();
+  });
+});

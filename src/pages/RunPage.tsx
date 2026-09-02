@@ -26,6 +26,10 @@ import {
 } from "@mui/material";
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
+import {
+  describeAdvocateSide,
+  type AdvocateSide
+} from "../components/describeHistoricalAdvocateSide";
 import { JudgeVoteGroup } from "../components/JudgeVoteGroup";
 import { PageHeader } from "../components/PageHeader";
 import { PublicDemoRetentionNotice } from "../components/PublicDemoRetentionNotice";
@@ -202,6 +206,14 @@ export function RunPage() {
 
 function ParticipantGrid({ run }: { run: StoredRun }) {
   const statusById = new Map(run.participants.map((participant) => [participant.participantId, participant.attemptStatus]));
+  // PRO/CON semantic correction (Issue #30): the real per-run
+  // promptVersion, keyed by participantId -- always present from freeze
+  // time onward, regardless of execution status -- so the participant
+  // grid can render the version-aware, fail-closed side meaning rather
+  // than a bare "Side: PRO" label.
+  const promptVersionById = new Map(
+    run.participants.map((participant) => [participant.participantId, participant.promptVersion])
+  );
   const judgesActive = run.status === "JUDGES_RUNNING" || run.status === "COMPLETED" || run.status === "FAILED";
 
   return (
@@ -213,6 +225,7 @@ function ParticipantGrid({ run }: { run: StoredRun }) {
           </Typography>
           <ParticipantRow
             participants={advocateParticipants}
+            promptVersionById={promptVersionById}
             statuses={advocateParticipants.map((p) => STATUS_MAP[statusById.get(p.id) ?? "PENDING"])}
           />
         </CardContent>
@@ -225,6 +238,7 @@ function ParticipantGrid({ run }: { run: StoredRun }) {
             </Typography>
             <ParticipantRow
               participants={judgeParticipants}
+              promptVersionById={promptVersionById}
               statuses={judgeParticipants.map((p) => STATUS_MAP[statusById.get(p.id) ?? "PENDING"])}
             />
           </CardContent>
@@ -238,9 +252,11 @@ function ParticipantGrid({ run }: { run: StoredRun }) {
 
 function ParticipantRow({
   participants,
+  promptVersionById,
   statuses
 }: {
   participants: Array<{ id: string; label: string; side?: string }>;
+  promptVersionById: Map<string, string>;
   statuses: ParticipantStatus[];
 }) {
   return (
@@ -259,10 +275,11 @@ function ParticipantRow({
           sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2, p: 2 }}
         >
           <Typography sx={{ fontWeight: 800 }}>{participant.label}</Typography>
-          {participant.side ? (
-            <Typography color="text.secondary" variant="body2">
-              Side: {participant.side}
-            </Typography>
+          {participant.side === "PRO" || participant.side === "CON" ? (
+            <AdvocateSideMeaning
+              promptVersion={promptVersionById.get(participant.id) ?? ""}
+              side={participant.side}
+            />
           ) : null}
           <StatusBadge status={statuses[index]} />
         </Stack>
@@ -357,7 +374,8 @@ function CompletedResult({ run }: { run: StoredRun }) {
       side: advocate.side ?? "PRO",
       model: participant.modelId,
       personality: participant.personality,
-      speech: participant.speech as string
+      speech: participant.speech as string,
+      promptVersion: participant.promptVersion
     };
   });
 
@@ -415,6 +433,7 @@ function CompletedResult({ run }: { run: StoredRun }) {
               <Typography sx={{ fontWeight: 800 }}>
                 {speech.participant} -- {speech.side}
               </Typography>
+              <AdvocateSideMeaning promptVersion={speech.promptVersion} side={speech.side} />
               <Typography color="text.secondary" variant="caption">
                 View argument
               </Typography>
@@ -709,10 +728,54 @@ function EconomicsAuditAccordion({ run }: { run: StoredRun }) {
 // reasonings/economics, assembled server-side (protocolResolution.ts).
 // Never a raw JSON dump; never present for a non-COMPLETED run or a
 // protocol that failed validation/consistency checks.
+// PRO/CON semantic correction (Issue #30) -- the single shared,
+// version-aware, fail-closed rendering of an Advocate's side meaning,
+// used at every historical display site (Frozen Participants, the
+// Protocol Advocate list, the Advocate speech headings, and the
+// participant/running grid). Never applies the current advocate-v2
+// meaning to a historical advocate-v1 participant, and never silently
+// claims a meaning for a placeholder/unrecognized prompt version.
+function AdvocateSideMeaning({
+  side,
+  promptVersion
+}: {
+  side: AdvocateSide;
+  promptVersion: string;
+}) {
+  const description = describeAdvocateSide(side, promptVersion);
+
+  if (description.kind === "unavailable") {
+    return (
+      <Typography color="text.secondary" variant="body2">
+        {description.message}
+      </Typography>
+    );
+  }
+
+  return (
+    <Stack spacing={0}>
+      <Typography color="text.secondary" variant="body2">
+        {description.heading}
+      </Typography>
+      <Typography color="text.secondary" variant="body2">
+        {description.description}
+      </Typography>
+    </Stack>
+  );
+}
+
 function ProtocolAccordion({ protocol }: { protocol: StoredRun["protocol"] }) {
   if (!protocol) {
     return null;
   }
+
+  // PRO/CON semantic correction (Issue #30): protocol.advocates[] itself
+  // carries no promptVersion -- cross-reference the Frozen Participants
+  // list (which does) by participantId so the historical-display policy
+  // below can select the right caption for each advocate's speech.
+  const promptVersionByParticipantId = new Map(
+    protocol.participants.map((entry) => [entry.participantId, entry.promptVersion])
+  );
 
   return (
     <Accordion>
@@ -771,6 +834,14 @@ function ProtocolAccordion({ protocol }: { protocol: StoredRun["protocol"] }) {
                 <Typography variant="body2">Personality: {entry.personality}</Typography>
                 <Typography variant="body2">Model: {entry.modelId}</Typography>
                 <Typography variant="body2">Prompt version: {entry.promptVersion}</Typography>
+                {/* PRO/CON semantic correction (Issue #30): version-aware,
+                   fail-closed side meaning -- never applies the current
+                   advocate-v2 explanation to a historical advocate-v1
+                   participant, and never silently claims a meaning for
+                   an unrecognized/placeholder prompt version. */}
+                {entry.side ? (
+                  <AdvocateSideMeaning promptVersion={entry.promptVersion} side={entry.side} />
+                ) : null}
               </Stack>
             ))}
           </Stack>
@@ -779,9 +850,15 @@ function ProtocolAccordion({ protocol }: { protocol: StoredRun["protocol"] }) {
               Advocates
             </Typography>
             {protocol.advocates.map((entry) => (
-              <Typography key={entry.participantId} variant="body2">
-                {entry.participantId} ({entry.side}): {entry.speech}
-              </Typography>
+              <Stack key={entry.participantId} spacing={0.25}>
+                <Typography variant="body2">
+                  {entry.participantId} ({entry.side}): {entry.speech}
+                </Typography>
+                <AdvocateSideMeaning
+                  promptVersion={promptVersionByParticipantId.get(entry.participantId) ?? ""}
+                  side={entry.side}
+                />
+              </Stack>
             ))}
           </Stack>
           <Stack spacing={0.5}>

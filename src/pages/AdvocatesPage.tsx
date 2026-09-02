@@ -30,7 +30,7 @@ export function AdvocatesPage() {
       <PageHeader
         eyebrow="Participants"
         title="Advocates"
-        description="Exactly four advocates are configured for review: two PRO and two CON. Sides and counts are fixed."
+        description="Exactly four advocates are configured for review: two PRO (Defense, arguing NOT_GUILTY) and two CON (Opposition, arguing GUILTY). Sides and counts are fixed."
       />
       <Paper sx={{ p: { xs: 2, md: 3 } }}>
         <ExecutionModeControl />
