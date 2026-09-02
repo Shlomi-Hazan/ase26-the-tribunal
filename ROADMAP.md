@@ -48,8 +48,8 @@ Do not begin later milestones by destabilizing incomplete earlier work.
 | 8 | Shared-Model Tribunal | ✅ Complete |
 | 9 | Separate-Model Tribunal | ✅ Complete |
 | 10 | Protocol & Economics | ✅ Complete |
-| 11 | Past Cases & Auditability | 🟡 Current |
-| 12 | Agent Mode, If Confirmed | ⬜ Conditional |
+| 11 | Past Cases & Auditability | ✅ Complete |
+| 12 | Canonical Jon Snow Demo | 🟡 Current |
 | 13 | Failure & Security Hardening | ⬜ Planned |
 | 14 | UI Polish & Accessibility | ⬜ Planned |
 | 15 | Production Deployment | ⬜ Planned |
@@ -604,36 +604,48 @@ Make historical deliberations independently inspectable without rerunning models
 
 A historical run is understandable from persisted evidence alone.
 
+### Closeout (2026-09-02)
+
+Complete. Planning: [Issue #27](https://github.com/Shlomi-Hazan/ase26-the-tribunal/issues/27) (closed). Implementation: [PR #29](https://github.com/Shlomi-Hazan/ase26-the-tribunal/pull/29), merged at `85aec6bb34fc30496297ad9d1dae183f884c1b08`. Delivered: `GET /api/cases/:id/runs` as a read-only Case→Run bridge, Case Detail's associated Run list, and the public-demo retention disclosure on `/history`, `/cases/:caseId`, and `/runs/:runId`. No database/schema change, no migration. Historical reopen remained strictly read-only throughout (zero model calls, zero OpenRouter/provider-metadata fetches, zero execution mutation).
+
 ---
 
-# M12 — Agent Mode, If Confirmed
+# M12 — Canonical Jon Snow Demo
 
 ## Status
 
-Conditional. Do not implement unless the course requirement is confirmed precisely.
+Current. Planning: [Issue #32](https://github.com/Shlomi-Hazan/ase26-the-tribunal/issues/32) records an independently reviewed source-truth audit against the lecturer's case-design dossier ("THE TRIBUNAL — Jon Snow and the untimely demise of Daenerys Targaryen," Research edition, August 2026).
+
+**Agent Mode is cancelled and removed from the product plan** (this replaces the milestone's prior "Agent Mode, If Confirmed" scope; it is not deferred or conditional — see [Issue #32](https://github.com/Shlomi-Hazan/ase26-the-tribunal/issues/32) §14–15 for the correction record and every other document touched by the cancellation).
 
 ## Goal
 
-Add a genuinely distinct execution strategy only if required.
+A one-click, deterministic, GoT-themed launch of the real Tribunal engine using a fixed canonical case and a fixed seven-participant configuration derived verbatim from the lecturer's dossier — reusing the existing execution engine end-to-end, with no schema change and no duplicate execution/majority/economics/protocol logic.
 
-## Required before implementation
+## Scope
 
-Document what makes it an agent:
+- A small Home surface at `/` (Create/New Tribunal, Past Cases, Featured Jon Snow Demo) — `/` currently redirects straight into the setup flow; no Home page exists yet.
+- A deterministic, version-controlled, schema-validated canonical preset (Charge Sheet + all seven participant profiles) — never a runtime Smart Extraction/LLM call.
+- Locked seat mapping: PRO I/II = Jon Snow/Tyrion Lannister (defense seat), CON I/II = Daenerys Targaryen/Grey Worm (prosecution seat), Judge I/II/III = Aharon Barak/Menachem Elon/Meir Shamgar judicial-method profiles — procedural seating only, never a fixed opinion or verdict.
+- A `/demo/jon-snow` launcher; run viewing stays on the existing generic `/runs/:runId`.
+- A shared, non-duplicated run-start submission/navigation path extracted from `ReviewPage.tsx` and reused by the launcher, preserving the existing `clientRequestId` idempotency contract.
+- BYOK required to launch (no dev/operator key fallback, no bypass of normal preflight/backend authority) — reuses the existing connected-credential gate unchanged.
+- A documented default-model policy that explicitly rejects "cheapest wins," informed by the real `gpt-5-nano` CON II role-adherence miss observed live in run `b091e0e1-29b1-41ea-a990-017f57aaf5cb` (PR #31's gate) — with an explicit no-silent-fallback rule if the default becomes ineligible.
+- Theme isolation: GoT presentation confined to the Home Jon Snow card and `/demo/jon-snow`; every other route (including a reopened Jon Snow run) stays Tribunal-generic, decided without content-sniffing heuristics.
 
-- goal
-- model
-- loop
-- tools/actions if any
-- termination condition
-- state/context
-- output contract
-- new cost/security blast radius
+## Explicit non-goals
 
-Ordinary seven API calls do not qualify.
+Agent Mode, RAG, new authentication, a new majority/verdict system, a duplicate execution engine, a global GoT reskin, arbitrary user-created presets, runtime dossier extraction, and a role-adherence-classifier subsystem. See Issue #32 §19 for the full list.
+
+## Verification
+
+- The canonical case/seat-mapping/personality-limit content is covered by deterministic tests (no live model call required to verify correctness).
+- No database/schema migration lands with this milestone (confirmed by audit).
+- Existing engine, verdict vocabulary, deterministic majority, and $5.00 economics ceiling are unchanged.
 
 ## Exit condition
 
-If implemented, the distinction from model-call mode is observable and documented, not a naming change.
+The Jon Snow demo launches the real Tribunal engine end-to-end from one click (given BYOK + an eligible default model), produces an ordinary historical run indistinguishable in structure from any other run, and Issue #32's full acceptance-criteria list is satisfied.
 
 ---
 

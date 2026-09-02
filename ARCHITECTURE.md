@@ -1099,21 +1099,11 @@ Each would add complexity or attack/cost surface without solving a current V1 re
 
 ---
 
-## 17. Future Agent Execution Compatibility
+## 17. Agent Execution — Cancelled
 
-If the course later requires true agent execution, introduce it behind an execution-strategy boundary rather than rewriting the product model.
+Agent Mode is cancelled and removed from the product plan (ROADMAP.md M12; [Issue #32](https://github.com/Shlomi-Hazan/ase26-the-tribunal/issues/32)). It is not deferred or conditional; no execution-strategy boundary for it is being built.
 
-Conceptually:
-
-```ts
-interface TribunalExecutionStrategy {
-  execute(runId: string): Promise<void>;
-}
-```
-
-V1 implements the fixed two-phase model-call strategy.
-
-A future agent strategy must define genuine model + tools + loop/autonomy semantics before being added. The existence of this interface alone must not be presented as implementing Agent Mode.
+The fixed two-phase model-call strategy (SPEC.md §9) is the only execution strategy the product implements or plans to implement. Historical design note, kept for context only: an earlier draft of this document sketched a `TribunalExecutionStrategy` interface as a possible seam for a future agent mode. No such interface exists in the codebase, and none is planned — this section records that the idea was considered and explicitly not pursued, not that it remains open.
 
 ---
 

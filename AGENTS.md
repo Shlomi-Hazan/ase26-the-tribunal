@@ -56,7 +56,7 @@ Unless an approved spec change says otherwise:
 - no silent paid fallback
 - historical reopen performs no model call
 - V1 has no user authentication/private ownership
-- ordinary participant calls are not called “agents”; Agent Mode is conditional future scope
+- ordinary participant calls are not called “agents”; Agent Mode is cancelled and removed from the product plan (ROADMAP.md M12; Issue #32)
 
 ## Deterministic / Model Boundary
 
@@ -162,9 +162,8 @@ Stop and surface the decision when:
 - a secret may have leaked
 - a migration may cause unexpected destructive data change
 - branch/base/working tree differs materially from expected state
-- Agent Mode would require interpretation rather than confirmed requirements
 
-Do not solve material ambiguity by guessing.
+Do not solve material ambiguity by guessing. (Agent Mode itself is cancelled, not merely ambiguous — see ROADMAP.md M12 / Issue #32 — so it is no longer a live source of this kind of ambiguity, and is removed from this list.)
 
 ## Completion Report
 
