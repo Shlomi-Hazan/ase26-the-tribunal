@@ -47,8 +47,8 @@ Do not begin later milestones by destabilizing incomplete earlier work.
 | 7A | Smart Tribunal Package Extraction | ✅ Complete |
 | 8 | Shared-Model Tribunal | ✅ Complete |
 | 9 | Separate-Model Tribunal | ✅ Complete |
-| 10 | Protocol & Economics | 🟡 Current |
-| 11 | Past Cases & Auditability | ⬜ Planned |
+| 10 | Protocol & Economics | ✅ Complete |
+| 11 | Past Cases & Auditability | 🟡 Current |
 | 12 | Agent Mode, If Confirmed | ⬜ Conditional |
 | 13 | Failure & Security Hardening | ⬜ Planned |
 | 14 | UI Polish & Accessibility | ⬜ Planned |
@@ -569,6 +569,10 @@ Make the cognified software economics a first-class product output.
 ## Exit condition
 
 A reviewer can explain exactly what each completed run consumed, how cost was derived, and why the run was allowed to start.
+
+### Closeout (2026-09-02)
+
+Complete. Planning: [Issue #23](https://github.com/Shlomi-Hazan/ase26-the-tribunal/issues/23) (closed). Implementation: [PR #25](https://github.com/Shlomi-Hazan/ase26-the-tribunal/pull/25), approved head `9da1dd6b8940def5359d64409f604837c2bafb9e`, merged at `fc641f2db6ee49526344f2de76947f94fea412ab`. Final exact-head CI: run [33436781897](https://github.com/Shlomi-Hazan/ase26-the-tribunal/actions/runs/33436781897), SUCCESS. Final verification: 55 test files / 793 tests. No database or schema change, no migration. Zero new Tribunal runs and zero real OpenRouter completions during M10; the two prior M8/M9 historical runs were used read-only for verification. Delivered: persisted economics/audit exposure, historical pricing snapshots, an immutable Economics Policy V1 registry, completed-run admission reconstruction, a strict resolved Protocol (including frozen-participant cross-evidence against the persisted participant configuration), Result-page economics/audit/protocol UX, and honest `FAILED`-run partial-spend disclosure.
 
 ---
 
