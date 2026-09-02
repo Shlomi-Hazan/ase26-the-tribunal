@@ -11,6 +11,10 @@ import {
 import Decimal from "decimal.js";
 import { useCallback, useRef, useState } from "react";
 import { Link as RouterLink, useNavigate } from "react-router-dom";
+import {
+  CURRENT_ADVOCATE_SIDE_DESCRIPTION,
+  CURRENT_ADVOCATE_SIDE_HEADING
+} from "../components/advocateSideCopy";
 import { EconomicsSummary } from "../components/EconomicsSummary";
 import { OpenRouterConnect } from "../components/OpenRouterConnect";
 import { PageHeader } from "../components/PageHeader";
@@ -384,7 +388,9 @@ export function ReviewPage() {
                       {participant.label}
                     </Typography>
                     <Typography color="text.secondary" variant="body2">
-                      {participant.side ? `${participant.side} advocate` : "Judge"}
+                      {participant.side
+                        ? `${CURRENT_ADVOCATE_SIDE_HEADING[participant.side]} -- ${CURRENT_ADVOCATE_SIDE_DESCRIPTION[participant.side]}`
+                        : "Judge"}
                     </Typography>
                     <Typography color="text.secondary" variant="body2">
                       Model: {displayModelName}

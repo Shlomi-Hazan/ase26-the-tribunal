@@ -325,7 +325,15 @@ Personality text should have enough space to write meaningful behavioural contex
 
 ### Side clarity
 
-PRO and CON should be visually distinguishable, but side meaning must also be written in text and never depend on color alone.
+PRO and CON should be visually distinguishable, but side meaning must also be written in text and never depend on color alone. Locked canonical meaning (`SPEC.md` §2.2): PRO = Defense (supports the defendant, argues NOT_GUILTY); CON = Opposition/Prosecution (argues GUILTY). Suggested current-setup card copy:
+
+```text
+PRO — Defense
+Supports the defendant · argues NOT_GUILTY
+
+CON — Opposition
+Argues against the defendant · argues GUILTY
+```
 
 ### Primary action
 

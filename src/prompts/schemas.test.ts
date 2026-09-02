@@ -79,9 +79,11 @@ describe("judge verdict schema", () => {
 });
 
 describe("role prompt version constants", () => {
-  it("has the locked advocate-v1 / judge-v1 identifiers", () => {
-    expect(ADVOCATE_PROMPT_VERSION).toBe("advocate-v1");
-    expect(JUDGE_PROMPT_VERSION).toBe("judge-v1");
+  // PRO/CON semantic correction (Issue #30): bumped from advocate-v1/
+  // judge-v1 to advocate-v2/judge-v2.
+  it("has the locked advocate-v2 / judge-v2 identifiers", () => {
+    expect(ADVOCATE_PROMPT_VERSION).toBe("advocate-v2");
+    expect(JUDGE_PROMPT_VERSION).toBe("judge-v2");
   });
 });
 
@@ -109,12 +111,15 @@ describe("prompt files contain no secrets", () => {
 });
 
 describe("advocate prompt enforces a fixed, non-overridable side", () => {
-  it("PRO prompt argues for guilt and CON prompt argues for not-guilty", () => {
+  // PRO/CON semantic correction (Issue #30): PRO = Defense, argues
+  // NOT_GUILTY; CON = Opposition/Prosecution, argues GUILTY.
+  it("PRO prompt argues for NOT_GUILTY (Defense) and CON prompt argues for GUILTY (Opposition/Prosecution)", () => {
     const pro = buildAdvocateSystemPrompt("PRO");
     const con = buildAdvocateSystemPrompt("CON");
 
-    expect(pro).toContain("GUILTY");
-    expect(con).toContain("NOT_GUILTY");
+    expect(pro).toContain("NOT_GUILTY");
+    expect(con).toContain("GUILTY");
+    expect(con).not.toContain("NOT_GUILTY");
     expect(pro).not.toBe(con);
   });
 

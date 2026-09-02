@@ -17,13 +17,19 @@
 // always answerable.
 
 import { PACKAGE_EXTRACTION_SYSTEM_PROMPT_V1 } from "./v1";
+import { PACKAGE_EXTRACTION_SYSTEM_PROMPT_V2 } from "./v2";
 
 export type PackageExtractionPromptBuilder = () => string;
 
+// PRO/CON semantic correction (Issue #30): package-extraction-v2 added
+// additively -- v1's entry/resolution is unchanged, so every existing
+// v1-stamped extraction record continues to replay against the exact
+// v1 text it always has.
 const PACKAGE_EXTRACTION_PROMPT_REGISTRY: Readonly<
   Record<string, PackageExtractionPromptBuilder>
 > = Object.freeze({
-  "package-extraction-v1": () => PACKAGE_EXTRACTION_SYSTEM_PROMPT_V1
+  "package-extraction-v1": () => PACKAGE_EXTRACTION_SYSTEM_PROMPT_V1,
+  "package-extraction-v2": () => PACKAGE_EXTRACTION_SYSTEM_PROMPT_V2
 });
 
 // Returns the exact historical prompt builder for `version`, or

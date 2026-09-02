@@ -230,10 +230,19 @@ export async function runPreflight(
     // Reject a run whose prompt_version is still the pre-M7 placeholder,
     // or any value other than the current role-specific version -- never
     // reported execution-eligible (SPEC.md MODEL-006, Section 35).
-    if (
-      participant.promptVersion === PROMPT_VERSION_PLACEHOLDER ||
-      participant.promptVersion !== EXPECTED_PROMPT_VERSION[role]
-    ) {
+    //
+    // PRO/CON semantic correction (Issue #30): the two conditions are
+    // reported with distinct, honest reason codes rather than a single
+    // shared one. PROMPT_VERSION_UNASSIGNED is reserved for the true
+    // pre-M7 placeholder (genuinely never assigned). Any other mismatch
+    // -- e.g. a stale "advocate-v1"/"judge-v1" participant once the
+    // current versions are "advocate-v2"/"judge-v2" -- is a real,
+    // assigned value that simply isn't current, reported as the neutral
+    // PROMPT_VERSION_MISMATCH instead. Calling that case "unassigned"
+    // would be materially false. Both remain execution-ineligible; only
+    // the stated reason differs, so this never silently falls back to
+    // the current prompt or reinterprets a frozen version.
+    if (participant.promptVersion === PROMPT_VERSION_PLACEHOLDER) {
       blockedReasonCodes.add("PROMPT_VERSION_UNASSIGNED");
       participants.push({
         participantId: participant.participantId,
@@ -247,6 +256,24 @@ export async function runPreflight(
         conservativeParticipantCostUsd: null,
         pricing: null,
         reasonCodes: ["PROMPT_VERSION_UNASSIGNED"]
+      });
+      continue;
+    }
+
+    if (participant.promptVersion !== EXPECTED_PROMPT_VERSION[role]) {
+      blockedReasonCodes.add("PROMPT_VERSION_MISMATCH");
+      participants.push({
+        participantId: participant.participantId,
+        configuredModelId: participant.modelId,
+        canonicalModelId: null,
+        modelEligible: false,
+        providerName: null,
+        providerEndpointIdOrTag: null,
+        reasoningEffort: null,
+        priceTier: null,
+        conservativeParticipantCostUsd: null,
+        pricing: null,
+        reasonCodes: ["PROMPT_VERSION_MISMATCH"]
       });
       continue;
     }
