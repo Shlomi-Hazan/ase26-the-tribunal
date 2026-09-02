@@ -942,3 +942,68 @@ describe("RunPage BLOCKED_BUDGET stays distinct from FAILED-with-spend (Mileston
     expect(screen.queryByText("NOT_GUILTY")).not.toBeInTheDocument();
   });
 });
+
+describe("RunPage public-demo retention notice (Milestone 11, Issue #27)", () => {
+  const RETENTION_TEXT = /shared, single-tenant public course\/demo application/i;
+
+  it("is visible on a direct /runs/:runId reload of a COMPLETED run", async () => {
+    mockRunFetch(baseRun());
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+
+    await screen.findByRole("heading", { name: "GUILTY" });
+    expect(screen.getByText(RETENTION_TEXT)).toBeVisible();
+  });
+
+  it("is visible on a FAILED run", async () => {
+    mockRunFetch(
+      baseRun({
+        status: "FAILED",
+        majorityVerdict: null,
+        failureMessage: "The Tribunal could not complete.",
+        totalCostUsd: null
+      })
+    );
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+
+    await screen.findByRole("heading", { name: /the tribunal could not complete/i });
+    expect(screen.getByText(RETENTION_TEXT)).toBeVisible();
+  });
+
+  it("is visible on a BLOCKED_BUDGET run", async () => {
+    mockRunFetch(
+      baseRun({
+        status: "BLOCKED_BUDGET",
+        majorityVerdict: null,
+        failureMessage: "Conservative preflight exceeded the $5.00 policy limit.",
+        totalCostUsd: null,
+        partialSpend: null,
+        admission: null,
+        attempts: [],
+        protocol: null,
+        participants: []
+      })
+    );
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+
+    await screen.findByText(/this run cannot be executed/i);
+    expect(screen.getByText(RETENTION_TEXT)).toBeVisible();
+  });
+
+  it("does not bypass or duplicate the existing result-integrity error branch", async () => {
+    const run = baseRun();
+
+    run.participants = run.participants.map((entry) =>
+      entry.participantId === "judge-3" ? { ...entry, verdict: null, reasoning: null } : entry
+    );
+    mockRunFetch(run);
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+
+    await screen.findByText(/result cannot be safely displayed/i);
+    expect(screen.getByText(RETENTION_TEXT)).toBeVisible();
+    expect(screen.queryByText("GUILTY")).not.toBeInTheDocument();
+  });
+});

@@ -10,14 +10,18 @@ import {
   computeRequestFingerprint,
   computeWallClockMs,
   PROMPT_VERSION_PLACEHOLDER,
+  RunPersistenceError,
   RunValidationError,
   sortParticipantsCanonically,
+  sortRunSummariesDeterministically,
+  toRunSummary,
   validateCreateRunInput,
   validateRunId,
   type AttemptRow,
   type CaseFingerprintInput,
   type ParticipantFingerprintInput,
-  type PersistedParticipantConfig
+  type PersistedParticipantConfig,
+  type RunSummary
 } from "./runs";
 
 function persistedParticipant(id: ParticipantId): PersistedParticipantConfig {
@@ -778,5 +782,145 @@ describe("historical pricing immutability (Milestone 10, Issue #23 Sec 14)", () 
     const source = readFileSync(path.resolve(__dirname, "runs.ts"), "utf8");
 
     expect(source).not.toMatch(/OpenRouterProvider|openrouter\.ai|fetch\(/);
+  });
+});
+
+function runSummaryRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: "00000000-0000-4000-8000-000000000001",
+    case_id: "00000000-0000-4000-8000-0000000000ca",
+    status: "COMPLETED",
+    execution_mode: "SHARED",
+    created_at: "2026-08-29T00:00:00.000Z",
+    started_at: "2026-08-29T00:00:01.000Z",
+    completed_at: "2026-08-29T00:00:05.000Z",
+    ...overrides
+  };
+}
+
+// Milestone 11 (Issue #27) -- toRunSummary is the pure mapping unit
+// behind RunRepository.listByCaseId, testable directly without mocking
+// the Supabase query builder (this codebase's established convention).
+describe("toRunSummary (Milestone 11, Issue #27)", () => {
+  it("maps a valid row to the exact safe RunSummary shape", () => {
+    const summary = toRunSummary(runSummaryRow());
+
+    expect(summary).toEqual<RunSummary>({
+      runId: "00000000-0000-4000-8000-000000000001",
+      caseId: "00000000-0000-4000-8000-0000000000ca",
+      status: "COMPLETED",
+      executionMode: "shared",
+      createdAt: "2026-08-29T00:00:00.000Z",
+      startedAt: "2026-08-29T00:00:01.000Z",
+      completedAt: "2026-08-29T00:00:05.000Z"
+    });
+  });
+
+  it("never contains majorityVerdict, cost, attempts, protocol, participant data, or internal request/fingerprint fields", () => {
+    const summary = toRunSummary(runSummaryRow()) as Record<string, unknown>;
+
+    expect(Object.keys(summary).sort()).toEqual(
+      [
+        "caseId",
+        "completedAt",
+        "createdAt",
+        "executionMode",
+        "runId",
+        "startedAt",
+        "status"
+      ].sort()
+    );
+    expect(summary).not.toHaveProperty("majorityVerdict");
+    expect(summary).not.toHaveProperty("totalCostUsd");
+    expect(summary).not.toHaveProperty("partialSpend");
+    expect(summary).not.toHaveProperty("attempts");
+    expect(summary).not.toHaveProperty("participants");
+    expect(summary).not.toHaveProperty("protocol");
+    expect(summary).not.toHaveProperty("clientRequestId");
+    expect(summary).not.toHaveProperty("requestFingerprint");
+  });
+
+  it.each([
+    ["DRAFT"],
+    ["READY"],
+    ["ADVOCATES_RUNNING"],
+    ["JUDGES_RUNNING"],
+    ["COMPLETED"],
+    ["FAILED"],
+    ["BLOCKED_BUDGET"]
+  ])("accepts the valid persisted status %s", (status) => {
+    expect(toRunSummary(runSummaryRow({ status })).status).toBe(status);
+  });
+
+  it("fails closed (RunPersistenceError) on an unrecognized persisted status, never a generic label", () => {
+    expect(() => toRunSummary(runSummaryRow({ status: "RUNNING" }))).toThrow(RunPersistenceError);
+    expect(() => toRunSummary(runSummaryRow({ status: "UNKNOWN" }))).toThrow(RunPersistenceError);
+  });
+
+  it("fails closed (RunPersistenceError) on an unsupported execution mode", () => {
+    expect(() => toRunSummary(runSummaryRow({ execution_mode: "HYBRID" }))).toThrow(
+      RunPersistenceError
+    );
+  });
+
+  it("maps SHARED -> shared and SEPARATE -> separate honestly", () => {
+    expect(toRunSummary(runSummaryRow({ execution_mode: "SHARED" })).executionMode).toBe("shared");
+    expect(toRunSummary(runSummaryRow({ execution_mode: "SEPARATE" })).executionMode).toBe("separate");
+  });
+
+  it("fails closed (RunPersistenceError) on a malformed required identifier", () => {
+    expect(() => toRunSummary(runSummaryRow({ id: "not-a-uuid" }))).toThrow(RunPersistenceError);
+    expect(() => toRunSummary(runSummaryRow({ case_id: "not-a-uuid" }))).toThrow(RunPersistenceError);
+  });
+
+  it("fails closed (RunPersistenceError) on a missing required field", () => {
+    const row = runSummaryRow();
+
+    delete row.created_at;
+
+    expect(() => toRunSummary(row)).toThrow(RunPersistenceError);
+  });
+
+  it("preserves null startedAt/completedAt rather than fabricating a value", () => {
+    const summary = toRunSummary(runSummaryRow({ started_at: null, completed_at: null }));
+
+    expect(summary.startedAt).toBeNull();
+    expect(summary.completedAt).toBeNull();
+  });
+});
+
+function runSummary(overrides: Partial<RunSummary> = {}): RunSummary {
+  return {
+    runId: "00000000-0000-4000-8000-000000000001",
+    caseId: "00000000-0000-4000-8000-0000000000ca",
+    status: "COMPLETED",
+    executionMode: "shared",
+    createdAt: "2026-08-29T00:00:00.000Z",
+    startedAt: "2026-08-29T00:00:01.000Z",
+    completedAt: "2026-08-29T00:00:05.000Z",
+    ...overrides
+  };
+}
+
+// Milestone 11 (Issue #27) -- the in-memory defense-in-depth tie-break
+// applied alongside the equivalent ORDER BY listByCaseId also requests
+// from Postgres. created_at is NOT NULL but not UNIQUE, so this proves
+// the deterministic total order directly, without mocking Supabase.
+describe("sortRunSummariesDeterministically (Milestone 11, Issue #27)", () => {
+  it("orders by createdAt DESC", () => {
+    const older = runSummary({ runId: "00000000-0000-4000-8000-000000000001", createdAt: "2026-08-29T00:00:00.000Z" });
+    const newer = runSummary({ runId: "00000000-0000-4000-8000-000000000002", createdAt: "2026-08-30T00:00:00.000Z" });
+
+    expect(sortRunSummariesDeterministically([older, newer])).toEqual([newer, older]);
+  });
+
+  it("uses id DESC as a stable tie-break when createdAt is identical", () => {
+    const a = runSummary({ runId: "00000000-0000-4000-8000-000000000001" });
+    const b = runSummary({ runId: "00000000-0000-4000-8000-000000000002" });
+
+    expect(sortRunSummariesDeterministically([a, b])).toEqual([b, a]);
+    // Order-of-input independence: the same tie-break wins regardless of
+    // the order Postgres/the fake happened to hand the rows back in.
+    expect(sortRunSummariesDeterministically([b, a])).toEqual([b, a]);
   });
 });
