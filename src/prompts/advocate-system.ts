@@ -1,8 +1,21 @@
-// Milestone 7 -- versioned advocate base system prompt (advocate-v1,
-// src/prompts/versions.ts). Enforces: a fixed side that no personality or
+// Milestone 7 -- versioned advocate base system prompt
+// (src/prompts/versions.ts). Enforces: a fixed side that no personality or
 // case content can change; argument only for the assigned side; untrusted
 // case/personality data is data, never instructions; strict structured
 // output matching src/prompts/schemas.ts's advocateSpeechSchema.
+//
+// PRO/CON semantic correction (Issue #30, advocate-v2): the locked
+// product contract is PRO = Defense / supports the defendant / argues
+// toward NOT_GUILTY, and CON = Opposition/Prosecution against the
+// defendant / argues toward GUILTY -- the semantic anchor is the
+// defendant and the final verdict, never the literal wording of the
+// Exact Question. This file previously (advocate-v1) had the reverse
+// meaning by accident; that historical text is preserved exactly,
+// unedited, in src/prompts/advocate/v1.ts -- it is never corrected
+// there, since doing so would falsify the historical record of what
+// advocate-v1-stamped runs actually argued. This file always represents
+// whatever ADVOCATE_PROMPT_VERSION (src/prompts/versions.ts) currently
+// is -- currently advocate-v2.
 //
 // M7 does not call this prompt against a real model (M7 makes zero
 // completion calls) -- it exists so the version identifier is bound to
@@ -14,8 +27,8 @@
 export type AdvocateSide = "PRO" | "CON";
 
 const SIDE_LABEL: Record<AdvocateSide, string> = {
-  PRO: "in favor of the charge (arguing the defendant is GUILTY)",
-  CON: "against the charge (arguing the defendant is NOT_GUILTY)"
+  PRO: "for the defendant's Defense (arguing the defendant is NOT_GUILTY)",
+  CON: "for the Opposition/Prosecution against the defendant (arguing the defendant is GUILTY)"
 };
 
 export function buildAdvocateSystemPrompt(side: AdvocateSide): string {

@@ -249,26 +249,41 @@ describe("computeRequestFingerprint", () => {
     expect(first).toBe(second);
   });
 
-  it("B: advocate-v1 -> advocate-v2 changes the fingerprint (judge version held constant)", () => {
-    const withV1 = computeRequestFingerprint(baseFingerprintInput());
-    const withV2 = computeRequestFingerprint(
+  // PRO/CON semantic correction (Issue #30): these compare two distinct
+  // EXPLICIT literals for the role under test, never relying on
+  // baseFingerprintInput()'s default matching (or not matching) a
+  // hardcoded version string -- that made the test fragile against the
+  // current constants themselves changing (exactly what this
+  // correction's own advocate-v1 -> advocate-v2 / judge-v1 -> judge-v2
+  // bump did).
+  it("B: a different assigned advocate prompt version changes the fingerprint (judge version held constant)", () => {
+    const withOlder = computeRequestFingerprint(
       baseFingerprintInput({
-        promptVersions: { advocate: "advocate-v2", judge: JUDGE_PROMPT_VERSION }
+        promptVersions: { advocate: "advocate-v1", judge: JUDGE_PROMPT_VERSION }
+      })
+    );
+    const withCurrent = computeRequestFingerprint(
+      baseFingerprintInput({
+        promptVersions: { advocate: ADVOCATE_PROMPT_VERSION, judge: JUDGE_PROMPT_VERSION }
       })
     );
 
-    expect(withV1).not.toBe(withV2);
+    expect(withOlder).not.toBe(withCurrent);
   });
 
-  it("C: judge-v1 -> judge-v2 changes the fingerprint (advocate version held constant)", () => {
-    const withV1 = computeRequestFingerprint(baseFingerprintInput());
-    const withV2 = computeRequestFingerprint(
+  it("C: a different assigned judge prompt version changes the fingerprint (advocate version held constant)", () => {
+    const withOlder = computeRequestFingerprint(
       baseFingerprintInput({
-        promptVersions: { advocate: ADVOCATE_PROMPT_VERSION, judge: "judge-v2" }
+        promptVersions: { advocate: ADVOCATE_PROMPT_VERSION, judge: "judge-v1" }
+      })
+    );
+    const withCurrent = computeRequestFingerprint(
+      baseFingerprintInput({
+        promptVersions: { advocate: ADVOCATE_PROMPT_VERSION, judge: JUDGE_PROMPT_VERSION }
       })
     );
 
-    expect(withV1).not.toBe(withV2);
+    expect(withOlder).not.toBe(withCurrent);
   });
 
   it("distinguishes the current role-specific versions from the retired M6 placeholder", () => {

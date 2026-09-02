@@ -176,14 +176,55 @@ describe("runPreflight -- prompt version gate (SPEC.md MODEL-006)", () => {
     expect(result.blockedReasonCodes).not.toContain("PROMPT_VERSION_UNASSIGNED");
   });
 
-  it("blocks a mismatched (wrong-role) prompt version", async () => {
+  // PRO/CON semantic correction (Issue #30): a wrong-role (but real,
+  // assigned) prompt version is a mismatch, not "unassigned" -- that
+  // label would be materially false for a value that genuinely was
+  // assigned, just not the one this role currently expects.
+  it("blocks a mismatched (wrong-role) prompt version with the neutral PROMPT_VERSION_MISMATCH reason, never PROMPT_VERSION_UNASSIGNED", async () => {
     const testRun = run({}, { "judge-1": { promptVersion: ADVOCATE_PROMPT_VERSION } });
     const loader = new FakeRunLoader({ [testRun.id]: testRun });
     const provider = providerFor(cheapModel());
 
     const result = await runPreflight(testRun.id, { runLoader: loader, provider });
 
-    expect(result.blockedReasonCodes).toContain("PROMPT_VERSION_UNASSIGNED");
+    expect(result.blockedReasonCodes).toContain("PROMPT_VERSION_MISMATCH");
+    expect(result.blockedReasonCodes).not.toContain("PROMPT_VERSION_UNASSIGNED");
+  });
+
+  it("blocks a stale, real-but-non-current version (e.g. a v1-stamped participant once current is v2) with PROMPT_VERSION_MISMATCH -- it can never execute under the current prompt text", async () => {
+    const testRun = run(
+      {},
+      {
+        "advocate-pro-1": { promptVersion: "advocate-v1" },
+        "judge-1": { promptVersion: "judge-v1" }
+      }
+    );
+    const loader = new FakeRunLoader({ [testRun.id]: testRun });
+    const provider = providerFor(cheapModel());
+
+    const result = await runPreflight(testRun.id, { runLoader: loader, provider });
+
+    expect(result.eligible).toBe(false);
+    expect(result.blockedReasonCodes).toContain("PROMPT_VERSION_MISMATCH");
+    expect(result.blockedReasonCodes).not.toContain("PROMPT_VERSION_UNASSIGNED");
+    const staleAdvocate = result.participants.find((p) => p.participantId === "advocate-pro-1");
+    const staleJudge = result.participants.find((p) => p.participantId === "judge-1");
+
+    expect(staleAdvocate?.modelEligible).toBe(false);
+    expect(staleAdvocate?.reasonCodes).toEqual(["PROMPT_VERSION_MISMATCH"]);
+    expect(staleJudge?.modelEligible).toBe(false);
+    expect(staleJudge?.reasonCodes).toEqual(["PROMPT_VERSION_MISMATCH"]);
+  });
+
+  it("blocks an arbitrary unrecognized assigned version with PROMPT_VERSION_MISMATCH -- never a fallback to the current prompt", async () => {
+    const testRun = run({}, { "advocate-con-1": { promptVersion: "totally-unknown-version" } });
+    const loader = new FakeRunLoader({ [testRun.id]: testRun });
+    const provider = providerFor(cheapModel());
+
+    const result = await runPreflight(testRun.id, { runLoader: loader, provider });
+
+    expect(result.blockedReasonCodes).toContain("PROMPT_VERSION_MISMATCH");
+    expect(result.blockedReasonCodes).not.toContain("PROMPT_VERSION_UNASSIGNED");
   });
 });
 

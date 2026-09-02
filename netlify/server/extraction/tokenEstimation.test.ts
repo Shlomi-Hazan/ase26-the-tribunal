@@ -10,7 +10,7 @@
 // buildFutureCompletionRequest actually sends).
 
 import { describe, expect, it } from "vitest";
-import { PACKAGE_EXTRACTION_SYSTEM_PROMPT_V1 } from "../../../src/prompts/package-extraction/v1";
+import { PACKAGE_EXTRACTION_SYSTEM_PROMPT_V2 } from "../../../src/prompts/package-extraction/v2";
 import { packageExtractionJsonSchema } from "../../../src/schemas/packageExtraction";
 import {
   buildDossierUserMessageContent,
@@ -36,7 +36,7 @@ function realResponseFormatEnvelope(): Record<string, unknown> {
 }
 
 function realFixedOverheadBytes(): number {
-  const systemPromptBytes = new TextEncoder().encode(PACKAGE_EXTRACTION_SYSTEM_PROMPT_V1).length;
+  const systemPromptBytes = new TextEncoder().encode(PACKAGE_EXTRACTION_SYSTEM_PROMPT_V2).length;
   const wrapperBytes = new TextEncoder().encode(buildDossierUserMessageContent("")).length;
   const schemaBytes = new TextEncoder().encode(
     JSON.stringify(realResponseFormatEnvelope())
@@ -55,7 +55,7 @@ describe("EXTRACTION_FIXED_PROMPT_OVERHEAD_TOKENS", () => {
 
   it("is strictly larger than the system-prompt-only figure the prior (corrected) revision used -- proof the wrapper/schema are genuinely included", () => {
     const systemPromptOnlyTokens = Math.ceil(
-      new TextEncoder().encode(PACKAGE_EXTRACTION_SYSTEM_PROMPT_V1).length / 2
+      new TextEncoder().encode(PACKAGE_EXTRACTION_SYSTEM_PROMPT_V2).length / 2
     );
 
     expect(EXTRACTION_FIXED_PROMPT_OVERHEAD_TOKENS).toBeGreaterThan(systemPromptOnlyTokens);

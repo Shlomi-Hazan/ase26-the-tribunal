@@ -41,7 +41,16 @@ export type PreflightReasonCode =
   | "PRICING_UNAVAILABLE"
   | "PRICING_UNREPRESENTABLE"
   | "BUDGET_EXCEEDED"
-  | "PROMPT_VERSION_UNASSIGNED";
+  | "PROMPT_VERSION_UNASSIGNED"
+  // PRO/CON semantic correction (Issue #30): distinct from
+  // PROMPT_VERSION_UNASSIGNED, which is reserved for the true pre-M7
+  // placeholder (PROMPT_VERSION_PLACEHOLDER) only. A participant whose
+  // promptVersion is assigned to some real, non-current value (an older
+  // version, an unrecognized value, or anything else the eligibility
+  // check alone cannot distinguish) is reported this neutral, honest
+  // reason instead -- never "unassigned," which would be materially
+  // false for a value that genuinely was assigned.
+  | "PROMPT_VERSION_MISMATCH";
 
 // Potentially retryable (subject to M8's budget guard also permitting the
 // retry) vs. never retryable -- documented here for forward reference only;
