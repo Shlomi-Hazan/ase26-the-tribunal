@@ -177,6 +177,14 @@ export class SupabaseCaseRepository implements IdempotentCaseRepository {
     return parseCaseRow(data);
   }
 
+  // Milestone 11 (Issue #27) -- the compound ORDER BY created_at DESC,
+  // id DESC requested from Postgres is the sole, authoritative
+  // ordering. Corrected (independent source review): the returned rows
+  // are mapped only, never re-sorted client-side -- a JS-side re-sort
+  // keyed on Date.parse(createdAt) would be lossy against timestamptz's
+  // microsecond resolution (JS Date is millisecond-precision) and could
+  // incorrectly reorder two rows Postgres had already ordered correctly
+  // within the same millisecond.
   async list(): Promise<PersistedCase[]> {
     const { data, error } = await this.client
       .from("cases")
@@ -188,7 +196,7 @@ export class SupabaseCaseRepository implements IdempotentCaseRepository {
       throw new CasePersistenceError();
     }
 
-    return sortCasesDeterministically(data.map((row) => parseCaseRow(row)));
+    return data.map((row) => parseCaseRow(row));
   }
 
   async getById(id: string): Promise<PersistedCase | null> {
@@ -284,26 +292,6 @@ function toCaseRowInput(input: CreateCaseInput) {
     source_type: input.sourceType,
     source_filename: input.sourceType === "MANUAL" ? null : input.sourceFilename
   };
-}
-
-// Milestone 11 (Issue #27) -- deterministic total ordering:
-// cases.created_at is NOT NULL but not UNIQUE, so two cases can
-// legitimately share a timestamp and created_at DESC alone is not
-// deterministic. Applied in-memory as a defense-in-depth guarantee
-// alongside the equivalent ORDER BY list() also requests from Postgres
-// -- pure and exported so the tie-break itself is directly
-// unit-testable without mocking the Supabase query builder. The id
-// comparison is a stability device only, never a chronological claim.
-export function sortCasesDeterministically(cases: PersistedCase[]): PersistedCase[] {
-  return [...cases].sort((a, b) => {
-    const createdDelta = Date.parse(b.createdAt) - Date.parse(a.createdAt);
-
-    if (createdDelta !== 0) {
-      return createdDelta;
-    }
-
-    return b.id.localeCompare(a.id);
-  });
 }
 
 function parseCaseRow(row: unknown): PersistedCase {

@@ -577,8 +577,13 @@ export type RunRepository = {
   // Milestone 11 -- one narrow read query filtered by case_id (no index
   // exists on tribunal_runs.case_id today; not required at V1's
   // public-demo scale -- see Issue #27 Database Decision). Ordered
-  // created_at DESC, id DESC (see sortRunSummariesDeterministically
-  // below for the deterministic tie-break rationale).
+  // created_at DESC, id DESC by Postgres itself (a compound ORDER BY
+  // via two chained .order() calls) -- PostgreSQL's own ORDER BY is the
+  // sole, authoritative sort. Corrected (independent source review):
+  // the returned rows are never re-sorted client-side through
+  // JavaScript's millisecond-precision Date/Date.parse, which would be
+  // lossy against timestamptz's microsecond resolution and could
+  // silently reorder two rows that differ only within one millisecond.
   listByCaseId(caseId: string): Promise<RunSummary[]>;
 };
 
@@ -586,14 +591,24 @@ export type RunRepository = {
 // separate from runRowSchema (which carries the much wider full-Run
 // column set) so the summary query only ever selects the seven columns
 // runSummarySelectColumns actually lists.
+//
+// Corrected (independent source review): the timestamp columns are
+// validated as real ISO 8601 timestamps (z.iso.datetime({ offset: true })
+// accepts both the "+00:00"-offset shape PostgREST actually returns --
+// verified directly against the real Supabase response, e.g.
+// "2026-08-30T15:06:03.994125+00:00" -- and a "Z"-suffixed shape),
+// never an arbitrary string such as "not-a-date". This is a narrow,
+// RunSummary-only tightening -- runRowSchema/persistedCaseSchema and
+// every other historical timestamp field elsewhere in the repository
+// are deliberately left unchanged.
 const runSummaryRowSchema = z.object({
   id: z.string().uuid(),
   case_id: z.string().uuid(),
   status: z.string(),
   execution_mode: z.string(),
-  created_at: z.string(),
-  started_at: z.string().nullable(),
-  completed_at: z.string().nullable()
+  created_at: z.iso.datetime({ offset: true }),
+  started_at: z.iso.datetime({ offset: true }).nullable(),
+  completed_at: z.iso.datetime({ offset: true }).nullable()
 });
 
 // Milestone 11 -- pure, exported so it is directly unit-testable without
@@ -630,26 +645,6 @@ export function toRunSummary(row: unknown): RunSummary {
     startedAt: parsed.data.started_at,
     completedAt: parsed.data.completed_at
   };
-}
-
-// Milestone 11 -- deterministic total ordering (Issue #27 "Deterministic
-// ordering"): created_at DESC alone is not deterministic because
-// tribunal_runs.created_at is NOT NULL but not UNIQUE, so two Runs can
-// legitimately share a timestamp. Applied in-memory as a defense-in-
-// depth guarantee alongside the equivalent ORDER BY the repository
-// method below also requests from Postgres -- pure and exported so the
-// tie-break itself is directly unit-testable. The id comparison is a
-// stability device only, never a chronological claim.
-export function sortRunSummariesDeterministically(summaries: RunSummary[]): RunSummary[] {
-  return [...summaries].sort((a, b) => {
-    const createdDelta = Date.parse(b.createdAt) - Date.parse(a.createdAt);
-
-    if (createdDelta !== 0) {
-      return createdDelta;
-    }
-
-    return b.runId.localeCompare(a.runId);
-  });
 }
 
 const runRowSchema = z.object({
@@ -811,11 +806,15 @@ export class SupabaseRunRepository implements RunRepository {
 
   // Milestone 11 (Issue #27) -- one narrow read query filtered by
   // case_id, no join into participant_configs/model_call_attempts/
-  // advocate_speeches/judge_verdicts/protocols. Requests the
-  // deterministic order from Postgres directly, then re-applies the
-  // same tie-break in memory via sortRunSummariesDeterministically as a
-  // defense-in-depth guarantee (also what makes the ordering itself
-  // directly unit-testable without mocking this query builder).
+  // advocate_speeches/judge_verdicts/protocols. The compound
+  // ORDER BY created_at DESC, id DESC requested from Postgres is the
+  // sole, authoritative ordering. Corrected (independent source
+  // review): the returned rows are mapped through toRunSummary only,
+  // never re-sorted client-side -- a JS-side re-sort keyed on
+  // Date.parse(createdAt) would be lossy against timestamptz's
+  // microsecond resolution (JS Date is millisecond-precision) and could
+  // incorrectly reorder two rows Postgres had already ordered correctly
+  // within the same millisecond.
   async listByCaseId(caseId: string): Promise<RunSummary[]> {
     const { data, error } = await this.client
       .from("tribunal_runs")
@@ -828,7 +827,7 @@ export class SupabaseRunRepository implements RunRepository {
       throw new RunPersistenceError();
     }
 
-    return sortRunSummariesDeterministically(data.map((row) => toRunSummary(row)));
+    return data.map((row) => toRunSummary(row));
   }
 
   private async loadRun(

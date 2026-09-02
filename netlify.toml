@@ -72,6 +72,7 @@
 [[redirects]]
   from = "/api/cases/:id/runs"
   to = "/.netlify/functions/case-runs?id=:id"
+  status = 200
 
 [[redirects]]
   from = "/api/cases/:id"
