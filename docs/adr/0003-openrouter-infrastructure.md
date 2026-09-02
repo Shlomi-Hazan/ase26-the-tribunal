@@ -1111,7 +1111,7 @@ prompt so the Judge's user-message labels are unambiguous — Judge
 independence, the verdict vocabulary, and the output schema are
 unchanged. Decision 17's mechanism (an automated drift check) was
 exercised exactly as designed: a new forward migration
-(`20260903120000_prompt_version_bridge_v2.sql`) writes both corrected
+(`20260902224025_prompt_version_bridge_v2.sql`) writes both corrected
 literals, neither prior migration was edited, and no historical
 `participant_configs` row was mutated. `advocate-v1`/`judge-v1`'s exact
 historical text is preserved, unedited, in `src/prompts/advocate/v1.ts`

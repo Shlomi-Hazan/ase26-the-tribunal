@@ -26,11 +26,15 @@
 -- accident (PRO argued for the charge/GUILTY, CON argued against it/
 -- NOT_GUILTY); advocate-v2 corrects this to the locked product contract
 -- (PRO = Defense, argues NOT_GUILTY; CON = Opposition/Prosecution,
--- argues GUILTY -- src/prompts/advocate-system.ts). judge-v1 never
--- referenced PRO/CON, but judge-v2 adds an explicit semantic legend so
--- the Judge's user-message PRO/CON labels are unambiguous
--- (src/prompts/judge-system.ts). Judge independence, the verdict
--- vocabulary (GUILTY/NOT_GUILTY), and the output schema are unchanged.
+-- argues GUILTY -- src/prompts/advocate-system.ts). judge-v1's SYSTEM
+-- PROMPT did not define PRO/CON semantics -- but the real Judge
+-- user-message path (netlify/server/tribunal/execution.ts's
+-- buildJudgeUserMessage) did, and still does, carry the structural
+-- PRO/CON labels on each speech. judge-v2 adds an explicit semantic
+-- legend to the system prompt so those pre-existing labels are
+-- unambiguous (src/prompts/judge-system.ts) -- buildJudgeUserMessage
+-- itself is unchanged. Judge independence, the verdict vocabulary
+-- (GUILTY/NOT_GUILTY), and the output schema are unchanged.
 --
 -- No historical participant_configs row is mutated by this migration --
 -- CREATE OR REPLACE FUNCTION only replaces the function definition

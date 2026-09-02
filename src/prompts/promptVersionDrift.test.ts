@@ -10,14 +10,22 @@
 // correction: the prior "expect exactly one *_prompt_version_bridge.sql
 // file" assumption could not survive a second function-redefining
 // migration (this correction adds exactly that second migration,
-// 20260903120000_prompt_version_bridge_v2.sql). The discovery rule below
+// 20260902224025_prompt_version_bridge_v2.sql). The discovery rule below
 // is now robust to that and to any future v3/v4/... migration: it finds
-// every migration file whose SQL actually contains the
-// `create or replace function public.freeze_participant_configuration(`
-// signature (not filename-pattern-dependent), sorts by filename (this
-// repository's migrations are UTC-timestamp-prefixed and applied in
-// filename-sort order), and treats the chronologically latest match as
-// the single current, authoritative function definition.
+// every migration file whose SQL actually contains the freeze function's
+// CREATE OR REPLACE FUNCTION declaration (not filename-pattern-
+// dependent), sorts by filename (this repository's migrations are
+// UTC-timestamp-prefixed and applied in filename-sort order), and treats
+// the chronologically latest match as the single current, authoritative
+// function definition.
+//
+// Corrected (independent PR review): the match is genuinely
+// case-insensitive and whitespace-tolerant (`create\s+or\s+replace\s+
+// function\s+public\.freeze_participant_configuration\s*\(`) -- Issue
+// #30 locked case-insensitive discovery explicitly, and a plain
+// lowercase `.includes(...)` check would silently miss a future valid
+// migration written as `CREATE OR REPLACE FUNCTION ...`, causing this
+// test to select an older definition as current without ever failing.
 
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -31,11 +39,16 @@ import { JUDGE_SYSTEM_PROMPT_V1 } from "./judge/v1";
 
 const migrationsDir = path.resolve(process.cwd(), "supabase", "migrations");
 
-const FREEZE_FUNCTION_SIGNATURE =
-  "create or replace function public.freeze_participant_configuration(";
+// Deliberately narrow to the exact function declaration only -- "create
+// or replace function", whitespace-tolerant, then the exact schema-
+// qualified function name and an opening paren -- so this can never
+// accidentally match an unrelated function/comment that merely mentions
+// "freeze_participant_configuration" in prose.
+export const FREEZE_FUNCTION_DECLARATION_PATTERN =
+  /create\s+or\s+replace\s+function\s+public\.freeze_participant_configuration\s*\(/i;
 
 // Every migration file whose SQL contains the freeze function's
-// CREATE OR REPLACE signature, sorted by filename ascending. The last
+// CREATE OR REPLACE declaration, sorted by filename ascending. The last
 // entry is the chronologically latest -- the current, authoritative
 // definition. Historical migrations that predate the function's
 // existence, or that touch unrelated tables/functions, never match and
@@ -47,7 +60,7 @@ function findFreezeFunctionMigrations(): Array<{ filename: string; source: strin
       filename,
       source: readFileSync(path.join(migrationsDir, filename), "utf8")
     }))
-    .filter(({ source }) => source.includes(FREEZE_FUNCTION_SIGNATURE))
+    .filter(({ source }) => FREEZE_FUNCTION_DECLARATION_PATTERN.test(source))
     .sort((a, b) => a.filename.localeCompare(b.filename));
 
   if (matches.length === 0) {
@@ -64,6 +77,53 @@ function currentFreezeFunctionMigration(): string {
 
   return matches[matches.length - 1].source;
 }
+
+describe("FREEZE_FUNCTION_DECLARATION_PATTERN (Issue #30 -- genuinely case-insensitive discovery)", () => {
+  it("matches a lowercase declaration", () => {
+    expect(
+      FREEZE_FUNCTION_DECLARATION_PATTERN.test(
+        "create or replace function public.freeze_participant_configuration(\n  p_case_id uuid\n)"
+      )
+    ).toBe(true);
+  });
+
+  it("matches an uppercase/mixed-case declaration -- the exact gap the prior plain .includes() check missed", () => {
+    expect(
+      FREEZE_FUNCTION_DECLARATION_PATTERN.test(
+        "CREATE OR REPLACE FUNCTION public.freeze_participant_configuration(\n  p_case_id uuid\n)"
+      )
+    ).toBe(true);
+    expect(
+      FREEZE_FUNCTION_DECLARATION_PATTERN.test(
+        "Create Or Replace Function public.freeze_participant_configuration(\n  p_case_id uuid\n)"
+      )
+    ).toBe(true);
+  });
+
+  it("tolerates irregular whitespace between the keywords", () => {
+    expect(
+      FREEZE_FUNCTION_DECLARATION_PATTERN.test(
+        "create  or\treplace\n  function   public.freeze_participant_configuration (\n  p_case_id uuid\n)"
+      )
+    ).toBe(true);
+  });
+
+  it("does not match an unrelated function declaration", () => {
+    expect(
+      FREEZE_FUNCTION_DECLARATION_PATTERN.test(
+        "create or replace function public.some_other_function(\n  p_case_id uuid\n)"
+      )
+    ).toBe(false);
+  });
+
+  it("does not match a mere prose mention of the function name (e.g. a comment), never a substring-only check", () => {
+    expect(
+      FREEZE_FUNCTION_DECLARATION_PATTERN.test(
+        "-- this migration never touches public.freeze_participant_configuration"
+      )
+    ).toBe(false);
+  });
+});
 
 describe("prompt-version anti-drift check", () => {
   it("embeds the current ADVOCATE_PROMPT_VERSION literal in the latest freeze function definition", () => {
@@ -96,7 +156,7 @@ describe("prompt-version anti-drift check", () => {
 
     expect(matches.length).toBeGreaterThanOrEqual(2);
     expect(matches[matches.length - 1].filename).toBe(
-      "20260903120000_prompt_version_bridge_v2.sql"
+      "20260902224025_prompt_version_bridge_v2.sql"
     );
   });
 

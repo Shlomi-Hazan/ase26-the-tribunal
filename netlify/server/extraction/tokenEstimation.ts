@@ -75,13 +75,15 @@ function currentSystemPromptBytes(): number {
 }
 
 // Implementation-time decision D (Issue #15), extended this pass
-// (Section 11): computed from the real v1 prompt's exact UTF-8 byte
-// length PLUS the fixed user-message wrapper PLUS the structured-output
-// JSON Schema's exact serialized byte length -- the complete fixed
-// request-shape overhead, never guessed, never partial. If any of the
-// three inputs ever changes, this constant (and every estimate derived
-// from it) changes with it -- locked by a drift test that recomputes it
-// from the actual implementation.
+// (Section 11): computed from the CURRENT, registry-resolved
+// PACKAGE_EXTRACTION_PROMPT_VERSION prompt's exact UTF-8 byte length
+// (currentSystemPromptBytes() above -- package-extraction-v2 as of the
+// PRO/CON semantic correction, Issue #30) PLUS the fixed user-message
+// wrapper PLUS the structured-output JSON Schema's exact serialized byte
+// length -- the complete fixed request-shape overhead, never guessed,
+// never partial. If any of the three inputs ever changes, this constant
+// (and every estimate derived from it) changes with it -- locked by a
+// drift test that recomputes it from the actual implementation.
 export const EXTRACTION_FIXED_PROMPT_OVERHEAD_TOKENS = Math.ceil(
   (currentSystemPromptBytes() +
     DOSSIER_MESSAGE_WRAPPER_OVERHEAD_BYTES +
