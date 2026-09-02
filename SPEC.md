@@ -52,6 +52,13 @@ One configured AI role in one run. V1 has exactly seven participants:
 - Judge 2
 - Judge 3
 
+**PRO / CON meaning (locked, corrected — Issue #30).** PRO and CON are structural seat identifiers whose real-world meaning is fixed application-wide:
+
+- **PRO** = the defendant's **Defense**. PRO advocates support the defendant and argue toward a **NOT_GUILTY** verdict.
+- **CON** = the **Opposition/Prosecution** against the defendant. CON advocates argue toward a **GUILTY** verdict.
+
+The semantic anchor is the defendant and the final verdict — never the literal wording of the Exact Question, and never inferred from the surface spelling of the words "PRO" or "CON" (a participant described as "the prosecution" belongs on the CON side despite the lexical resemblance to "pro"). This meaning applies to `advocate-v2` and to `package-extraction-v2` and later. A historical run frozen with `advocate-v1` (or an extraction accepted under `package-extraction-v1`) predates this correction and had the reverse meaning by accident — see `docs/adr/0003-openrouter-infrastructure.md` and `docs/adr/0004-smart-package-extraction.md`'s correction notes; that historical meaning is preserved, never rewritten, and never displayed as though it were the corrected meaning.
+
 ### 2.3 Logical model call
 
 The required AI execution for one participant. A successful no-retry run has exactly seven logical model calls.
@@ -91,7 +98,7 @@ Milestone 5 supports a strict deterministic Tribunal Package format using exactl
 - `JUDGE_2`
 - `JUDGE_3`
 
-The section identifier determines which fixed seat is populated. A package must not include arbitrary role or side assignment.
+The section identifier determines which fixed seat is populated. A package must not include arbitrary role or side assignment. `PRO_1`/`PRO_2` are Defense seats (support the defendant, argue NOT_GUILTY); `CON_1`/`CON_2` are Opposition/Prosecution seats (argue GUILTY) — see §2.2's locked PRO/CON meaning.
 
 ### 2.7 Tribunal Setup Draft
 

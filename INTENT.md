@@ -121,6 +121,8 @@ A run contains exactly seven AI participants:
 - 2 CON advocates
 - 3 judges
 
+**PRO and CON meaning (locked, corrected — see Issue #30):** PRO is the defendant's Defense — it supports the defendant and argues toward a NOT_GUILTY verdict. CON is the Opposition/Prosecution against the defendant — it argues toward a GUILTY verdict. This anchors to the defendant and the final verdict, not to the literal wording of the Exact Question. See `SPEC.md`'s Advocate contract for the full authoritative definition.
+
 ### Advocates
 
 Each advocate receives:

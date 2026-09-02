@@ -118,7 +118,7 @@ export const mockJudgeVotes: MockJudgeVote[] = [
     model: "Mock Free Deliberator",
     personality: defaultPersonalityByParticipant["judge-1"],
     reasoning:
-      "The first judge finds the PRO arguments more internally consistent and gives greater weight to the admitted timeline."
+      "The first judge finds the CON (Opposition/Prosecution) arguments more internally consistent and gives greater weight to the admitted timeline."
   },
   {
     judge: "Judge II",
@@ -126,7 +126,7 @@ export const mockJudgeVotes: MockJudgeVote[] = [
     model: "Mock Low-Cost Judge",
     personality: defaultPersonalityByParticipant["judge-2"],
     reasoning:
-      "The second judge sees reasonable uncertainty in the CON explanation and does not treat confidence as proof."
+      "The second judge sees reasonable uncertainty in the Prosecution's account and does not treat confidence as proof, giving weight to the PRO (Defense) explanation instead."
   },
   {
     judge: "Judge III",
@@ -139,13 +139,18 @@ export const mockJudgeVotes: MockJudgeVote[] = [
 ];
 
 export const mockAdvocateSpeeches: MockAdvocateSpeech[] = [
+  // PRO/CON semantic correction (Issue #30): PRO = Defense (argues
+  // toward NOT_GUILTY), CON = Opposition/Prosecution (argues toward
+  // GUILTY). These are M4-era UI-shell demo fixtures, never real
+  // historical Tribunal output, so correcting them directly (rather
+  // than version-gating them) carries no historical-integrity risk.
   {
     participant: "PRO I",
     side: "PRO",
     model: "Mock Free Deliberator",
     personality: defaultPersonalityByParticipant["advocate-pro-1"],
     speech:
-      "The strongest PRO account is that the admitted facts form a coherent sequence. The conduct, timing, and stated question align without requiring speculative gaps."
+      "The strongest Defense account is that the admitted facts do not resolve the exact question. The conduct, timing, and stated question leave room for an innocent reading without requiring speculative gaps."
   },
   {
     participant: "PRO II",
@@ -153,7 +158,7 @@ export const mockAdvocateSpeeches: MockAdvocateSpeech[] = [
     model: "Mock Low-Cost Judge",
     personality: defaultPersonalityByParticipant["advocate-pro-2"],
     speech:
-      "The PRO side frames the case as a deliberate choice with observable consequences. The narrative is simple, consistent, and supported by the Charge Sheet."
+      "The Defense frames the case as an ordinary decision with an innocent explanation. The narrative is simple, consistent, and supported by the Charge Sheet."
   },
   {
     participant: "CON I",
@@ -161,7 +166,7 @@ export const mockAdvocateSpeeches: MockAdvocateSpeech[] = [
     model: "Mock Free Deliberator",
     personality: defaultPersonalityByParticipant["advocate-con-1"],
     speech:
-      "The CON position is that the question has not been proven with enough precision. Alternative explanations remain plausible and should not be swept aside."
+      "The Prosecution's position is that the admitted facts form a coherent sequence pointing toward responsibility. Alternative explanations remain implausible and should not be treated as reasonable doubt."
   },
   {
     participant: "CON II",
@@ -169,7 +174,7 @@ export const mockAdvocateSpeeches: MockAdvocateSpeech[] = [
     model: "Mock Deep Review",
     personality: defaultPersonalityByParticipant["advocate-con-2"],
     speech:
-      "A practical reading leaves room for mistake, ambiguity, or incomplete context. The Tribunal should resist turning an incomplete record into certainty."
+      "A close reading of the record leaves little room for mistake, ambiguity, or incomplete context. The Tribunal should treat the consistent account as sufficient to attribute responsibility."
   }
 ];
 

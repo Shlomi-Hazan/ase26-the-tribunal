@@ -1098,6 +1098,25 @@ change, a reviewed version-ID change, and a new forward migration when
 the freeze-derived current version changes — never edits to an applied
 migration.
 
+**Correction note (PRO/CON semantic correction, Issue #30 — forward
+reference, this ADR's original decision text above is left unedited).**
+`ADVOCATE_PROMPT_VERSION`/`JUDGE_PROMPT_VERSION` were bumped from
+`advocate-v1`/`judge-v1` to `advocate-v2`/`judge-v2`: `advocate-v1` had
+the defendant-facing meaning of PRO/CON reversed by accident (PRO argued
+for the charge/GUILTY, CON argued against it/NOT_GUILTY); `advocate-v2`
+corrects this to the locked contract (`SPEC.md` §2.2: PRO = Defense,
+argues NOT_GUILTY; CON = Opposition/Prosecution, argues GUILTY).
+`judge-v2` adds an explicit PRO/CON semantic legend to the Judge system
+prompt so the Judge's user-message labels are unambiguous — Judge
+independence, the verdict vocabulary, and the output schema are
+unchanged. Decision 17's mechanism (an automated drift check) was
+exercised exactly as designed: a new forward migration
+(`20260903120000_prompt_version_bridge_v2.sql`) writes both corrected
+literals, neither prior migration was edited, and no historical
+`participant_configs` row was mutated. `advocate-v1`/`judge-v1`'s exact
+historical text is preserved, unedited, in `src/prompts/advocate/v1.ts`
+/ `src/prompts/judge/v1.ts`.
+
 ## Decision 18 — `model_call_attempts` remains deferred
 
 Unchanged from the first pass. M7 makes zero real provider calls, so it

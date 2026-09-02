@@ -874,6 +874,26 @@ is actually still in effect," and that a genuine incompatibility is a
 planning decision this ADR defers, not a bug this ADR resolves
 silently by construction.
 
+**Correction note (PRO/CON semantic correction, Issue #30 — forward
+reference, this ADR's original decision text above is left unedited).**
+`package-extraction-v2` was added, exactly the kind of explicit,
+separately reviewed addition this Decision's own text anticipated
+(the "Version/schema compatibility" note above already names
+`package-extraction-v2` as the expected next version). `v1`'s prompt
+enumerated the fixed `PRO_1`/`PRO_2`/`CON_1`/`CON_2` seat keys but never
+defined what PRO/CON *mean*, risking a free-form dossier's "Prosecution"
+representative being mapped to a `PRO_*` seat on pure lexical
+resemblance. `v2` adds one explicit sentence locking the mapping
+(`SPEC.md` §2.2: PRO_* = Defense/supports-the-defendant/NOT_GUILTY;
+CON_* = Opposition-Prosecution/against-the-defendant/GUILTY) and
+explicitly warns against inferring it from surface wording alone.
+`PACKAGE_EXTRACTION_PROMPT_VERSION` now points at `package-extraction-v2`
+for new logical extractions only; `package-extraction-v1` remains
+immutable, unedited, and permanently resolvable through the registry for
+historical extraction replay/audit exactly as this ADR's Decision 15
+already requires — no accepted `v1`-stamped extraction record is mutated
+or reinterpreted.
+
 ## Decision 8 — One logical call, explicit retry, no in-request loop
 
 Exactly one logical setup-extraction call per explicit "Extract" press.

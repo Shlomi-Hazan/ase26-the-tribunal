@@ -746,7 +746,7 @@ id                          uuid PK
 run_id                      uuid FK -> tribunal_runs NOT NULL
 participant_key             text NOT NULL
 role                        text NOT NULL   -- ADVOCATE | JUDGE
-side                        text NULL       -- PRO | CON for advocates, NULL for judges
+side                        text NULL       -- PRO | CON for advocates, NULL for judges (meaning: SPEC.md Sec 2.2)
 profile_name                text NULL       -- optional, <=120 normalized chars
 personality_text            text NOT NULL
 personality_source          text NOT NULL   -- manual | individual_file | tribunal_package
