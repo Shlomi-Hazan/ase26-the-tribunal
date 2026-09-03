@@ -1,3 +1,6 @@
+import { allParticipants } from "../mocks/tribunalMockData";
+import type { ParticipantId } from "../schemas/tribunalSetup";
+
 // Human product decision (PR #34, product-wide correction, prompted by
 // observing the M12 Jon Snow live gate but NOT specific to it): for
 // EVERY real Tribunal run, a participant's persisted profileName --
@@ -34,4 +37,19 @@ export function resolveParticipantIdentity(
   }
 
   return { primary: seatLabel, secondarySeatLabel: null };
+}
+
+// Final independent-review correction: the human seat label ("PRO I",
+// "Judge I", ...) -- never the raw technical participantId
+// ("advocate-pro-1") -- is the correct secondary identity for a real
+// participant. Centralized here (reusing allParticipants, the SAME
+// canonical seat list already used elsewhere for exactly this purpose,
+// never a second/duplicated mapping) so every call site resolves a
+// participantId to its seat label the same way.
+const SEAT_LABEL_BY_PARTICIPANT_ID: Record<ParticipantId, string> = Object.fromEntries(
+  allParticipants.map((entry) => [entry.id, entry.label])
+) as Record<ParticipantId, string>;
+
+export function getSeatLabel(participantId: ParticipantId): string {
+  return SEAT_LABEL_BY_PARTICIPANT_ID[participantId];
 }

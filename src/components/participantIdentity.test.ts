@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveParticipantIdentity } from "./participantIdentity";
+import { getSeatLabel, resolveParticipantIdentity } from "./participantIdentity";
 
 // Human product decision (PR #34, product-wide participant-identity
 // correction): the single centralized rule every real-run participant
@@ -53,5 +53,21 @@ describe("resolveParticipantIdentity", () => {
 
     expect(result.primary).toBe("PRO I");
     expect(result.secondarySeatLabel).toBeNull();
+  });
+});
+
+// Final independent-review correction (PR #34): the centralized human
+// seat mapping every call site (Attempt Audit, Protocol Advocates/
+// Judges, Frozen Participants) relies on to turn a raw technical
+// participantId into its human structural seat -- never the reverse.
+describe("getSeatLabel", () => {
+  it("maps every fixed participant ID to its human seat label", () => {
+    expect(getSeatLabel("advocate-pro-1")).toBe("PRO I");
+    expect(getSeatLabel("advocate-pro-2")).toBe("PRO II");
+    expect(getSeatLabel("advocate-con-1")).toBe("CON I");
+    expect(getSeatLabel("advocate-con-2")).toBe("CON II");
+    expect(getSeatLabel("judge-1")).toBe("Judge I");
+    expect(getSeatLabel("judge-2")).toBe("Judge II");
+    expect(getSeatLabel("judge-3")).toBe("Judge III");
   });
 });

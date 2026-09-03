@@ -454,7 +454,19 @@ describe("RunPage Economics/Audit details Accordion (Milestone 10, Issue #23)", 
     // see it yet even though it exists in the DOM (a plain-text query
     // still can, matching PR #22's own established pattern for judge/
     // advocate accordions).
-    const firstRowLabel = screen.getByText("advocate-pro-1");
+    //
+    // No persisted profileName on this fixture, so the visible row label
+    // is the human seat label ("PRO I") -- never the raw technical
+    // participantId ("advocate-pro-1"), per PR #34's final identity
+    // consistency correction. "PRO I" also legitimately appears
+    // elsewhere on the page (e.g. the live/completed advocate heading),
+    // so scoped to this attempt row specifically via its own stable
+    // pricing-detail toggle button, which stays queryable by
+    // accessible name even while its row is hidden.
+    const firstRow = screen
+      .getByLabelText("View pricing detail for advocate-pro-1 attempt 1")
+      .closest("tr") as HTMLElement;
+    const firstRowLabel = within(firstRow).getByText("PRO I");
 
     expect(firstRowLabel).not.toBeVisible();
 
@@ -742,7 +754,11 @@ describe("RunPage Protocol Accordion (Milestone 10, Issue #23)", () => {
     expect(chargeSheetHeading).toBeVisible();
     expect(screen.getByText(/Defendant: Alex Rowan/)).toBeVisible();
     expect(screen.getByText(/openai\/gpt-4\.1-nano/)).toBeVisible();
-    expect(screen.getByText(/judge-1 \(GUILTY\): Judge I reasoning\./)).toBeVisible();
+    // No persisted profileName on this judge fixture, so the label is
+    // the human seat ("Judge I") -- never the raw technical
+    // participantId ("judge-1"), per PR #34's final identity
+    // consistency correction.
+    expect(screen.getByText(/Judge I \(GUILTY\): Judge I reasoning\./)).toBeVisible();
   });
 
   it("keyboard activation reveals the protocol content", async () => {
@@ -790,7 +806,13 @@ describe("RunPage Protocol Accordion (Milestone 10, Issue #23)", () => {
 
     await user.click(screen.getByRole("button", { expanded: false, name: /^Protocol/ }));
 
-    expect(screen.getByText("Profile: The Zealous Prosecutor")).toBeVisible();
+    // Final identity consistency correction (PR #34): profileName is the
+    // primary heading; the human seat label + role ("PRO I · ADVOCATE")
+    // is the secondary caption -- never a separate "Profile: X" line,
+    // and never the raw technical participantId ("advocate-pro-1").
+    expect(screen.getByText("The Zealous Prosecutor")).toBeVisible();
+    expect(screen.getByText("PRO I · ADVOCATE")).toBeVisible();
+    expect(screen.queryByText(/^Profile:/)).not.toBeInTheDocument();
     expect(screen.getByText("Personality: A measured, professional demeanor.")).toBeVisible();
     expect(screen.getByText("Model: openai/gpt-4.1-nano")).toBeVisible();
     expect(screen.getByText("Prompt version: advocate-protocol-fixture-v1")).toBeVisible();
@@ -823,6 +845,9 @@ describe("RunPage Protocol Accordion (Milestone 10, Issue #23)", () => {
     await user.click(screen.getByRole("button", { expanded: false, name: /^Protocol/ }));
 
     expect(screen.queryByText(/^Profile:/)).not.toBeInTheDocument();
+    // No profileName: the seat label + role ("PRO I · ADVOCATE") is the
+    // sole heading -- never the raw technical participantId.
+    expect(screen.getByText("PRO I · ADVOCATE")).toBeVisible();
     expect(
       screen.getByText("Personality: <script>alert('x')</script> & a measured demeanor.")
     ).toBeVisible();
@@ -1270,10 +1295,17 @@ describe("RunPage participant identity (product-wide, PR #34)", () => {
     renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
     await screen.findByRole("heading", { name: "GUILTY" });
 
-    expect(screen.getByRole("button", { expanded: false, name: /^PRO I\b/ })).toBeVisible();
+    const advocateButton = screen.getByRole("button", { expanded: false, name: /^PRO I\b/ });
+
+    expect(advocateButton).toBeVisible();
     expect(screen.getByRole("button", { expanded: false, name: /^Judge I\b/ })).toBeVisible();
-    // No secondary seat line duplicating the primary ("PRO I" / "PRO I").
-    expect(screen.getAllByText("PRO I")).toHaveLength(1);
+    // No secondary seat line duplicating the primary within this
+    // participant's own accordion heading ("PRO I" / "PRO I"). "PRO I"
+    // legitimately also appears elsewhere on the page now (e.g. as the
+    // audit table's own seat-label fallback, per PR #34's final identity
+    // consistency correction), so this is scoped to the one heading
+    // rather than a document-wide count.
+    expect(within(advocateButton).getAllByText("PRO I")).toHaveLength(1);
   });
 
   it("H: an empty-string or whitespace-only profileName falls back to the generic seat label, exactly like null", async () => {
@@ -1297,7 +1329,7 @@ describe("RunPage participant identity (product-wide, PR #34)", () => {
     expect(screen.getByRole("button", { expanded: false, name: /^PRO II\b/ })).toBeVisible();
   });
 
-  it("I: the attempt audit shows the persisted profileName alongside the structural participantId, never replacing it", async () => {
+  it("I: the attempt audit shows the persisted profileName alongside the human seat label, never the raw technical participantId", async () => {
     const user = userEvent.setup();
     const run = baseRun({
       participants: [
@@ -1322,10 +1354,86 @@ describe("RunPage participant identity (product-wide, PR #34)", () => {
     const table = screen.getByRole("table", { name: /Model call attempt audit/i });
 
     expect(within(table).getByText("David Cohen")).toBeVisible();
-    expect(within(table).getByText("advocate-pro-1")).toBeVisible();
-    // A participant with no profileName still shows its bare
-    // participantId, exactly as before this correction.
-    expect(within(table).getByText("advocate-pro-2")).toBeVisible();
+    // Secondary/fallback identity is the human seat label ("PRO I",
+    // "PRO II") -- never the raw technical participantId
+    // ("advocate-pro-1", "advocate-pro-2") -- per PR #34's final
+    // identity consistency correction.
+    expect(within(table).getByText("PRO I")).toBeVisible();
+    expect(within(table).getByText("PRO II")).toBeVisible();
+    expect(within(table).queryByText("advocate-pro-1")).not.toBeInTheDocument();
+    expect(within(table).queryByText("advocate-pro-2")).not.toBeInTheDocument();
+  });
+
+  it("K: the Protocol's Advocates list shows the persisted profileName with the human seat label, never the raw technical participantId", async () => {
+    const user = userEvent.setup();
+    mockRunFetch(
+      baseRun({
+        protocol: resolvedProtocolFixture({
+          participants: [
+            {
+              participantId: "advocate-pro-1",
+              role: "ADVOCATE",
+              side: "PRO",
+              profileName: "David Cohen",
+              personality: "A measured, professional demeanor.",
+              modelId: "openai/gpt-4.1-nano",
+              promptVersion: "advocate-v2"
+            }
+          ],
+          advocates: [{ participantId: "advocate-pro-1", side: "PRO", speech: "PRO I speech." }]
+        })
+      })
+    );
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    await screen.findByRole("heading", { name: "GUILTY" });
+    await user.click(screen.getByRole("button", { expanded: false, name: /^Protocol/ }));
+
+    // Scoped to the Protocol section itself -- the raw technical
+    // participantId legitimately still appears elsewhere on the page,
+    // in the (collapsed but still-mounted) attempt audit table's own
+    // technical detail, which this correction deliberately preserves.
+    const protocolSection = screen.getByText("Charge Sheet").closest(".MuiAccordion-root") as HTMLElement;
+
+    expect(within(protocolSection).getByText(/David Cohen \(PRO I\) \(PRO\): PRO I speech\./)).toBeVisible();
+    expect(within(protocolSection).queryByText(/advocate-pro-1/)).not.toBeInTheDocument();
+  });
+
+  it("L: the Protocol's Judges list shows the persisted profileName with the human seat label, never the raw technical participantId", async () => {
+    const user = userEvent.setup();
+    mockRunFetch(
+      baseRun({
+        protocol: resolvedProtocolFixture({
+          participants: [
+            {
+              participantId: "judge-1",
+              role: "JUDGE",
+              side: null,
+              profileName: "Justice Green",
+              personality: "Careful and exacting.",
+              modelId: "openai/gpt-4.1-nano",
+              promptVersion: "judge-v2"
+            }
+          ],
+          judges: [{ participantId: "judge-1", verdict: "GUILTY", reasoning: "Judge I reasoning." }]
+        })
+      })
+    );
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    await screen.findByRole("heading", { name: "GUILTY" });
+    await user.click(screen.getByRole("button", { expanded: false, name: /^Protocol/ }));
+
+    // Scoped to the Protocol section itself -- the raw technical
+    // participantId legitimately still appears elsewhere on the page,
+    // in the (collapsed but still-mounted) attempt audit table's own
+    // technical detail, which this correction deliberately preserves.
+    const protocolSection = screen.getByText("Charge Sheet").closest(".MuiAccordion-root") as HTMLElement;
+
+    expect(
+      within(protocolSection).getByText(/Justice Green \(Judge I\) \(GUILTY\): Judge I reasoning\./)
+    ).toBeVisible();
+    expect(within(protocolSection).queryByText(/judge-1\b/)).not.toBeInTheDocument();
   });
 
   // J: no test in this describe block imports or references any Jon

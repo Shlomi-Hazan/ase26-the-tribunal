@@ -32,7 +32,7 @@ import {
 } from "../components/describeHistoricalAdvocateSide";
 import { JudgeVoteGroup } from "../components/JudgeVoteGroup";
 import { PageHeader } from "../components/PageHeader";
-import { resolveParticipantIdentity } from "../components/participantIdentity";
+import { getSeatLabel, resolveParticipantIdentity } from "../components/participantIdentity";
 import { PublicDemoRetentionNotice } from "../components/PublicDemoRetentionNotice";
 import { StatusBadge } from "../components/StatusBadge";
 import { verdictColor } from "../components/verdictColor";
@@ -637,8 +637,12 @@ function AttemptDetailRow({
   // correction): AttemptAudit itself carries no profileName (no schema
   // change) -- mapped in from run.participants by participantId,
   // EconomicsAuditAccordion below, then displayed via the same shared
-  // rule as every other real-run participant surface.
-  const identity = resolveParticipantIdentity(profileName, attempt.participantId);
+  // rule as every other real-run participant surface. Final correction:
+  // the fallback/secondary identity is the human seat label ("PRO I"),
+  // never the raw technical participantId -- the latter is still
+  // available in the expanded technical detail below, where it belongs.
+  const seatLabel = getSeatLabel(attempt.participantId);
+  const identity = resolveParticipantIdentity(profileName, seatLabel);
 
   return (
     <>
@@ -697,6 +701,7 @@ function AttemptDetailRow({
                   <Typography sx={{ fontWeight: 800 }} variant="body2">
                     Model / routing
                   </Typography>
+                  <AttemptDetailField label="Participant ID" value={attempt.participantId} />
                   <AttemptDetailField label="Configured model" value={attempt.configuredModelId} />
                   <AttemptDetailField label="Canonical model" value={attempt.canonicalModelId} />
                   <AttemptDetailField label="Provider endpoint" value={attempt.providerEndpointTag} />
@@ -905,46 +910,61 @@ function ProtocolAccordion({ protocol }: { protocol: StoredRun["protocol"] }) {
                only identity/model/prompt version -- profile name (when
                set) and personality too. One small bordered block per
                participant keeps long personality text readable rather
-               than squeezed into a single inline sentence. */}
-            {protocol.participants.map((entry) => (
-              <Stack
-                key={entry.participantId}
-                spacing={0.25}
-                sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2, p: 1.5 }}
-              >
-                <Typography sx={{ fontWeight: 700 }} variant="body2">
-                  {entry.participantId} -- {entry.role}
-                  {entry.side ? ` (${entry.side})` : ""}
-                </Typography>
-                {entry.profileName ? (
-                  <Typography variant="body2">Profile: {entry.profileName}</Typography>
-                ) : null}
-                <Typography variant="body2">Personality: {entry.personality}</Typography>
-                <Typography variant="body2">Model: {entry.modelId}</Typography>
-                <Typography variant="body2">Prompt version: {entry.promptVersion}</Typography>
-                {/* PRO/CON semantic correction (Issue #30): version-aware,
-                   fail-closed side meaning -- never applies the current
-                   advocate-v2 explanation to a historical advocate-v1
-                   participant, and never silently claims a meaning for
-                   an unrecognized/placeholder prompt version. */}
-                {entry.side ? (
-                  <AdvocateSideMeaning promptVersion={entry.promptVersion} side={entry.side} />
-                ) : null}
-              </Stack>
-            ))}
+               than squeezed into a single inline sentence.
+               Final independent-review correction (PR #34, product-wide
+               participant-identity): profileName primary, human seat
+               label secondary -- never the raw technical participantId,
+               and never a redundant separate "Profile: X" line once it
+               is already the primary heading. */}
+            {protocol.participants.map((entry) => {
+              const seatLabel = getSeatLabel(entry.participantId);
+              const identity = resolveParticipantIdentity(entry.profileName, seatLabel);
+              const seatAndRole = `${seatLabel} · ${entry.role}`;
+
+              return (
+                <Stack
+                  key={entry.participantId}
+                  spacing={0.25}
+                  sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2, p: 1.5 }}
+                >
+                  <Typography sx={{ fontWeight: 700 }} variant="body2">
+                    {identity.secondarySeatLabel ? identity.primary : seatAndRole}
+                  </Typography>
+                  {identity.secondarySeatLabel ? (
+                    <Typography color="text.secondary" variant="body2">
+                      {seatAndRole}
+                    </Typography>
+                  ) : null}
+                  <Typography variant="body2">Personality: {entry.personality}</Typography>
+                  <Typography variant="body2">Model: {entry.modelId}</Typography>
+                  <Typography variant="body2">Prompt version: {entry.promptVersion}</Typography>
+                  {/* PRO/CON semantic correction (Issue #30): version-aware,
+                     fail-closed side meaning -- never applies the current
+                     advocate-v2 explanation to a historical advocate-v1
+                     participant, and never silently claims a meaning for
+                     an unrecognized/placeholder prompt version. */}
+                  {entry.side ? (
+                    <AdvocateSideMeaning promptVersion={entry.promptVersion} side={entry.side} />
+                  ) : null}
+                </Stack>
+              );
+            })}
           </Stack>
           <Stack spacing={0.5}>
             <Typography sx={{ fontWeight: 800 }} variant="body2">
               Advocates
             </Typography>
             {protocol.advocates.map((entry) => {
+              // Final independent-review correction: the human seat
+              // label ("PRO I"), never the raw technical participantId,
+              // is the correct secondary identity here.
               const identity = resolveParticipantIdentity(
                 profileNameByParticipantId.get(entry.participantId),
-                entry.participantId
+                getSeatLabel(entry.participantId)
               );
               const label = identity.secondarySeatLabel
-                ? `${identity.primary} (${entry.participantId})`
-                : entry.participantId;
+                ? `${identity.primary} (${identity.secondarySeatLabel})`
+                : identity.primary;
 
               return (
                 <Stack key={entry.participantId} spacing={0.25}>
@@ -966,11 +986,11 @@ function ProtocolAccordion({ protocol }: { protocol: StoredRun["protocol"] }) {
             {protocol.judges.map((entry) => {
               const identity = resolveParticipantIdentity(
                 profileNameByParticipantId.get(entry.participantId),
-                entry.participantId
+                getSeatLabel(entry.participantId)
               );
               const label = identity.secondarySeatLabel
-                ? `${identity.primary} (${entry.participantId})`
-                : entry.participantId;
+                ? `${identity.primary} (${identity.secondarySeatLabel})`
+                : identity.primary;
 
               return (
                 <Typography key={entry.participantId} variant="body2">

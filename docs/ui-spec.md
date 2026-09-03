@@ -592,6 +592,8 @@ Running
 
 The existing prompt-version-aware side meaning (advocate-v1/advocate-v2 historical display) is unaffected and remains authoritative on its own — this rule only changes which text is primary versus secondary above it, never the side-meaning text itself.
 
+**The secondary/fallback identity is always the human structural seat label** ("PRO I", "Judge I", …) — never the raw technical `participantId` ("advocate-pro-1", "judge-1"). This applies uniformly to every surface covered by this rule, including the Attempt Audit table and the Protocol's Advocates/Judges/Frozen Participants lists; the raw `participantId` may still appear in a clearly-labeled technical-detail context (e.g. an expanded per-attempt detail panel) where it is useful, but never as the visible primary or secondary participant identity.
+
 ---
 
 ## 12. Failure During Deliberation
