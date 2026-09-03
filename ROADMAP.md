@@ -49,7 +49,7 @@ Do not begin later milestones by destabilizing incomplete earlier work.
 | 9 | Separate-Model Tribunal | ✅ Complete |
 | 10 | Protocol & Economics | ✅ Complete |
 | 11 | Past Cases & Auditability | ✅ Complete |
-| 12 | Canonical Jon Snow Demo | 🟡 Current |
+| 12 | Canonical Jon Snow Demo | ✅ Complete |
 | 13 | Failure & Security Hardening | ⬜ Planned |
 | 14 | UI Polish & Accessibility | ⬜ Planned |
 | 15 | Production Deployment | ⬜ Planned |
@@ -614,7 +614,7 @@ Complete. Planning: [Issue #27](https://github.com/Shlomi-Hazan/ase26-the-tribun
 
 ## Status
 
-Current. Planning: [Issue #32](https://github.com/Shlomi-Hazan/ase26-the-tribunal/issues/32) records an independently reviewed source-truth audit against the lecturer's case-design dossier ("THE TRIBUNAL — Jon Snow and the untimely demise of Daenerys Targaryen," Research edition, August 2026).
+Complete. Planning: [Issue #32](https://github.com/Shlomi-Hazan/ase26-the-tribunal/issues/32) records an independently reviewed source-truth audit against the lecturer's case-design dossier ("THE TRIBUNAL — Jon Snow and the untimely demise of Daenerys Targaryen," Research edition, August 2026).
 
 **Agent Mode is cancelled and removed from the product plan** (this replaces the milestone's prior "Agent Mode, If Confirmed" scope; it is not deferred or conditional — see [Issue #32](https://github.com/Shlomi-Hazan/ase26-the-tribunal/issues/32) §14–15 for the correction record and every other document touched by the cancellation).
 
@@ -650,6 +650,14 @@ Agent Mode, RAG, new authentication, a new majority/verdict system, a duplicate 
 ## Exit condition
 
 The Jon Snow demo launches the real Tribunal engine end-to-end from one click on Home (given a valid lecturer access capability and an eligible, in-policy default model), never requires the lecturer to hold an OpenRouter credential, produces an ordinary historical run indistinguishable in structure from any other run, and Issue #32's full acceptance-criteria list (as corrected by the human product override) is satisfied.
+
+### Closeout (2026-09-03)
+
+Complete. Planning: [Issue #32](https://github.com/Shlomi-Hazan/ase26-the-tribunal/issues/32) (closed). Implementation: [PR #34](https://github.com/Shlomi-Hazan/ase26-the-tribunal/pull/34), approved head `7bce98a15d928e56206b74ec396e0bfad88cf844`, merged into `main` at `e3b9704724ac4af66dd309bd0ceee524036ade50`.
+
+Delivered the operator-funded, one-click, canonical Jon Snow demo end to end via the dedicated `POST /api/demo/jon-snow/runs` endpoint, reusing the existing `acceptRun`/`triggerExecutionIfEligible` pipeline unchanged — no duplicate execution/majority/economics/protocol logic, no database/schema migration. Also landed a product-wide participant-identity rule (a real run's persisted `profileName` is the primary human-visible identity everywhere a participant is shown, with the correct human structural seat label — never the raw technical `participantId` — as secondary context), applying uniformly across live/completed run surfaces, the attempt audit, and the Protocol view.
+
+One authorized live gate verified the real execution engine end-to-end: Run ID `5ebe204c-b2d3-4f25-ad1f-c6baa8e5e2e3`, `openai/gpt-4o-mini` for all seven participants, 7 logical calls, 7 provider attempts, 0 retries, 4/4 advocate role adherence, judges NOT_GUILTY 3-0 (deterministic majority), actual total cost $0.004104045. Zero secret exposure across UI, network log, and console throughout the milestone; total live spend across the entire milestone was this one run.
 
 ---
 
