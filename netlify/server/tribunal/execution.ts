@@ -51,10 +51,19 @@ import {
 import type { ParticipantId } from "../../../src/schemas/tribunalSetup";
 import type { PersistedRun } from "../runs";
 import { computeMajorityVerdict, type Verdict } from "./majority";
-import type {
-  ClaimAttemptInput,
-  TerminalizeAttemptInput,
-  TribunalExecutionRepository
+// Milestone 13 (Issue #36 G2) -- the shared, isomorphic timing-policy
+// constants also consumed by RunPage.tsx's stuck-run staleness signal.
+// Safe to import here: this module contains only pure numeric constants
+// and arithmetic, no server-only dependencies.
+import {
+  MAX_ATTEMPTS_PER_LOGICAL_CALL,
+  PROVIDER_ATTEMPT_TIMEOUT_MS
+} from "../../../src/features/tribunal-run/executionTimingPolicy";
+import {
+  TribunalPersistenceError,
+  type ClaimAttemptInput,
+  type TerminalizeAttemptInput,
+  type TribunalExecutionRepository
 } from "./repository";
 
 // ---------------------------------------------------------------------
@@ -120,8 +129,6 @@ export type ExecutionOutcome =
   | { outcome: "completed"; majorityVerdict: Verdict }
   | { outcome: "failed"; failureCode: string };
 
-const PROVIDER_ATTEMPT_TIMEOUT_MS = 60_000;
-const MAX_ATTEMPTS_PER_LOGICAL_CALL = 2;
 const PROTOCOL_SCHEMA_VERSION = "tribunal-protocol-v1";
 
 const ROLE_BY_PARTICIPANT_ID: Record<ParticipantId, "ADVOCATE" | "JUDGE"> = {
@@ -262,6 +269,105 @@ type LogicalCallOutcome =
   // OpenRouter call for that attempt, no attempt row created.
   | { success: false; economics: AttemptEconomics[]; blockedByBudget: boolean };
 
+// Milestone 13 (Issue #36 G1a) -- a `TribunalExecutionRepository` write
+// inside `runLogicalCall` (claimAttempt/terminalizeAttempt/persistSpeech/
+// persistVerdict) can throw. Before this correction, ANY such throw
+// surfaced to the caller's `Promise.allSettled` as an indistinguishable
+// `rejected` result, which the phase loop then silently coerced into the
+// SAME shape as an ordinary model/schema terminal failure -- discarding
+// the real cause and fabricating `economics: []` even when a real, paid
+// completion had already occurred. This typed wrapper is thrown instead,
+// carrying exactly what the phase loop needs to classify and report the
+// failure honestly, without ever needing to inspect a bare `unknown`
+// rejection reason.
+type LogicalCallInfrastructureStage = "claim" | "terminalize" | "persistContent";
+
+export class LogicalCallInfrastructureError extends Error {
+  // "persistence": `cause` is a `TribunalPersistenceError` -- the
+  // classification this correction requires to map to `DATABASE_ERROR`.
+  // "unexpected": any other thrown value -- deliberately NEVER mapped to
+  // `DATABASE_ERROR` (this correction's explicit "do not label arbitrary
+  // programming exceptions DATABASE_ERROR" requirement).
+  readonly kind: "persistence" | "unexpected";
+  readonly stage: LogicalCallInfrastructureStage;
+  // Whatever this logical call's own economics were known to be at the
+  // exact moment of the throw -- see the three stage-aware rules at each
+  // throw site below. Never fabricated, never silently dropped.
+  readonly economics: AttemptEconomics[];
+  // Populated ONLY for stage "terminalize": the provider already ran and
+  // its telemetry was computed into local variables before the failing
+  // write, but (unlike "persistContent", where terminalizeAttempt had
+  // already durably succeeded) that telemetry may not have reached the
+  // attempt row at all. This is the one case where the run's failure
+  // message is the ONLY channel (short of a new migration, out of this
+  // pass's scope) that can honestly preserve it for a human/audit
+  // reader, so it is captured here as a ready-to-report description.
+  readonly knownTelemetryDetail: string | null;
+
+  constructor(params: {
+    kind: "persistence" | "unexpected";
+    stage: LogicalCallInfrastructureStage;
+    economics: AttemptEconomics[];
+    knownTelemetryDetail?: string | null;
+    cause: unknown;
+  }) {
+    super("A database persistence call failed inside a Tribunal logical call.", { cause: params.cause });
+    this.name = "LogicalCallInfrastructureError";
+    this.kind = params.kind;
+    this.stage = params.stage;
+    this.economics = params.economics;
+    this.knownTelemetryDetail = params.knownTelemetryDetail ?? null;
+  }
+}
+
+function wrapLogicalCallInfrastructureError(
+  error: unknown,
+  stage: LogicalCallInfrastructureStage,
+  economics: AttemptEconomics[],
+  knownTelemetryDetail?: string | null
+): LogicalCallInfrastructureError {
+  return new LogicalCallInfrastructureError({
+    kind: error instanceof TribunalPersistenceError ? "persistence" : "unexpected",
+    stage,
+    economics,
+    knownTelemetryDetail,
+    cause: error
+  });
+}
+
+// Corrected (independent review, PR #37): takes actualCostUsd and
+// derivedCostUsd SEPARATELY -- never a single already-collapsed
+// `actualCostUsd ?? derivedCostUsd` value -- and preserves the existing
+// Actual-vs-Derived distinction (RunPage.tsx's own attemptCostDisplay
+// uses the identical convention) rather than always labeling whatever
+// value was known as "derived," which was factually wrong whenever
+// OpenRouter had reported a real usage.cost.
+function describeKnownTelemetry(
+  inputTokens: number | null,
+  outputTokens: number | null,
+  actualCostUsd: string | null,
+  derivedCostUsd: string | null
+): string {
+  const parts: string[] = [];
+
+  if (inputTokens !== null) parts.push(`${inputTokens} input tokens`);
+  if (outputTokens !== null) parts.push(`${outputTokens} output tokens`);
+
+  if (actualCostUsd !== null && derivedCostUsd !== null) {
+    // Both known and structurally distinct -- preserve both, never
+    // collapse into one ambiguous figure.
+    parts.push(`actual cost $${actualCostUsd} (derived comparison $${derivedCostUsd})`);
+  } else if (actualCostUsd !== null) {
+    parts.push(`actual cost $${actualCostUsd}`);
+  } else if (derivedCostUsd !== null) {
+    parts.push(`derived cost $${derivedCostUsd}`);
+  }
+
+  return parts.length > 0
+    ? `Known telemetry at the time of the persistence failure: ${parts.join(", ")}.`
+    : "No provider telemetry was available at the time of the persistence failure.";
+}
+
 // Exported for a direct, deterministic unit test (execution.test.ts) of
 // the final micro-correction's "reserve for still-required not-yet-
 // started work" behavior -- a scenario that depends on precise
@@ -321,26 +427,39 @@ export async function runLogicalCall(params: {
       return { success: false, economics, blockedByBudget: true };
     }
 
-    const claim = await deps.repository.claimAttempt({
-      runId,
-      participantConfigId,
-      attemptNumber: attemptNumber as 1 | 2,
-      configuredModelId: route.configuredModelId,
-      canonicalModelId: route.canonicalModelId,
-      providerEndpointTag: route.providerEndpointTag,
-      promptVersion,
-      conservativeMaxCostUsd: params.conservativeMaxCostUsd,
-      // Independent audit correction (Issue #17 blocker 4): the exact
-      // pricing snapshot authorizing this attempt, persisted at claim
-      // time -- inputPricePerMillion is the cache-write-aware effective
-      // input price, never the raw, possibly-lower prompt rate.
-      inputPricePerMillion: toDecimalString(
-        route.pricing.effectiveInputPricePerToken.times(1_000_000)
-      ),
-      outputPricePerMillion: toDecimalString(route.pricing.completionPricePerMillion),
-      requestPriceUsd: toDecimalString(route.pricing.requestPriceUsd),
-      pricingObservedAt: route.pricing.observedAt
-    } satisfies ClaimAttemptInput);
+    let claim: { wonClaim: boolean; attemptId: string | null };
+
+    try {
+      claim = await deps.repository.claimAttempt({
+        runId,
+        participantConfigId,
+        attemptNumber: attemptNumber as 1 | 2,
+        configuredModelId: route.configuredModelId,
+        canonicalModelId: route.canonicalModelId,
+        providerEndpointTag: route.providerEndpointTag,
+        promptVersion,
+        conservativeMaxCostUsd: params.conservativeMaxCostUsd,
+        // Independent audit correction (Issue #17 blocker 4): the exact
+        // pricing snapshot authorizing this attempt, persisted at claim
+        // time -- inputPricePerMillion is the cache-write-aware effective
+        // input price, never the raw, possibly-lower prompt rate.
+        inputPricePerMillion: toDecimalString(
+          route.pricing.effectiveInputPricePerToken.times(1_000_000)
+        ),
+        outputPricePerMillion: toDecimalString(route.pricing.completionPricePerMillion),
+        requestPriceUsd: toDecimalString(route.pricing.requestPriceUsd),
+        pricingObservedAt: route.pricing.observedAt
+      } satisfies ClaimAttemptInput);
+    } catch (error) {
+      // Milestone 13 (Issue #36 G1a), stage "claim": the provider was
+      // NEVER called for this attempt -- there is genuinely zero
+      // economics to report, exactly as if the attempt had never been
+      // made, because it wasn't. `economics` here is whatever this
+      // logical call already accumulated from an EARLIER attempt (empty
+      // on attempt 1) -- never fabricated, never marked Unavailable for
+      // an attempt that never started.
+      throw wrapLogicalCallInfrastructureError(error, "claim", economics);
+    }
 
     if (!claim.wonClaim || !claim.attemptId) {
       // Lost the claim -- another owner already handling this exact
@@ -474,21 +593,42 @@ export async function runLogicalCall(params: {
     }
 
     const latencyMs = Date.now() - startedAtMs;
-
-    await deps.repository.terminalizeAttempt({
-      attemptId: claim.attemptId,
-      status: terminalStatus,
-      inputTokens,
-      outputTokens,
-      actualCostUsd,
-      derivedCostUsd,
-      latencyMs,
-      providerRequestId,
-      errorCategory,
-      errorMessage
-    });
-
+    // Computed BEFORE the terminalizeAttempt write (reordered from the
+    // original post-write placement) so it is available to the G1a
+    // stage="terminalize" error path below even when that very write is
+    // what fails -- the provider already ran and this value is already
+    // reliably known, regardless of whether it durably persists.
     const costUsd = actualCostUsd ?? derivedCostUsd;
+
+    try {
+      await deps.repository.terminalizeAttempt({
+        attemptId: claim.attemptId,
+        status: terminalStatus,
+        inputTokens,
+        outputTokens,
+        actualCostUsd,
+        derivedCostUsd,
+        latencyMs,
+        providerRequestId,
+        errorCategory,
+        errorMessage
+      });
+    } catch (error) {
+      // Milestone 13 (Issue #36 G1a), stage "terminalize": the provider
+      // ALREADY ran and its telemetry is already known in these local
+      // variables -- preserve it exactly (never discard it, never
+      // fabricate $0) by threading it both into the economics this
+      // logical call reports AND into a human-readable detail the run's
+      // failure message can honestly surface, since (without a schema
+      // migration) the attempt row itself may not durably carry it if
+      // this exact write is what failed.
+      throw wrapLogicalCallInfrastructureError(
+        error,
+        "terminalize",
+        [...economics, { inputTokens, outputTokens, costUsd }],
+        describeKnownTelemetry(inputTokens, outputTokens, actualCostUsd, derivedCostUsd)
+      );
+    }
 
     economics.push({ inputTokens, outputTokens, costUsd });
 
@@ -502,18 +642,33 @@ export async function runLogicalCall(params: {
 
     if (terminalStatus === "SUCCESS") {
       if (parsedSpeech) {
-        await deps.repository.persistSpeech(runId, participantConfigId, parsedSpeech.speech);
+        try {
+          await deps.repository.persistSpeech(runId, participantConfigId, parsedSpeech.speech);
+        } catch (error) {
+          // Milestone 13 (Issue #36 G1a), stage "persistContent": the
+          // provider succeeded AND terminalizeAttempt already durably
+          // persisted this attempt's telemetry (the push above already
+          // ran) -- only the separate speech-content write failed.
+          // `economics` is therefore already exactly correct and is
+          // passed through unchanged, never regressed to Unavailable by
+          // this later, unrelated failure.
+          throw wrapLogicalCallInfrastructureError(error, "persistContent", economics);
+        }
 
         return { success: true, speech: parsedSpeech.speech, economics };
       }
 
       if (parsedVerdict) {
-        await deps.repository.persistVerdict(
-          runId,
-          participantConfigId,
-          parsedVerdict.verdict,
-          parsedVerdict.reasoning
-        );
+        try {
+          await deps.repository.persistVerdict(
+            runId,
+            participantConfigId,
+            parsedVerdict.verdict,
+            parsedVerdict.reasoning
+          );
+        } catch (error) {
+          throw wrapLogicalCallInfrastructureError(error, "persistContent", economics);
+        }
 
         return { success: true, verdict: parsedVerdict.verdict, reasoning: parsedVerdict.reasoning, economics };
       }
@@ -604,6 +759,116 @@ function sumEconomics(all: AttemptEconomics[][]): {
   };
 }
 
+// Milestone 13 (Issue #36 G1a) -- shared by both the advocate and judge
+// phase loops. A `Promise.allSettled` rejection can now only be a
+// `LogicalCallInfrastructureError` (runLogicalCall wraps every
+// repository-call exception into one before it can escape) -- this
+// classifies it into the exact failure code/message/economics the phase
+// loop needs, so a persistence error is never mislabeled as
+// ADVOCATE_TERMINAL_FAILURE/JUDGE_TERMINAL_FAILURE (a claim the
+// participant never earned) and never loses already-known economics.
+type PhaseLoopFailure = { failureCode: string; failureMessage: string };
+
+function classifyLogicalCallRejection(
+  reason: unknown,
+  participantId: ParticipantId
+): { economics: AttemptEconomics[]; failure: PhaseLoopFailure } {
+  if (reason instanceof LogicalCallInfrastructureError) {
+    if (reason.kind === "persistence") {
+      const detail = reason.knownTelemetryDetail ? ` ${reason.knownTelemetryDetail}` : "";
+
+      return {
+        economics: reason.economics,
+        failure: {
+          failureCode: "DATABASE_ERROR",
+          failureMessage: `A database persistence error occurred while processing ${participantId} (stage: ${reason.stage}).${detail}`
+        }
+      };
+    }
+
+    // Explicitly distinct from DATABASE_ERROR -- an arbitrary programming
+    // exception is never labeled as a database error, per this
+    // correction's own requirement.
+    return {
+      economics: reason.economics,
+      failure: {
+        failureCode: "UNEXPECTED_LOGICAL_CALL_ERROR",
+        failureMessage: `An unexpected error occurred while processing ${participantId}.`
+      }
+    };
+  }
+
+  // Should not happen -- runLogicalCall wraps every repository-call
+  // exception before it can reach Promise.allSettled. Fail closed the
+  // same as any other unclassified rejection reason, never as the
+  // ordinary model-failure label the participant did not actually earn,
+  // and with zero fabricated economics.
+  return {
+    economics: [],
+    failure: {
+      failureCode: "UNEXPECTED_LOGICAL_CALL_ERROR",
+      failureMessage: `An unexpected, unclassified error occurred while processing ${participantId}.`
+    }
+  };
+}
+
+// Milestone 13 (Issue #36, item 4 -- independent review, PR #37):
+// deliberate, analyzed decision that the PRE-CLAIM path below
+// (runLoader.getById, runPreflight, and the ineligible-preflight
+// blockBudget call) is intentionally NOT wrapped in the same G1b
+// recovery guard that protects everything from claimForExecution
+// onward. This is not an oversight; it is the two-part reasoning the
+// review specifically required be documented rather than "fixed" with a
+// blind write:
+//
+// 1. getById and runPreflight are PURE READS -- if either throws, the
+//    run is PROVABLY still READY (no state-transitioning write was ever
+//    attempted). A READY run has incurred zero spend. Corrected wording
+//    (final pre-merge review, PR #37): this is safe for a later,
+//    idempotent re-invocation (another POST /api/runs call with the
+//    same client_request_id, or a fresh Background Function invocation
+//    would simply redo preflight/claim from scratch) -- it is NOT
+//    automatically retried by the current Background Function, whose
+//    own last-resort catch (tribunal-execute-background.ts) is
+//    explicitly documented as never a retry/recovery mechanism. A run
+//    left in this state is honestly represented to the user as "Waiting
+//    for execution to start" (RunPage.tsx), never as active
+//    deliberation. There is nothing dishonest or stuck about the
+//    underlying DATA, though -- unlike a run wedged in
+//    ADVOCATES_RUNNING/JUDGES_RUNNING (real spend already committed,
+//    nothing else can ever move it), a READY run left alone is
+//    indistinguishable from "the worker has not run yet," and a later
+//    trigger, if one occurs, will resolve it cleanly.
+//    Separately, even if recording something were desired here, no
+//    existing RPC can do it truthfully: fail_tribunal_run's own
+//    database-level guard only accepts ADVOCATES_RUNNING/JUDGES_RUNNING
+//    as a starting state (Sec 16-equivalent discipline) -- it would
+//    silently no-op (return false) against a READY run, never a
+//    migration-free way to make it succeed.
+// 2. blockBudget and claimForExecution are each an ATOMIC,
+//    state-transitioning write (`WHERE status = 'READY'`) whose outcome
+//    is genuinely AMBIGUOUS on a thrown error: the UPDATE may have
+//    already committed server-side before the network/response failed,
+//    or it may have never run at all, and this process cannot tell
+//    which from a thrown exception alone. Attempting a "recovery"
+//    failRun call after such an error would risk exactly the hazard
+//    this review named: blindly marking FAILED a run that a DIFFERENT,
+//    legitimate invocation may have actually won the claim for and is
+//    now actively (and validly) executing/spending against --
+//    corrupting that run's audit trail with a false failure while real
+//    work continues underneath it. No no-migration mechanism here can
+//    safely disambiguate "I won but lost the response" from "a genuine
+//    concurrent invocation won instead" (that would require a
+//    request-scoped lease/fencing token -- exactly the queue/lease
+//    infrastructure this milestone is explicitly told not to build).
+//    The only safe behavior is therefore to change nothing here: let
+//    the exception propagate exactly as it already did before this
+//    milestone, to the Background Function's own last-resort catch.
+//
+// Net conclusion: no safe no-migration write exists for this path, and
+// none is needed to satisfy M13's actual invariant (never a silently
+// stuck run that already incurred spend) -- a stuck READY run has
+// incurred none. No migration is proposed or applied.
 export async function executeTribunalRun(
   runId: string,
   deps: TribunalExecutionDeps
@@ -659,6 +924,57 @@ export async function executeTribunalRun(
     return { outcome: "not_claimed" };
   }
 
+  // Milestone 13 (Issue #36 G1b): everything from here onward can incur
+  // real provider spend and/or attempt a persistence write. Before this
+  // correction, an exception from ANY of these calls (transitionToJudges,
+  // completeRun, the tribunalCase-load failRun, a budget-guard failRun,
+  // or a phase loop's own failRun -- including G1a's new DATABASE_ERROR
+  // calls) propagated straight out of this function, uncaught, to the
+  // Background Function's own last-resort catch
+  // (tribunal-execute-background.ts), which by its own documented
+  // comment is "never a lease/heartbeat recovery system" and silently
+  // swallows it -- leaving the run stuck in ADVOCATES_RUNNING/
+  // JUDGES_RUNNING forever with zero record of what happened. Worse than
+  // the already-documented process-death limitation (ARCHITECTURE.md
+  // Sec 7.4), since an ordinary transient persistence error, not a
+  // crashed process, is enough to trigger it. This try/catch is the
+  // fix, applied once around the whole post-claim body rather than at
+  // every individual call site: a best-effort DATABASE_ERROR (or, for a
+  // genuinely unexpected non-persistence exception,
+  // UNEXPECTED_EXECUTION_ERROR -- "do not label arbitrary programming
+  // exceptions DATABASE_ERROR") run failure is recorded before
+  // returning. The recovery write is itself defensively guarded so a
+  // failure while RECORDING the failure can never recurse or throw
+  // further -- it only falls through to that same last-resort catch,
+  // exactly as before this correction, never worse.
+  try {
+    return await runPostClaimExecution(run);
+  } catch (error) {
+    const failureCode =
+      error instanceof TribunalPersistenceError ? "DATABASE_ERROR" : "UNEXPECTED_EXECUTION_ERROR";
+
+    try {
+      await deps.repository.failRun(
+        runId,
+        failureCode,
+        failureCode === "DATABASE_ERROR"
+          ? "A database persistence error occurred during execution, outside of an individual participant's own logical call."
+          : "An unexpected error occurred during execution."
+      );
+    } catch {
+      // Even the recovery write failed -- nothing further can be done
+      // in-process for this invocation. Never recurse, never rethrow;
+      // fall through to the Background Function's own last-resort catch.
+    }
+
+    return { outcome: "failed", failureCode };
+  }
+
+  // Declared (not a const arrow) so it is hoisted and callable from the
+  // try block above while its own body -- unchanged from before this
+  // correction except for indentation -- stays readable below, without
+  // re-indenting ~250 existing lines merely to add this safety net.
+  async function runPostClaimExecution(run: PersistedRun): Promise<ExecutionOutcome> {
   const routeByParticipant = new Map(
     preflight.participants.map((participant) => [participant.participantId, toResolvedRoute(participant)])
   );
@@ -749,23 +1065,35 @@ export async function executeTribunalRun(
 
   for (let index = 0; index < ADVOCATE_ORDER.length; index += 1) {
     const settled = advocateResults[index];
+    // Milestone 13 (Issue #36 G1a): a rejected settled result is no
+    // longer silently coerced into the same shape as an ordinary
+    // model-failure outcome -- it is classified first, so its real cause
+    // (a persistence error vs. a genuinely unexpected exception) and its
+    // real, already-known economics are never discarded.
+    const rejection =
+      settled.status === "rejected"
+        ? classifyLogicalCallRejection(settled.reason, ADVOCATE_ORDER[index])
+        : null;
     const outcome =
       settled.status === "fulfilled"
         ? settled.value
-        : { success: false as const, economics: [], blockedByBudget: false };
+        : { success: false as const, economics: rejection!.economics, blockedByBudget: false };
 
     advocateEconomics.push(outcome.economics);
 
     if (!outcome.success) {
-      const failureCode = outcome.blockedByBudget ? "ADVOCATE_RUNTIME_BUDGET_ANOMALY" : "ADVOCATE_TERMINAL_FAILURE";
-
-      await deps.repository.failRun(
-        runId,
-        failureCode,
-        outcome.blockedByBudget
+      const failureCode = rejection
+        ? rejection.failure.failureCode
+        : outcome.blockedByBudget
+          ? "ADVOCATE_RUNTIME_BUDGET_ANOMALY"
+          : "ADVOCATE_TERMINAL_FAILURE";
+      const failureMessage = rejection
+        ? rejection.failure.failureMessage
+        : outcome.blockedByBudget
           ? `Advocate ${ADVOCATE_ORDER[index]}'s retry was not economically safe under the runtime budget guard.`
-          : `Advocate ${ADVOCATE_ORDER[index]} did not produce a valid speech after the permitted retry.`
-      );
+          : `Advocate ${ADVOCATE_ORDER[index]} did not produce a valid speech after the permitted retry.`;
+
+      await deps.repository.failRun(runId, failureCode, failureMessage);
 
       return { outcome: "failed", failureCode };
     }
@@ -842,23 +1170,32 @@ export async function executeTribunalRun(
 
   for (let index = 0; index < JUDGE_ORDER.length; index += 1) {
     const settled = judgeResults[index];
+    // Milestone 13 (Issue #36 G1a) -- same classification as the
+    // advocate loop above.
+    const rejection =
+      settled.status === "rejected"
+        ? classifyLogicalCallRejection(settled.reason, JUDGE_ORDER[index])
+        : null;
     const outcome =
       settled.status === "fulfilled"
         ? settled.value
-        : { success: false as const, economics: [], blockedByBudget: false };
+        : { success: false as const, economics: rejection!.economics, blockedByBudget: false };
 
     judgeEconomics.push(outcome.economics);
 
     if (!outcome.success) {
-      const failureCode = outcome.blockedByBudget ? "JUDGE_RUNTIME_BUDGET_ANOMALY" : "JUDGE_TERMINAL_FAILURE";
-
-      await deps.repository.failRun(
-        runId,
-        failureCode,
-        outcome.blockedByBudget
+      const failureCode = rejection
+        ? rejection.failure.failureCode
+        : outcome.blockedByBudget
+          ? "JUDGE_RUNTIME_BUDGET_ANOMALY"
+          : "JUDGE_TERMINAL_FAILURE";
+      const failureMessage = rejection
+        ? rejection.failure.failureMessage
+        : outcome.blockedByBudget
           ? `${JUDGE_ORDER[index]}'s retry was not economically safe under the runtime budget guard.`
-          : `${JUDGE_ORDER[index]} did not produce a valid verdict after the permitted retry.`
-      );
+          : `${JUDGE_ORDER[index]} did not produce a valid verdict after the permitted retry.`;
+
+      await deps.repository.failRun(runId, failureCode, failureMessage);
 
       return { outcome: "failed", failureCode };
     }
@@ -919,4 +1256,5 @@ export async function executeTribunalRun(
   }
 
   return { outcome: "completed", majorityVerdict };
+  } // end runPostClaimExecution
 }

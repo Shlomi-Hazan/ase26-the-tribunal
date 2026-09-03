@@ -422,18 +422,22 @@ Required controls:
 - atomic background-worker claim
 - rate limiting for cost-bearing start requests
 
-Initial production rate-limit target:
+**Implemented (Milestone 13, Issue #36 G3):**
 
 ```text
 POST /api/runs
 3 accepted start attempts per 180 seconds per source IP
 ```
 
-This is a starting operational control, not a promise of abuse-proof identity. It may be tuned from observed demo usage.
+Enforced via the SAME authoritative, cross-process-safe admission-control RPC (`check_and_record_admission`) Milestone 7A's extraction endpoints already use — `netlify/server/admissionControl.ts`, bucket `"run-start"`, reusing the existing `setup_extraction_admission_events` table/RPC with no migration. `hashedAdmissionBucket`/`trustedSourceIp` (`netlify/server/extraction/rateLimit.ts`) provide the same privacy-conscious, never-caller-supplied-header source-IP resolution the extraction endpoints already established. A same-`clientRequestId` idempotent retry never consumes a second admission slot (the RPC's own `(bucket, requestId)` dedup) — a legitimate retry is never penalized.
+
+**Also implemented (Milestone 13, Issue #36 G3): the operator-funded Jon Snow demo endpoint** (`POST /api/demo/jon-snow/runs`) carries its own, independent admission-control check — bucket `"jon-snow-demo-start"`, never sharing capacity with the generic `"run-start"` bucket — reached only after the access-capability gate (Sec 3.1.1) already passed, so an invalid-token flood never consumes a slot at all. Its threshold (`JON_SNOW_DEMO_RUN_START_RATE_LIMIT`, `netlify/server/tribunal/rateLimitPolicy.ts`) is deliberately a slightly higher ceiling than the generic policy (5/180s vs. 3/180s) — a presentation-safety allowance for a live lecture demo, justified by that surface's much lower per-run cost ceiling ($0.13 vs. the generic $5.00 hard ceiling), never an unlimited exemption. This is what stops a leaked/shared demo access capability from permitting unbounded fresh `clientRequestId`s from one source.
+
+This is a starting operational control, not a promise of abuse-proof identity — per-IP/per-capability admission control is not DDoS-proof authentication (Sec 20). It may be tuned from observed demo usage.
 
 Read-only history/status endpoints can use looser limits.
 
-If public abuse becomes material, the next escalation is not to weaken the budget guard; it is to add stronger admission/authentication controls through an approved scope change.
+If public abuse becomes material, the next escalation is not to weaken the budget guard; it is to add stronger admission/authentication controls through an approved scope change. The production deployment environment around this control (Netlify edge/WAF rate limiting, if adopted, HTTPS, real-traffic threshold tuning) remains Milestone 15 scope, not duplicated or pulled forward here.
 
 **New this pass (final independent review, security/idempotency audit
 — Milestone 7A, `docs/adr/0004-smart-package-extraction.md` Decision
@@ -552,6 +556,7 @@ Expose safe categories such as:
 - participant timed out
 - participant returned invalid output
 - run failed
+- database persistence error (`DATABASE_ERROR` — Milestone 13, Issue #36 G1a/G1b: a `TribunalPersistenceError` thrown by a repository write during execution, either inside a logical call, claim/terminalize/persist stage-aware, or at the phase level (`transitionToJudges`/`completeRun`/`failRun` itself) — never conflated with a participant-earned terminal-failure code, and never leaking the underlying Supabase/Postgres error detail. A genuinely unexpected, non-persistence exception gets its own distinct code (`UNEXPECTED_LOGICAL_CALL_ERROR`/`UNEXPECTED_EXECUTION_ERROR`) — never mislabeled `DATABASE_ERROR`. **Deliberately does NOT cover the pre-claim path** (`runLoader.getById`, `runPreflight`'s own reads, `blockBudget`/`claimForExecution` themselves) — a read failure there leaves the run provably still `READY` (zero spend; safe for a later, idempotent re-invocation, but **not** automatically retried by the current Background Function — its own last-resort catch is never a retry/recovery mechanism), and `blockBudget`/`claimForExecution` are themselves ambiguous atomic writes where a blind recovery attempt risks falsely failing a run a different, legitimate invocation actually won and is actively executing; see `netlify/server/tribunal/execution.ts`'s own comment directly above `executeTribunalRun` for the full analysis. `RunPage` represents a `READY` run honestly as "Waiting for execution to start," never as active deliberation (Milestone 13 final pre-merge correction). No migration required or proposed for this path.)
 
 Server logs may contain technical error codes/stack traces, but should avoid:
 
@@ -712,6 +717,16 @@ When the application stack exists:
 
 High-risk or opaque packages that process untrusted content require explicit justification.
 
+### 17.1 First recorded audit (Milestone 13, Issue #36 dependency/supply-chain slice)
+
+`npm audit` (read-only; `npm audit fix`/`--force` deliberately **not** run) reports **8 advisories: 1 moderate, 7 high**, as of this milestone. Every one traces back to exactly one direct dependency: `netlify-cli` (`package.json` `devDependencies`, `^27.3.0`) and its transitive tree (`@netlify/dev` → `extract-zip`; `@netlify/dev` → `@netlify/images` → `ipx` → `sharp`; `qs`, moderate, transitively via `netlify-cli`'s own dependencies).
+
+- **No deployed application-runtime exposure identified** — confirmed by `netlify-cli`'s `devDependency` placement and the existing client-bundle verification (`scripts/verify-client-bundle.mjs`); nothing in this advisory chain ships to the browser or to the deployed Netlify Functions runtime.
+- **Dev/CI-toolchain exposure remains** — `netlify-cli`'s dependency tree (including the vulnerable `extract-zip`, `qs`, `sharp`/`ipx` paths) is genuinely present and executable wherever `netlify-cli` itself runs: local `npm run dev:netlify` invocations, and this repository's own CI `npm ci` step (which installs devDependencies).
+- **No safe forward fix is currently offered by npm** — the only fix path `npm audit` reports for every `netlify-cli`-rooted advisory is `netlify-cli@23.13.5`, a 4-major-version **downgrade** from the currently pinned `^27.3.0`, not an upgrade. This is **not accepted** — downgrading four major versions of the local dev/deploy CLI risks losing a year of fixes/features for a dev-only, no-deployed-exposure risk.
+- **Disposition: accepted/deferred**, evidence-based, not silently ignored. Revisit when `netlify-cli` publishes a forward (v28+) release that resolves these transitively, or when Netlify patches `@netlify/images`/`ipx`/`sharp` forward without requiring a `netlify-cli` downgrade.
+- **Install-script warning, recorded and left open, not silently treated as resolved:** `npm install`/`npm ci` reports `5 packages have install scripts not yet covered by allowScripts` (`esbuild`, `fsevents`, `netlify-cli`, `sharp`, `unix-dgram`). No project-level `allowScripts`/lavamoat policy file exists in this repository today. This does **not** block `npm ci` in CI — status: **open, pending**, not addressed by this milestone. A future pass should either adopt an explicit install-script allowlist policy or make a documented, evidence-based decision not to.
+
 ---
 
 ## 18. Git and Repository Security
@@ -794,6 +809,34 @@ Before relevant milestones merge, verify as applicable:
 - [ ] (Milestone 7) the one mandatory live metadata integration check
       required before merge performed zero model inference, sent no
       case/prompt content, and recorded no secret
+- [ ] (Milestone 13, Issue #36) a database persistence error inside a
+      logical call is classified `DATABASE_ERROR`, never mislabeled as a
+      participant-earned terminal-failure code, and preserves known
+      economics stage-aware (no attempt for a claim-stage failure,
+      already-known telemetry for a terminalize-stage failure,
+      already-persisted economics untouched for a content-persistence-
+      stage failure)
+- [ ] (Milestone 13, Issue #36) a phase-level persistence failure
+      (`transitionToJudges`/`completeRun`/`failRun` itself) resolves to
+      an explicit `DATABASE_ERROR` failure, never an uncaught rejection,
+      and the recovery write itself never recurses/rethrows on failure
+- [ ] (Milestone 13, Issue #36) both cost-bearing run-start endpoints
+      (`POST /api/runs`, `POST /api/demo/jon-snow/runs`) are
+      admission-control rate-limited under independent bucket
+      namespaces, with idempotent-replay exemption preserved
+- [ ] (Milestone 13, Issue #36) prompt-injection tests for the core
+      Tribunal path prove containment (untrusted content stays out of
+      the system prompt, server-owned side/role/schema are unaffected,
+      no privileged tools, malformed output rejected) — never a claim of
+      semantic immunity from adversarial free-text reasoning
+- [ ] (Milestone 13, Issue #36) hostile Charge Sheet/personality/speech/
+      reasoning/participant-identity text renders as literal text with
+      zero executable DOM element created, across every real-run display
+      surface, not merely one
+- [ ] (Milestone 13, Issue #36) `npm audit` advisories are reviewed and
+      recorded with an evidence-based disposition (Sec 17.1), never
+      silently ignored, and `npm audit fix --force` is never run without
+      explicit, separate triage of each breaking change
 
 ---
 

@@ -24,6 +24,8 @@ import {
 import { ADVOCATE_PROMPT_VERSION, JUDGE_PROMPT_VERSION } from "../../../src/prompts/versions";
 import type { ParticipantId } from "../../../src/schemas/tribunalSetup";
 import { FakeTribunalExecutionRepository } from "../../server/tribunal/repository";
+import { FakeAdmissionControl } from "../../server/admissionControl";
+import { RUN_START_RATE_LIMIT } from "../../server/tribunal/rateLimitPolicy";
 import { handleRunByIdRequest } from "../run-by-id";
 import { handler as runsHandler, handleRunsRequest } from "../runs";
 
@@ -661,5 +663,201 @@ describe("Milestone 8 -- execution trigger wiring on POST /api/runs", () => {
     // zero budget-block call, exactly the OPENROUTER_NOT_CONNECTED
     // contract already proven end-to-end for the extraction endpoints.
     expect(tribunalRepository.runStatus.size).toBe(0);
+  });
+});
+
+// Milestone 13 (Issue #36 G3) -- admission-control rate limiting for
+// POST /api/runs. Zero real database/network anywhere below.
+describe("POST /api/runs -- admission-control rate limiting (Issue #36 G3)", () => {
+  function deps(admissionControl: FakeAdmissionControl, sourceIp = "203.0.113.1") {
+    return {
+      caseRepository: new FakeIdempotentCaseRepository(),
+      runRepository: new FakeRunRepository(),
+      admissionControl,
+      sourceIp
+    };
+  }
+
+  it(`allows exactly ${RUN_START_RATE_LIMIT.maxAcceptedRequests} accepted new run starts per window per source IP, rejects the next with 429`, async () => {
+    const admissionControl = new FakeAdmissionControl();
+    const requestDeps = deps(admissionControl);
+
+    for (let i = 0; i < RUN_START_RATE_LIMIT.maxAcceptedRequests; i += 1) {
+      const response = await handleRunsRequest(
+        { httpMethod: "POST", body: validBody({ clientRequestId: `${i}2222222-2222-4222-8222-222222222222` }) } as HandlerEvent,
+        requestDeps
+      );
+
+      expect(response.statusCode).toBe(201);
+    }
+
+    const rejected = await handleRunsRequest(
+      {
+        httpMethod: "POST",
+        body: validBody({ clientRequestId: "99999999-2222-4222-8222-222222222222" })
+      } as HandlerEvent,
+      requestDeps
+    );
+
+    expect(rejected.statusCode).toBe(429);
+    expect(JSON.parse(rejected.body ?? "")).toEqual({ error: "rate_limited" });
+  });
+
+  it("an idempotent replay of the SAME clientRequestId never consumes a new admission slot", async () => {
+    const admissionControl = new FakeAdmissionControl();
+    const requestDeps = deps(admissionControl);
+
+    // Fill the window with maxAcceptedRequests distinct new starts.
+    for (let i = 0; i < RUN_START_RATE_LIMIT.maxAcceptedRequests; i += 1) {
+      const response = await handleRunsRequest(
+        { httpMethod: "POST", body: validBody({ clientRequestId: `${i}2222222-2222-4222-8222-222222222222` }) } as HandlerEvent,
+        requestDeps
+      );
+
+      expect(response.statusCode).toBe(201);
+    }
+
+    // A brand-new clientRequestId is now rejected -- the window is full.
+    const rejected = await handleRunsRequest(
+      { httpMethod: "POST", body: validBody({ clientRequestId: "99999999-2222-4222-8222-222222222222" }) } as HandlerEvent,
+      requestDeps
+    );
+
+    expect(rejected.statusCode).toBe(429);
+
+    // But a REPEATED request with the very FIRST clientRequestId used
+    // above is still admitted -- the RPC's own (bucket, requestId) dedup
+    // means it never counted as a second slot in the first place.
+    const replay = await handleRunsRequest(
+      { httpMethod: "POST", body: validBody({ clientRequestId: "02222222-2222-4222-8222-222222222222" }) } as HandlerEvent,
+      requestDeps
+    );
+
+    expect(replay.statusCode).toBe(201);
+  });
+
+  it("distinct source IPs are independently bucketed -- one IP's exhausted window never blocks another", async () => {
+    const admissionControl = new FakeAdmissionControl();
+
+    for (let i = 0; i < RUN_START_RATE_LIMIT.maxAcceptedRequests; i += 1) {
+      const response = await handleRunsRequest(
+        { httpMethod: "POST", body: validBody({ clientRequestId: `${i}2222222-2222-4222-8222-222222222222` }) } as HandlerEvent,
+        deps(admissionControl, "203.0.113.1")
+      );
+
+      expect(response.statusCode).toBe(201);
+    }
+
+    const fromAnotherIp = await handleRunsRequest(
+      {
+        httpMethod: "POST",
+        body: validBody({ clientRequestId: "99999999-2222-4222-8222-222222222222" })
+      } as HandlerEvent,
+      deps(admissionControl, "203.0.113.2")
+    );
+
+    expect(fromAnotherIp.statusCode).toBe(201);
+  });
+
+  it("a request with no admissionControl injected (pre-M13 test/caller shape) is completely unaffected", async () => {
+    const response = await handleRunsRequest(
+      { httpMethod: "POST", body: validBody() } as HandlerEvent,
+      { caseRepository: new FakeIdempotentCaseRepository(), runRepository: new FakeRunRepository() }
+    );
+
+    expect(response.statusCode).toBe(201);
+  });
+
+  it("a malformed/missing clientRequestId skips rate limiting entirely and falls through to acceptRun's own validation error", async () => {
+    const admissionControl = new FakeAdmissionControl();
+
+    const response = await handleRunsRequest(
+      {
+        httpMethod: "POST",
+        body: JSON.stringify({
+          clientRequestId: "not-a-uuid",
+          case: { kind: "existing", caseId: storedCase.id },
+          executionMode: "shared",
+          participants: validParticipants()
+        })
+      } as HandlerEvent,
+      deps(admissionControl)
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body ?? "").error).toBe("invalid_run");
+  });
+
+  // Corrected (independent review, PR #37): calling
+  // checkAndRecordAdmission with a `null` requestId does NOT "skip rate
+  // limiting" -- the RPC counts every null-identity call as an
+  // independent event, so an earlier revision's malformed-id handling
+  // could let repeated malformed requests exhaust the whole bucket and
+  // deny legitimate requests from the same source IP. This regression
+  // test proves the fix: malformed requests never touch the admission
+  // control layer at all.
+  it("repeated malformed/missing clientRequestId requests never consume admission slots -- a subsequent valid request from the same source IP is still accepted, not 429", async () => {
+    const admissionControl = new FakeAdmissionControl();
+    const requestDeps = deps(admissionControl);
+
+    // Send more malformed requests than the rate limit permits.
+    for (let i = 0; i < RUN_START_RATE_LIMIT.maxAcceptedRequests + 5; i += 1) {
+      const response = await handleRunsRequest(
+        {
+          httpMethod: "POST",
+          body: JSON.stringify({
+            clientRequestId: "not-a-uuid",
+            case: { kind: "existing", caseId: storedCase.id },
+            executionMode: "shared",
+            participants: validParticipants()
+          })
+        } as HandlerEvent,
+        requestDeps
+      );
+
+      // Every malformed request gets its normal validation error, never
+      // a 429 -- proving it never reached (or was blocked by) admission
+      // control.
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(response.body ?? "").error).toBe("invalid_run");
+    }
+
+    // A subsequent VALID request from the same source IP is still
+    // accepted -- the malformed flood above consumed zero admission
+    // slots.
+    const valid = await handleRunsRequest(
+      { httpMethod: "POST", body: validBody() } as HandlerEvent,
+      requestDeps
+    );
+
+    expect(valid.statusCode).toBe(201);
+  });
+
+  it("a missing clientRequestId field entirely also never consumes an admission slot", async () => {
+    const admissionControl = new FakeAdmissionControl();
+    const requestDeps = deps(admissionControl);
+
+    for (let i = 0; i < RUN_START_RATE_LIMIT.maxAcceptedRequests + 2; i += 1) {
+      const response = await handleRunsRequest(
+        {
+          httpMethod: "POST",
+          body: JSON.stringify({
+            case: { kind: "existing", caseId: storedCase.id },
+            executionMode: "shared",
+            participants: validParticipants()
+          })
+        } as HandlerEvent,
+        requestDeps
+      );
+
+      expect(response.statusCode).toBe(400);
+    }
+
+    const valid = await handleRunsRequest(
+      { httpMethod: "POST", body: validBody() } as HandlerEvent,
+      requestDeps
+    );
+
+    expect(valid.statusCode).toBe(201);
   });
 });

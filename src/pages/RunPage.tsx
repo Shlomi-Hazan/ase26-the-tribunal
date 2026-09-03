@@ -36,6 +36,11 @@ import { getSeatLabel, resolveParticipantIdentity } from "../components/particip
 import { PublicDemoRetentionNotice } from "../components/PublicDemoRetentionNotice";
 import { StatusBadge } from "../components/StatusBadge";
 import { verdictColor } from "../components/verdictColor";
+// Milestone 13 (Issue #36 G2) -- the same shared, isomorphic timing
+// constants netlify/server/tribunal/execution.ts consumes, never a
+// locally re-derived threshold and never an import of execution.ts
+// itself (server-only).
+import { computeStalenessThresholdMs } from "../features/tribunal-run/executionTimingPolicy";
 import {
   advocateParticipants,
   judgeParticipants,
@@ -88,6 +93,12 @@ export function RunPage() {
   const { runId } = useParams<{ runId: string }>();
   const [run, setRun] = useState<StoredRun | null>(null);
   const [error, setError] = useState("");
+  // Milestone 13 (Issue #36 G2) -- "now", as an ordinary reactive piece
+  // of state rather than an impure Date.now() call inside the render
+  // body itself (React's components-must-be-pure rule). The lazy
+  // initializer runs once on mount; every subsequent update happens
+  // inside the poll loop below, in lockstep with each fetched run.
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   useEffect(() => {
     if (!runId) {
@@ -112,6 +123,10 @@ export function RunPage() {
         }
 
         setRun(fetched);
+        // Milestone 13 (Issue #36 G2): refreshed alongside every fetch,
+        // never on a separate timer -- the staleness signal only needs
+        // to advance as often as the run's own status can change.
+        setNowMs(Date.now());
 
         if (!TERMINAL_STATUSES.has(fetched.status)) {
           timer = setTimeout(poll, POLL_INTERVAL_MS);
@@ -192,6 +207,55 @@ export function RunPage() {
     return <CompletedResult run={run} />;
   }
 
+  // Milestone 13 (Issue #36, final pre-merge correction -- independent
+  // review, PR #37): READY means the run is frozen/accepted but
+  // execution has not started -- no claim has been won, startedAt is
+  // still null (only set by the claim transition), and no provider/
+  // model activity has occurred. Rendering this the same as
+  // ADVOCATES_RUNNING/JUDGES_RUNNING ("The Tribunal is in session" /
+  // "Deliberation in progress") would be materially false: a run left
+  // READY by a pre-claim database/read failure (deliberately left
+  // unguarded -- see the comment above executeTribunalRun) looks
+  // identical to one that simply hasn't been picked up by the worker
+  // yet, and neither is "in session." This is a pure, honest state
+  // description -- never a fabricated failure/verdict, and never a
+  // claim that anything will automatically retry (the current
+  // Background Function's own last-resort catch does not retry; a later
+  // trigger, e.g. a fresh invocation, is what would move this forward).
+  if (run.status === "READY") {
+    return (
+      <Stack spacing={4}>
+        <PublicDemoRetentionNotice />
+        <PageHeader
+          description="Status: READY"
+          eyebrow="Preparing the Tribunal"
+          title="Waiting for execution to start"
+        />
+        <Alert severity="info">No model execution has started yet for this run.</Alert>
+        <ParticipantGrid run={run} />
+      </Stack>
+    );
+  }
+
+  // Milestone 13 (Issue #36 G2) -- an honest, non-fabricating signal for
+  // a non-terminal run whose real elapsed execution time already exceeds
+  // the engine's own worst-case timing envelope (two sequential
+  // concurrent phases, each bounded by one logical call's own two-
+  // attempt retry budget, plus orchestration margin --
+  // executionTimingPolicy.ts). Computed from the persisted, server-
+  // authoritative run.startedAt on every render -- NEVER run.createdAt
+  // (which precedes execution start) and NEVER a client-side page-mount
+  // timestamp, so a reload/refresh never resets the elapsed clock; the
+  // existing 2s poll loop above already re-renders this page while
+  // non-terminal, which is what keeps this reactive without a second,
+  // redundant timer. This never automatically retries, restarts, or
+  // fails the run -- it only adds a caption alongside the existing,
+  // already-truthful status.
+  const isTakingLongerThanExpected =
+    run.startedAt !== null &&
+    !TERMINAL_STATUSES.has(run.status) &&
+    nowMs - Date.parse(run.startedAt) > computeStalenessThresholdMs();
+
   return (
     <Stack spacing={4}>
       <PublicDemoRetentionNotice />
@@ -200,6 +264,12 @@ export function RunPage() {
         eyebrow="The Tribunal is in session"
         title="Deliberation in progress"
       />
+      {isTakingLongerThanExpected ? (
+        <Alert severity="warning">
+          This run is taking longer than expected. It has not failed or completed -- the Tribunal
+          is still shown as {run.status}.
+        </Alert>
+      ) : null}
       <ParticipantGrid run={run} />
     </Stack>
   );

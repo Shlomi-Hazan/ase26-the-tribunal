@@ -19,6 +19,8 @@ import { FakeTribunalExecutionRepository } from "../../server/tribunal/repositor
 import { JON_SNOW_DEMO_ACCESS_HEADER } from "../../server/tribunal/demoAccess";
 import { handleDemoJonSnowRunsRequest, type HandleDemoJonSnowRunsDeps } from "../demo-jon-snow-runs";
 import { handleRunsRequest } from "../runs";
+import { FakeAdmissionControl } from "../../server/admissionControl";
+import { JON_SNOW_DEMO_RUN_START_RATE_LIMIT } from "../../server/tribunal/rateLimitPolicy";
 
 // >= 32 chars (netlify/server/env.ts's JON_SNOW_DEMO_ACCESS_TOKEN
 // minimum) -- deliberately well over the boundary, not merely at it.
@@ -646,5 +648,211 @@ describe("JON_SNOW_DEMO_ACCESS_TOKEN minimum length", () => {
     expect(() =>
       readJonSnowDemoServerConfig({ ...validKey, JON_SNOW_DEMO_ACCESS_TOKEN: DEMO_ACCESS_TOKEN })
     ).not.toThrow();
+  });
+});
+
+// Milestone 13 (Issue #36 G3) -- admission-control rate limiting for the
+// operator-funded demo endpoint. Zero real network/database anywhere
+// below; `stubEligibleExecutionFetch()` is the same fake-network stub
+// every accepted-request test in this file already uses.
+describe("POST /api/demo/jon-snow/runs -- admission-control rate limiting (Issue #36 G3)", () => {
+  it(`only reached AFTER the access-capability gate -- an invalid token never consumes an admission slot`, async () => {
+    const admissionControl = new FakeAdmissionControl();
+    const deps = baseDeps({ admissionControl, sourceIp: "203.0.113.1" });
+
+    for (let i = 0; i < 10; i += 1) {
+      const response = await handleDemoJonSnowRunsRequest(
+        { httpMethod: "POST", headers: { [JON_SNOW_DEMO_ACCESS_HEADER]: "wrong-token" }, body: validBody() } as unknown as HandlerEvent,
+        deps
+      );
+
+      expect(response.statusCode).toBe(401);
+    }
+
+    // The window is still completely empty -- none of the above counted.
+    stubEligibleExecutionFetch();
+    const response = await handleDemoJonSnowRunsRequest(
+      { httpMethod: "POST", headers: validAccessHeaders(), body: validBody() } as unknown as HandlerEvent,
+      deps
+    );
+
+    expect(response.statusCode).toBe(201);
+  });
+
+  it(`allows exactly ${JON_SNOW_DEMO_RUN_START_RATE_LIMIT.maxAcceptedRequests} accepted new demo run starts per window per source IP, rejects the next with 429`, async () => {
+    stubEligibleExecutionFetch();
+    const admissionControl = new FakeAdmissionControl();
+    const deps = baseDeps({ admissionControl, sourceIp: "203.0.113.1" });
+
+    for (let i = 0; i < JON_SNOW_DEMO_RUN_START_RATE_LIMIT.maxAcceptedRequests; i += 1) {
+      const response = await handleDemoJonSnowRunsRequest(
+        { httpMethod: "POST", headers: validAccessHeaders(), body: validBody() } as unknown as HandlerEvent,
+        deps
+      );
+
+      expect(response.statusCode).toBe(201);
+    }
+
+    const rejected = await handleDemoJonSnowRunsRequest(
+      { httpMethod: "POST", headers: validAccessHeaders(), body: validBody() } as unknown as HandlerEvent,
+      deps
+    );
+
+    expect(rejected.statusCode).toBe(429);
+    expect(JSON.parse(rejected.body ?? "")).toEqual({ error: "rate_limited" });
+  });
+
+  it("an idempotent replay of the SAME clientRequestId never consumes a new admission slot", async () => {
+    stubEligibleExecutionFetch();
+    const admissionControl = new FakeAdmissionControl();
+    const deps = baseDeps({ admissionControl, sourceIp: "203.0.113.1" });
+    const firstClientRequestId = randomUUID();
+
+    const first = await handleDemoJonSnowRunsRequest(
+      {
+        httpMethod: "POST",
+        headers: validAccessHeaders(),
+        body: validBody({ clientRequestId: firstClientRequestId })
+      } as unknown as HandlerEvent,
+      deps
+    );
+
+    expect(first.statusCode).toBe(201);
+
+    // Fill the rest of the window with distinct new starts.
+    for (let i = 1; i < JON_SNOW_DEMO_RUN_START_RATE_LIMIT.maxAcceptedRequests; i += 1) {
+      const response = await handleDemoJonSnowRunsRequest(
+        { httpMethod: "POST", headers: validAccessHeaders(), body: validBody() } as unknown as HandlerEvent,
+        deps
+      );
+
+      expect(response.statusCode).toBe(201);
+    }
+
+    // The window is now full for a brand-new id.
+    const rejected = await handleDemoJonSnowRunsRequest(
+      { httpMethod: "POST", headers: validAccessHeaders(), body: validBody() } as unknown as HandlerEvent,
+      deps
+    );
+
+    expect(rejected.statusCode).toBe(429);
+
+    // But replaying the FIRST clientRequestId is still admitted.
+    const replay = await handleDemoJonSnowRunsRequest(
+      {
+        httpMethod: "POST",
+        headers: validAccessHeaders(),
+        body: validBody({ clientRequestId: firstClientRequestId })
+      } as unknown as HandlerEvent,
+      deps
+    );
+
+    expect(replay.statusCode).toBe(201);
+  });
+
+  it("the demo endpoint's own bucket is independent from generic /api/runs' bucket -- exhausting one never blocks the other", async () => {
+    const admissionControl = new FakeAdmissionControl();
+
+    stubEligibleExecutionFetch();
+    const demoDeps = baseDeps({ admissionControl, sourceIp: "203.0.113.1" });
+
+    for (let i = 0; i < JON_SNOW_DEMO_RUN_START_RATE_LIMIT.maxAcceptedRequests; i += 1) {
+      const response = await handleDemoJonSnowRunsRequest(
+        { httpMethod: "POST", headers: validAccessHeaders(), body: validBody() } as unknown as HandlerEvent,
+        demoDeps
+      );
+
+      expect(response.statusCode).toBe(201);
+    }
+
+    const demoRejected = await handleDemoJonSnowRunsRequest(
+      { httpMethod: "POST", headers: validAccessHeaders(), body: validBody() } as unknown as HandlerEvent,
+      demoDeps
+    );
+
+    expect(demoRejected.statusCode).toBe(429);
+
+    // The SAME admissionControl instance, SAME source IP -- but the
+    // generic /api/runs endpoint's own "run-start" bucket is untouched.
+    const genericResponse = await handleRunsRequest(
+      {
+        httpMethod: "POST",
+        body: JSON.stringify({
+          clientRequestId: randomUUID(),
+          case: { kind: "existing", caseId: "11111111-1111-4111-8111-111111111111" },
+          executionMode: "shared",
+          participants: [
+            "advocate-pro-1",
+            "advocate-pro-2",
+            "advocate-con-1",
+            "advocate-con-2",
+            "judge-1",
+            "judge-2",
+            "judge-3"
+          ].map((participantId) => ({
+            participantId,
+            personality: `Personality for ${participantId}.`,
+            personalitySource: "manual",
+            modelId: "mock/free-deliberator"
+          }))
+        })
+      } as HandlerEvent,
+      {
+        caseRepository: new FakeIdempotentCaseRepository(),
+        runRepository: new FakeRunRepository(),
+        admissionControl,
+        sourceIp: "203.0.113.1"
+      }
+    );
+
+    // Not 429 -- rejected for an unrelated reason (unknown case id in
+    // this minimal fixture) is fine; the point is it is NOT rate-limited
+    // by the demo bucket's exhaustion.
+    expect(genericResponse.statusCode).not.toBe(429);
+  });
+
+  it("a request with no admissionControl injected (pre-M13 test/caller shape) is completely unaffected", async () => {
+    stubEligibleExecutionFetch();
+    const deps = baseDeps();
+
+    const response = await handleDemoJonSnowRunsRequest(
+      { httpMethod: "POST", headers: validAccessHeaders(), body: validBody() } as unknown as HandlerEvent,
+      deps
+    );
+
+    expect(response.statusCode).toBe(201);
+  });
+
+  // Corrected (independent review, PR #37) -- identical regression to
+  // netlify/functions/__tests__/runs.test.ts's own: a `null` requestId
+  // passed to checkAndRecordAdmission does NOT skip rate limiting by
+  // itself; malformed requests must never reach admission control at
+  // all, or repeated ones could exhaust the bucket for a legitimate
+  // source IP.
+  it("repeated malformed/missing clientRequestId requests never consume admission slots -- a subsequent valid request from the same source IP is still accepted, not 429", async () => {
+    const admissionControl = new FakeAdmissionControl();
+    const deps = baseDeps({ admissionControl, sourceIp: "203.0.113.1" });
+
+    for (let i = 0; i < JON_SNOW_DEMO_RUN_START_RATE_LIMIT.maxAcceptedRequests + 5; i += 1) {
+      const response = await handleDemoJonSnowRunsRequest(
+        {
+          httpMethod: "POST",
+          headers: validAccessHeaders(),
+          body: validBody({ clientRequestId: "not-a-uuid" })
+        } as unknown as HandlerEvent,
+        deps
+      );
+
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(response.body ?? "{}").error).toBe("invalid_run");
+    }
+
+    stubEligibleExecutionFetch();
+    const valid = await handleDemoJonSnowRunsRequest(
+      { httpMethod: "POST", headers: validAccessHeaders(), body: validBody() } as unknown as HandlerEvent,
+      deps
+    );
+
+    expect(valid.statusCode).toBe(201);
   });
 });

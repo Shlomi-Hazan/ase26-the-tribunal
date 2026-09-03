@@ -285,8 +285,50 @@ export class FakeTribunalExecutionRepository implements TribunalExecutionReposit
   speeches = new Map<string, string>();
   verdicts = new Map<string, { verdict: Verdict; reasoning: string }>();
 
+  // Milestone 13 (Issue #36 G1a/G1b) -- deterministic failure injection
+  // for persistence-error hardening tests. The four per-logical-call
+  // methods (claimAttempt/terminalizeAttempt/persistSpeech/persistVerdict)
+  // run concurrently across up to four participants, so injection is
+  // keyed by `participantConfigId` (a test sets
+  // `failClaimAttemptFor.set("config-advocate-pro-1", new
+  // TribunalPersistenceError())`) rather than "the next call" -- avoiding
+  // any dependence on Promise.allSettled's microtask interleaving order.
+  // Each entry is consumed (deleted) the first time that participant's
+  // call is made, then that participant's later calls (e.g. its own
+  // retry attempt 2) succeed normally. The value can be a real
+  // TribunalPersistenceError (exercises the "persistence" classification)
+  // or any other Error (exercises the "unexpected" classification).
+  failClaimAttemptFor = new Map<string, Error>();
+  failTerminalizeAttemptFor = new Map<string, Error>();
+  failPersistSpeechFor = new Map<string, Error>();
+  failPersistVerdictFor = new Map<string, Error>();
+  // The remaining four repository methods are called at most once per
+  // run (never per-participant), so a simple single-shot hook is
+  // sufficient and unambiguous for them.
+  failNextTransitionToJudges: Error | null = null;
+  failNextCompleteRun: Error | null = null;
+  failNextFailRun: Error | null = null;
+
   setRunStatus(runId: string, status: string) {
     this.runStatus.set(runId, status);
+  }
+
+  private consumeKeyedFailure(store: Map<string, Error>, key: string): void {
+    const error = store.get(key);
+
+    if (error) {
+      store.delete(key);
+      throw error;
+    }
+  }
+
+  private consumeInjectedFailure(hook: "failNextTransitionToJudges" | "failNextCompleteRun" | "failNextFailRun"): void {
+    const error = this[hook];
+
+    if (error) {
+      this[hook] = null;
+      throw error;
+    }
   }
 
   async blockBudget(runId: string, reasonCode: string, reasonDetail: string): Promise<boolean> {
@@ -317,6 +359,8 @@ export class FakeTribunalExecutionRepository implements TribunalExecutionReposit
   }
 
   async transitionToJudges(runId: string): Promise<boolean> {
+    this.consumeInjectedFailure("failNextTransitionToJudges");
+
     if (this.runStatus.get(runId) !== "ADVOCATES_RUNNING") {
       return false;
     }
@@ -327,6 +371,8 @@ export class FakeTribunalExecutionRepository implements TribunalExecutionReposit
   }
 
   async failRun(runId: string, failureCode: string, failureMessage: string): Promise<boolean> {
+    this.consumeInjectedFailure("failNextFailRun");
+
     const current = this.runStatus.get(runId);
 
     if (current !== "ADVOCATES_RUNNING" && current !== "JUDGES_RUNNING") {
@@ -340,6 +386,8 @@ export class FakeTribunalExecutionRepository implements TribunalExecutionReposit
   }
 
   async completeRun(input: CompleteRunInput): Promise<boolean> {
+    this.consumeInjectedFailure("failNextCompleteRun");
+
     if (this.runStatus.get(input.runId) !== "JUDGES_RUNNING") {
       return false;
     }
@@ -353,6 +401,8 @@ export class FakeTribunalExecutionRepository implements TribunalExecutionReposit
   async claimAttempt(
     input: ClaimAttemptInput
   ): Promise<{ wonClaim: boolean; attemptId: string | null }> {
+    this.consumeKeyedFailure(this.failClaimAttemptFor, input.participantConfigId);
+
     const key = `${input.participantConfigId}:${input.attemptNumber}`;
 
     if (this.attempts.has(key)) {
@@ -381,6 +431,8 @@ export class FakeTribunalExecutionRepository implements TribunalExecutionReposit
   async terminalizeAttempt(input: TerminalizeAttemptInput): Promise<boolean> {
     for (const [key, attempt] of this.attempts.entries()) {
       if (attempt.attemptId === input.attemptId) {
+        this.consumeKeyedFailure(this.failTerminalizeAttemptFor, attempt.participantConfigId);
+
         this.attempts.set(key, { ...attempt, ...input });
 
         return true;
@@ -391,6 +443,8 @@ export class FakeTribunalExecutionRepository implements TribunalExecutionReposit
   }
 
   async persistSpeech(runId: string, participantConfigId: string, speech: string): Promise<void> {
+    this.consumeKeyedFailure(this.failPersistSpeechFor, participantConfigId);
+
     if (!this.speeches.has(participantConfigId)) {
       this.speeches.set(participantConfigId, speech);
     }
@@ -402,6 +456,8 @@ export class FakeTribunalExecutionRepository implements TribunalExecutionReposit
     verdict: Verdict,
     reasoning: string
   ): Promise<void> {
+    this.consumeKeyedFailure(this.failPersistVerdictFor, participantConfigId);
+
     if (!this.verdicts.has(participantConfigId)) {
       this.verdicts.set(participantConfigId, { verdict, reasoning });
     }
