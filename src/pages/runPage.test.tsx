@@ -1083,3 +1083,253 @@ describe("RunPage historical Advocate side meaning (PRO/CON semantic correction,
     expect(screen.queryByText(/Legacy semantics/)).not.toBeInTheDocument();
   });
 });
+
+// ---------------------------------------------------------------------
+// Human product decision (PR #34) -- product-wide participant-identity
+// correction: prompted by observing the M12 Jon Snow live gate, but NOT
+// Jon-Snow-specific. Every fixture below uses generic, non-Jon-Snow
+// names (David Cohen, Sarah Levi, Justice Green) to prove the rule is
+// a global product invariant, not a Jon Snow special case (Sec 12
+// item J). PRIMARY: persisted profileName when meaningfully set.
+// SECONDARY: structural seat. FALLBACK: generic seat alone.
+// ---------------------------------------------------------------------
+
+function participantWithProfile(
+  participantId: string,
+  role: "ADVOCATE" | "JUDGE",
+  side: "PRO" | "CON" | null,
+  profileName: string | null,
+  overrides: { speech?: string; verdict?: "GUILTY" | "NOT_GUILTY" | null; reasoning?: string | null } = {}
+): StoredRun["participants"][number] {
+  // Pinned to the CURRENT prompt version (advocate-v2/judge-v2) --
+  // participant()'s own default is the legacy advocate-v1/judge-v1, and
+  // these identity tests are not about the version-aware side-meaning
+  // policy itself (covered exhaustively elsewhere in this file); they
+  // only need to prove name/seat display is correct without disturbing
+  // whichever side meaning is already in effect.
+  return {
+    ...participant(participantId, role, side, overrides),
+    profileName,
+    promptVersion: role === "ADVOCATE" ? "advocate-v2" : "judge-v2"
+  };
+}
+
+describe("RunPage participant identity (product-wide, PR #34)", () => {
+  it("A: a live PRO advocate with a persisted profileName shows the name as primary and PRO I as secondary seat context", async () => {
+    const run = baseRun({
+      status: "ADVOCATES_RUNNING",
+      majorityVerdict: null,
+      participants: [
+        participantWithProfile("advocate-pro-1", "ADVOCATE", "PRO", "David Cohen"),
+        participantWithProfile("advocate-pro-2", "ADVOCATE", "PRO", null),
+        participantWithProfile("advocate-con-1", "ADVOCATE", "CON", null),
+        participantWithProfile("advocate-con-2", "ADVOCATE", "CON", null),
+        participantWithProfile("judge-1", "JUDGE", null, null),
+        participantWithProfile("judge-2", "JUDGE", null, null),
+        participantWithProfile("judge-3", "JUDGE", null, null)
+      ]
+    });
+    mockRunFetch(run);
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+
+    await screen.findByText("David Cohen");
+    // Scoped to this participant's own card -- "PRO I" is this card's
+    // own secondary seat label (David Cohen's PRO I, not PRO II's own,
+    // unlabeled card), and "PRO — Defense" legitimately also appears on
+    // the OTHER PRO advocate's card, so an unscoped query would be
+    // ambiguous.
+    const card = screen.getByText("David Cohen").closest(".MuiStack-root") as HTMLElement;
+
+    expect(within(card).getByText("PRO I")).toBeVisible();
+    // The existing prompt-version-aware side meaning remains authoritative
+    // and untouched -- never replaced by a new hard-coded interpretation.
+    expect(within(card).getByText("PRO — Defense")).toBeVisible();
+  });
+
+  it("B: a live CON advocate with a persisted profileName preserves the existing Opposition/GUILTY side meaning", async () => {
+    const run = baseRun({
+      status: "ADVOCATES_RUNNING",
+      majorityVerdict: null,
+      participants: [
+        participantWithProfile("advocate-pro-1", "ADVOCATE", "PRO", null),
+        participantWithProfile("advocate-pro-2", "ADVOCATE", "PRO", null),
+        participantWithProfile("advocate-con-1", "ADVOCATE", "CON", "Sarah Levi"),
+        participantWithProfile("advocate-con-2", "ADVOCATE", "CON", null),
+        participantWithProfile("judge-1", "JUDGE", null, null),
+        participantWithProfile("judge-2", "JUDGE", null, null),
+        participantWithProfile("judge-3", "JUDGE", null, null)
+      ]
+    });
+    mockRunFetch(run);
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+
+    await screen.findByText("Sarah Levi");
+    // Scoped to this participant's own card -- CON II's card also
+    // legitimately renders "CON — Opposition", so an unscoped query
+    // would be ambiguous.
+    const card = screen.getByText("Sarah Levi").closest(".MuiStack-root") as HTMLElement;
+
+    expect(within(card).getByText("CON I")).toBeVisible();
+    expect(within(card).getByText("CON — Opposition")).toBeVisible();
+  });
+
+  it("C: a live judge with a persisted profileName shows the name as primary and Judge I as secondary seat context", async () => {
+    const run = baseRun({
+      status: "JUDGES_RUNNING",
+      majorityVerdict: null,
+      participants: [
+        participantWithProfile("advocate-pro-1", "ADVOCATE", "PRO", null, { speech: "PRO I speech." }),
+        participantWithProfile("advocate-pro-2", "ADVOCATE", "PRO", null, { speech: "PRO II speech." }),
+        participantWithProfile("advocate-con-1", "ADVOCATE", "CON", null, { speech: "CON I speech." }),
+        participantWithProfile("advocate-con-2", "ADVOCATE", "CON", null, { speech: "CON II speech." }),
+        participantWithProfile("judge-1", "JUDGE", null, "Justice Green"),
+        participantWithProfile("judge-2", "JUDGE", null, null),
+        participantWithProfile("judge-3", "JUDGE", null, null)
+      ]
+    });
+    mockRunFetch(run);
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+
+    expect(await screen.findByText("Justice Green")).toBeVisible();
+    expect(screen.getByText("Judge I")).toBeVisible();
+  });
+
+  it("D: a completed advocate's argument is attributed to the persisted profileName, with seat/side as secondary context", async () => {
+    const run = baseRun({
+      participants: [
+        participantWithProfile("advocate-pro-1", "ADVOCATE", "PRO", "David Cohen", { speech: "PRO I speech." }),
+        participantWithProfile("advocate-pro-2", "ADVOCATE", "PRO", null, { speech: "PRO II speech." }),
+        participantWithProfile("advocate-con-1", "ADVOCATE", "CON", null, { speech: "CON I speech." }),
+        participantWithProfile("advocate-con-2", "ADVOCATE", "CON", null, { speech: "CON II speech." }),
+        participantWithProfile("judge-1", "JUDGE", null, null, { verdict: "GUILTY", reasoning: "Judge I reasoning." }),
+        participantWithProfile("judge-2", "JUDGE", null, null, { verdict: "GUILTY", reasoning: "Judge II reasoning." }),
+        participantWithProfile("judge-3", "JUDGE", null, null, { verdict: "NOT_GUILTY", reasoning: "Judge III reasoning." })
+      ]
+    });
+    mockRunFetch(run);
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    await screen.findByRole("heading", { name: "GUILTY" });
+
+    expect(screen.getByRole("button", { expanded: false, name: /^David Cohen\b/ })).toBeVisible();
+    expect(screen.getByText(/PRO I -- PRO/)).toBeVisible();
+  });
+
+  it("E: the judge vote summary shows the persisted profileName with the judge seat as secondary context", async () => {
+    const run = baseRun({
+      participants: [
+        participantWithProfile("advocate-pro-1", "ADVOCATE", "PRO", null, { speech: "PRO I speech." }),
+        participantWithProfile("advocate-pro-2", "ADVOCATE", "PRO", null, { speech: "PRO II speech." }),
+        participantWithProfile("advocate-con-1", "ADVOCATE", "CON", null, { speech: "CON I speech." }),
+        participantWithProfile("advocate-con-2", "ADVOCATE", "CON", null, { speech: "CON II speech." }),
+        participantWithProfile("judge-1", "JUDGE", null, "Justice Green", { verdict: "GUILTY", reasoning: "Judge I reasoning." }),
+        participantWithProfile("judge-2", "JUDGE", null, null, { verdict: "GUILTY", reasoning: "Judge II reasoning." }),
+        participantWithProfile("judge-3", "JUDGE", null, null, { verdict: "NOT_GUILTY", reasoning: "Judge III reasoning." })
+      ]
+    });
+    mockRunFetch(run);
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    await screen.findByRole("heading", { name: "GUILTY" });
+
+    const voteGroup = screen.getByTestId("judge-vote-group");
+
+    expect(within(voteGroup).getByText("Justice Green")).toBeVisible();
+    expect(within(voteGroup).getByText("Judge I")).toBeVisible();
+  });
+
+  it("F: the judge reasoning accordion uses the same persisted profileName as the vote summary, not the bare seat label alone", async () => {
+    const run = baseRun({
+      participants: [
+        participantWithProfile("advocate-pro-1", "ADVOCATE", "PRO", null, { speech: "PRO I speech." }),
+        participantWithProfile("advocate-pro-2", "ADVOCATE", "PRO", null, { speech: "PRO II speech." }),
+        participantWithProfile("advocate-con-1", "ADVOCATE", "CON", null, { speech: "CON I speech." }),
+        participantWithProfile("advocate-con-2", "ADVOCATE", "CON", null, { speech: "CON II speech." }),
+        participantWithProfile("judge-1", "JUDGE", null, "Justice Green", { verdict: "GUILTY", reasoning: "Judge I reasoning." }),
+        participantWithProfile("judge-2", "JUDGE", null, null, { verdict: "GUILTY", reasoning: "Judge II reasoning." }),
+        participantWithProfile("judge-3", "JUDGE", null, null, { verdict: "NOT_GUILTY", reasoning: "Judge III reasoning." })
+      ]
+    });
+    mockRunFetch(run);
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    await screen.findByRole("heading", { name: "GUILTY" });
+
+    const reasoningButton = screen.getByRole("button", { expanded: false, name: /^Justice Green\b/ });
+
+    expect(reasoningButton).toBeVisible();
+    expect(within(reasoningButton).getByText("Judge I")).toBeVisible();
+  });
+
+  it("G: a null profileName falls back to the generic seat label, never a blank/duplicated heading", async () => {
+    mockRunFetch(baseRun()); // baseRun()'s default participant() always sets profileName: null
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    await screen.findByRole("heading", { name: "GUILTY" });
+
+    expect(screen.getByRole("button", { expanded: false, name: /^PRO I\b/ })).toBeVisible();
+    expect(screen.getByRole("button", { expanded: false, name: /^Judge I\b/ })).toBeVisible();
+    // No secondary seat line duplicating the primary ("PRO I" / "PRO I").
+    expect(screen.getAllByText("PRO I")).toHaveLength(1);
+  });
+
+  it("H: an empty-string or whitespace-only profileName falls back to the generic seat label, exactly like null", async () => {
+    const run = baseRun({
+      participants: [
+        participantWithProfile("advocate-pro-1", "ADVOCATE", "PRO", "", { speech: "PRO I speech." }),
+        participantWithProfile("advocate-pro-2", "ADVOCATE", "PRO", "   ", { speech: "PRO II speech." }),
+        participantWithProfile("advocate-con-1", "ADVOCATE", "CON", null, { speech: "CON I speech." }),
+        participantWithProfile("advocate-con-2", "ADVOCATE", "CON", null, { speech: "CON II speech." }),
+        participantWithProfile("judge-1", "JUDGE", null, null, { verdict: "GUILTY", reasoning: "Judge I reasoning." }),
+        participantWithProfile("judge-2", "JUDGE", null, null, { verdict: "GUILTY", reasoning: "Judge II reasoning." }),
+        participantWithProfile("judge-3", "JUDGE", null, null, { verdict: "NOT_GUILTY", reasoning: "Judge III reasoning." })
+      ]
+    });
+    mockRunFetch(run);
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    await screen.findByRole("heading", { name: "GUILTY" });
+
+    expect(screen.getByRole("button", { expanded: false, name: /^PRO I\b/ })).toBeVisible();
+    expect(screen.getByRole("button", { expanded: false, name: /^PRO II\b/ })).toBeVisible();
+  });
+
+  it("I: the attempt audit shows the persisted profileName alongside the structural participantId, never replacing it", async () => {
+    const user = userEvent.setup();
+    const run = baseRun({
+      participants: [
+        participantWithProfile("advocate-pro-1", "ADVOCATE", "PRO", "David Cohen", { speech: "PRO I speech." }),
+        participantWithProfile("advocate-pro-2", "ADVOCATE", "PRO", null, { speech: "PRO II speech." }),
+        participantWithProfile("advocate-con-1", "ADVOCATE", "CON", null, { speech: "CON I speech." }),
+        participantWithProfile("advocate-con-2", "ADVOCATE", "CON", null, { speech: "CON II speech." }),
+        participantWithProfile("judge-1", "JUDGE", null, null, { verdict: "GUILTY", reasoning: "Judge I reasoning." }),
+        participantWithProfile("judge-2", "JUDGE", null, null, { verdict: "GUILTY", reasoning: "Judge II reasoning." }),
+        participantWithProfile("judge-3", "JUDGE", null, null, { verdict: "NOT_GUILTY", reasoning: "Judge III reasoning." })
+      ]
+    });
+    mockRunFetch(run);
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    await screen.findByRole("heading", { name: "GUILTY" });
+    await user.click(screen.getByRole("button", { expanded: false, name: /Economics \/ Audit details/ }));
+
+    // Scoped to the audit table itself -- "David Cohen" also legitimately
+    // appears in the (separate) advocate speech accordion above, so an
+    // unscoped query would be ambiguous.
+    const table = screen.getByRole("table", { name: /Model call attempt audit/i });
+
+    expect(within(table).getByText("David Cohen")).toBeVisible();
+    expect(within(table).getByText("advocate-pro-1")).toBeVisible();
+    // A participant with no profileName still shows its bare
+    // participantId, exactly as before this correction.
+    expect(within(table).getByText("advocate-pro-2")).toBeVisible();
+  });
+
+  // J: no test in this describe block imports or references any Jon
+  // Snow fixture, preset, or name -- every scenario above uses generic
+  // names (David Cohen, Sarah Levi, Justice Green) or the plain seat
+  // fallback, proving the rule is a global product invariant.
+});

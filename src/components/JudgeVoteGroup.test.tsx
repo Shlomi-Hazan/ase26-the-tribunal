@@ -64,6 +64,33 @@ describe("JudgeVoteGroup verdict presentation (post-M9 Result UX follow-up)", ()
   });
 });
 
+// Human product decision (PR #34, product-wide participant-identity
+// correction): an OPTIONAL displayName -- every existing MockJudgeVote
+// value above (no displayName field at all) continues to render
+// unchanged, proving this component stays generic/mock-compatible and
+// is never coupled to any specific case.
+describe("JudgeVoteGroup optional displayName (product-wide, PR #34)", () => {
+  it("shows the seat label alone when no displayName is supplied -- unchanged mock behavior", () => {
+    renderGroup();
+
+    expect(screen.getByText("Judge I")).toBeVisible();
+  });
+
+  it("shows a supplied displayName as primary with the seat label as secondary context", () => {
+    render(
+      <ThemeProvider theme={theme}>
+        <CssBaseline />
+        <JudgeVoteGroup
+          votes={[{ judge: "Judge I", displayName: "Justice Green", verdict: "GUILTY" }]}
+        />
+      </ThemeProvider>
+    );
+
+    expect(screen.getByText("Justice Green")).toBeVisible();
+    expect(screen.getByText("Judge I")).toBeVisible();
+  });
+});
+
 function hexToRgb(hex: string): string {
   const value = hex.replace("#", "");
   const r = Number.parseInt(value.slice(0, 2), 16);

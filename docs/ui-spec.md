@@ -567,6 +567,33 @@ The page may say that the user can leave and reopen while deliberation continues
 
 ---
 
+## 11A. Participant identity — a global rule (human product decision, PR #34)
+
+Applies everywhere an individual real-run participant is identified: the Deliberation screen above (§11), the Completed Result screen (§14), and any Economics/Audit or Protocol surface that names a specific participant. Not specific to any one case or demo.
+
+**Rule:** whenever a real Tribunal participant has a persisted, non-empty `profileName`, participant-facing UI presents that `profileName` as the primary human identity, with the participant's structural seat (e.g. "PRO I", "Judge I") as secondary context — never dropped, never duplicated as a second identical line. A participant with no meaningful `profileName` (null, empty, or whitespace-only) falls back to the structural seat alone, exactly as historical runs predating this rule already rendered.
+
+Example (live Advocate card):
+
+```text
+David Cohen
+PRO I
+Supports the defendant · argues NOT_GUILTY
+Running
+```
+
+Example (no profile name set — unchanged fallback):
+
+```text
+PRO I
+Supports the defendant · argues NOT_GUILTY
+Running
+```
+
+The existing prompt-version-aware side meaning (advocate-v1/advocate-v2 historical display) is unaffected and remains authoritative on its own — this rule only changes which text is primary versus secondary above it, never the side-meaning text itself.
+
+---
+
 ## 12. Failure During Deliberation
 
 Failure is a terminal, explicit state.
