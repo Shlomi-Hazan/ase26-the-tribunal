@@ -650,12 +650,20 @@ failure, never a silent stuck run
 `claimForExecution` themselves) is deliberately left unguarded — see the
 extensive comment directly above `executeTribunalRun`'s declaration:
 read failures there leave the run provably still `READY` (zero spend,
-naturally retriable, and no existing RPC can truthfully fail a `READY`
-run anyway), while `blockBudget`/`claimForExecution` are themselves
-atomic, state-transitioning writes whose outcome is genuinely ambiguous
-on a thrown error — a recovery write there risks falsely failing a run a
+and no existing RPC can truthfully fail a `READY` run anyway), while
+`blockBudget`/`claimForExecution` are themselves atomic,
+state-transitioning writes whose outcome is genuinely ambiguous on a
+thrown error — a recovery write there risks falsely failing a run a
 different, legitimate invocation actually won and is actively executing.
-No migration was required or proposed for either case.
+**Corrected wording (final pre-merge review, PR #37):** a `READY` run
+left this way is safe for a later, idempotent re-invocation (a fresh
+`POST /api/runs` retry or Background Function trigger would cleanly
+redo preflight/claim from scratch) — it is **not** automatically
+retried by the current Background Function, whose own last-resort catch
+is never a retry/recovery mechanism. `RunPage` represents this state
+honestly as "Waiting for execution to start," never as active
+deliberation (Milestone 13 final pre-merge correction). No migration
+was required or proposed for either case.
 
 ### 7.5 Read run/history
 

@@ -1672,3 +1672,128 @@ describe("RunPage XSS containment (Milestone 13, Issue #36 G5)", () => {
     expect(within(table).getByText(HOSTILE)).toBeInTheDocument();
   });
 });
+
+// Milestone 13 (final pre-merge correction, independent review, PR #37)
+// -- READY must not look like active deliberation. A pre-claim
+// persistence failure (deliberately left unguarded, see the extensive
+// comment above executeTribunalRun) can leave a run READY with
+// startedAt still null; rendering it as "The Tribunal is in session" /
+// "Deliberation in progress" would be materially false.
+describe("RunPage READY pre-execution state (Milestone 13, final pre-merge correction)", () => {
+  it("a READY run (startedAt null) shows an honest pre-execution state, never active-deliberation wording", async () => {
+    mockRunFetch(
+      baseRun({
+        status: "READY",
+        majorityVerdict: null,
+        startedAt: null,
+        completedAt: null,
+        totalCostUsd: null,
+        advocateCostUsd: null,
+        judgeCostUsd: null,
+        totalInputTokens: null,
+        totalOutputTokens: null,
+        totalTokens: null,
+        logicalCallCount: 0,
+        providerAttemptCount: 0,
+        wallClockMs: null,
+        partialSpend: null,
+        attempts: [],
+        protocol: null,
+        participants: [
+          participant("advocate-pro-1", "ADVOCATE", "PRO"),
+          participant("advocate-pro-2", "ADVOCATE", "PRO"),
+          participant("advocate-con-1", "ADVOCATE", "CON"),
+          participant("advocate-con-2", "ADVOCATE", "CON"),
+          participant("judge-1", "JUDGE", null),
+          participant("judge-2", "JUDGE", null),
+          participant("judge-3", "JUDGE", null)
+        ]
+      })
+    );
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+
+    expect(await screen.findByText("Waiting for execution to start")).toBeVisible();
+    expect(screen.getByText("Preparing the Tribunal")).toBeVisible();
+    expect(screen.getByText("Status: READY")).toBeVisible();
+    expect(screen.getByText(/No model execution has started yet/)).toBeVisible();
+    expect(screen.queryByText("The Tribunal is in session")).not.toBeInTheDocument();
+    expect(screen.queryByText("Deliberation in progress")).not.toBeInTheDocument();
+  });
+
+  it("ADVOCATES_RUNNING still shows the active-deliberation state, unaffected by the READY correction", async () => {
+    mockRunFetch(
+      baseRun({
+        status: "ADVOCATES_RUNNING",
+        majorityVerdict: null,
+        startedAt: "2026-08-29T00:00:01.000Z"
+      })
+    );
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+
+    expect(await screen.findByText("The Tribunal is in session")).toBeVisible();
+    expect(screen.getByText("Deliberation in progress")).toBeVisible();
+    expect(screen.queryByText("Waiting for execution to start")).not.toBeInTheDocument();
+  });
+
+  it("JUDGES_RUNNING still shows the active-deliberation state, unaffected by the READY correction", async () => {
+    mockRunFetch(
+      baseRun({
+        status: "JUDGES_RUNNING",
+        majorityVerdict: null,
+        startedAt: "2026-08-29T00:00:01.000Z"
+      })
+    );
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+
+    expect(await screen.findByText("The Tribunal is in session")).toBeVisible();
+    expect(screen.getByText("Deliberation in progress")).toBeVisible();
+    expect(screen.queryByText("Waiting for execution to start")).not.toBeInTheDocument();
+  });
+
+  it("terminal states (COMPLETED, FAILED, BLOCKED_BUDGET) remain unaffected by the READY correction", async () => {
+    mockRunFetch(baseRun({ status: "COMPLETED" }));
+
+    const completed = renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+
+    expect(await screen.findByRole("heading", { name: "GUILTY" })).toBeVisible();
+    expect(screen.queryByText("Waiting for execution to start")).not.toBeInTheDocument();
+    expect(screen.queryByText("The Tribunal is in session")).not.toBeInTheDocument();
+    completed.unmount();
+
+    mockRunFetch(
+      baseRun({
+        status: "FAILED",
+        majorityVerdict: null,
+        failureCode: "ADVOCATE_TERMINAL_FAILURE",
+        failureMessage: "Advocate advocate-pro-1 did not produce a valid speech after the permitted retry.",
+        protocol: null
+      })
+    );
+
+    const failed = renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+
+    expect(await screen.findByRole("heading", { name: "The Tribunal could not complete" })).toBeVisible();
+    expect(screen.queryByText("Waiting for execution to start")).not.toBeInTheDocument();
+    expect(screen.queryByText("The Tribunal is in session")).not.toBeInTheDocument();
+    failed.unmount();
+
+    mockRunFetch(
+      baseRun({
+        status: "BLOCKED_BUDGET",
+        majorityVerdict: null,
+        failureCode: "BUDGET_EXCEEDED",
+        failureMessage: "Conservative preflight exceeded the $5.00 policy limit.",
+        protocol: null
+      })
+    );
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+
+    expect(await screen.findByText("This run cannot be executed")).toBeVisible();
+    expect(screen.queryByText("Waiting for execution to start")).not.toBeInTheDocument();
+    expect(screen.queryByText("The Tribunal is in session")).not.toBeInTheDocument();
+  });
+});

@@ -207,6 +207,36 @@ export function RunPage() {
     return <CompletedResult run={run} />;
   }
 
+  // Milestone 13 (Issue #36, final pre-merge correction -- independent
+  // review, PR #37): READY means the run is frozen/accepted but
+  // execution has not started -- no claim has been won, startedAt is
+  // still null (only set by the claim transition), and no provider/
+  // model activity has occurred. Rendering this the same as
+  // ADVOCATES_RUNNING/JUDGES_RUNNING ("The Tribunal is in session" /
+  // "Deliberation in progress") would be materially false: a run left
+  // READY by a pre-claim database/read failure (deliberately left
+  // unguarded -- see the comment above executeTribunalRun) looks
+  // identical to one that simply hasn't been picked up by the worker
+  // yet, and neither is "in session." This is a pure, honest state
+  // description -- never a fabricated failure/verdict, and never a
+  // claim that anything will automatically retry (the current
+  // Background Function's own last-resort catch does not retry; a later
+  // trigger, e.g. a fresh invocation, is what would move this forward).
+  if (run.status === "READY") {
+    return (
+      <Stack spacing={4}>
+        <PublicDemoRetentionNotice />
+        <PageHeader
+          description="Status: READY"
+          eyebrow="Preparing the Tribunal"
+          title="Waiting for execution to start"
+        />
+        <Alert severity="info">No model execution has started yet for this run.</Alert>
+        <ParticipantGrid run={run} />
+      </Stack>
+    );
+  }
+
   // Milestone 13 (Issue #36 G2) -- an honest, non-fabricating signal for
   // a non-terminal run whose real elapsed execution time already exceeds
   // the engine's own worst-case timing envelope (two sequential

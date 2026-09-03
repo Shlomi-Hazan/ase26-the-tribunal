@@ -823,14 +823,22 @@ function classifyLogicalCallRejection(
 //
 // 1. getById and runPreflight are PURE READS -- if either throws, the
 //    run is PROVABLY still READY (no state-transitioning write was ever
-//    attempted). A READY run has incurred zero spend and remains
-//    naturally retriable: a later legitimate trigger (another
-//    POST /api/runs call with the same client_request_id, or a fresh
-//    Background Function invocation) simply redoes preflight/claim from
-//    scratch. There is nothing dishonest or stuck about this state --
-//    unlike a run wedged in ADVOCATES_RUNNING/JUDGES_RUNNING (real spend
-//    already committed, nothing else can ever move it), a READY run
-//    left alone is indistinguishable from "the worker has not run yet."
+//    attempted). A READY run has incurred zero spend. Corrected wording
+//    (final pre-merge review, PR #37): this is safe for a later,
+//    idempotent re-invocation (another POST /api/runs call with the
+//    same client_request_id, or a fresh Background Function invocation
+//    would simply redo preflight/claim from scratch) -- it is NOT
+//    automatically retried by the current Background Function, whose
+//    own last-resort catch (tribunal-execute-background.ts) is
+//    explicitly documented as never a retry/recovery mechanism. A run
+//    left in this state is honestly represented to the user as "Waiting
+//    for execution to start" (RunPage.tsx), never as active
+//    deliberation. There is nothing dishonest or stuck about the
+//    underlying DATA, though -- unlike a run wedged in
+//    ADVOCATES_RUNNING/JUDGES_RUNNING (real spend already committed,
+//    nothing else can ever move it), a READY run left alone is
+//    indistinguishable from "the worker has not run yet," and a later
+//    trigger, if one occurs, will resolve it cleanly.
 //    Separately, even if recording something were desired here, no
 //    existing RPC can do it truthfully: fail_tribunal_run's own
 //    database-level guard only accepts ADVOCATES_RUNNING/JUDGES_RUNNING

@@ -1641,8 +1641,10 @@ describe("executeTribunalRun -- G4: prompt-injection containment (Issue #36)", (
 // everything from a successful claim onward. See the extensive comment
 // directly above executeTribunalRun's own declaration for the full
 // reasoning: getById/runPreflight failures leave a run PROVABLY still
-// READY (zero spend, naturally retriable, and no existing RPC can even
-// truthfully record FAILED against a READY run); blockBudget/
+// READY (zero spend; safe for a later, idempotent re-invocation, but
+// NOT automatically retried by the current Background Function; and no
+// existing RPC can even truthfully record FAILED against a READY run);
+// blockBudget/
 // claimForExecution failures are write-AMBIGUOUS and must never trigger
 // a blind recovery write, which could falsely mark FAILED a run a
 // different, legitimate invocation actually won and is actively
