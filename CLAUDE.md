@@ -49,4 +49,4 @@ npm run verify
 - One retry maximum per logical participant call.
 - `$5.00` run ceiling includes retries.
 - All OpenRouter calls and privileged DB access remain server-side.
-- Agent Mode is not implemented unless separately confirmed and specified.
+- Agent Mode is cancelled and removed from the product plan (ROADMAP.md M12; Issue #32) — do not implement it.

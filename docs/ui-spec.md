@@ -56,6 +56,7 @@ Exact colors, fonts, radii, and pixel values are intentionally left to implement
 
 Primary navigation should remain small:
 
+- **Home**
 - **New Case**
 - **Past Cases**
 - project/product title
@@ -99,6 +100,20 @@ The setup flow may be presented as steps/tabs/routes, but the user should always
 Back navigation before run start should preserve valid setup state.
 
 Once execution begins, historical run configuration is frozen.
+
+---
+
+## 4A. Home Surface & Jon Snow Demo (Milestone 12)
+
+`/` is a small Home surface, not a redirect straight into New Case (M12 planning: [Issue #32](https://github.com/Shlomi-Hazan/ase26-the-tribunal/issues/32)). It exposes exactly three actions and nothing else:
+
+- **Create / New Tribunal** — the existing Core User Flow above, unchanged.
+- **Past Cases** — the existing history flow, unchanged.
+- **Featured: Jon Snow Demo** — a themed card linking to `/demo/jon-snow`.
+
+`/demo/jon-snow` is a one-click launcher for a deterministic, version-controlled canonical case (charge sheet and all seven participant profiles drawn verbatim from the lecturer's case-design dossier) submitted through the real Tribunal engine — never a second execution engine and never a runtime Smart Extraction call. The primary action is enabled only when the user has a connected OpenRouter credential and the configured default model is currently eligible; otherwise an explicit "Connect OpenRouter" affordance is shown, with no dev/operator key fallback and no bypass of normal preflight/backend authority. A secondary "choose a different model" affordance reuses the existing eligible-model catalog; there is no silent fallback to a different or costlier model if the default becomes ineligible.
+
+On launch, the result renders on **`/demo/jon-snow/runs/:runId`** — a themed run route that reuses the Deliberation/Result screens' own data and logic (§11, §14) unmodified, wrapped only in a presentational GoT layer (naming, imagery, color accents). Game-of-Thrones theming is confined to the Home page's Jon Snow card, `/demo/jon-snow`, and this themed run route — nowhere else. The generic `/runs/:runId` (reached from History, Case Detail, or any direct link, including a later reopen of this same run) always renders the unthemed, Tribunal-generic presentation. Which of the two a given run shows is decided solely by which fixed route was used to reach it — the launcher always links to the themed route, History/Case Detail always link to the generic one — never by inspecting the run's own content (no defendant-name or other content-based detection).
 
 ---
 

@@ -257,13 +257,13 @@ Judge #3 -> Model G
 
 The workflow remains the same; only model assignment changes.
 
-### 6.3 Mode C — Agent Execution (If Required)
+### 6.3 Mode C — Agent Execution (Historical; Cancelled)
 
-The project architecture should leave room for a true agent-based execution mode if the course requirement is confirmed.
+Earlier planning for this project considered a true agent-based execution mode, conditional on the course requirement being confirmed. That original text is preserved below for historical record:
 
-This must not be implemented as ordinary LLM calls merely renamed as “agents.” A genuine agent execution strategy should explicitly define the role, context, goal, loop, tools if needed, and output contract.
+> The project architecture should leave room for a true agent-based execution mode if the course requirement is confirmed. This must not be implemented as ordinary LLM calls merely renamed as “agents.” A genuine agent execution strategy should explicitly define the role, context, goal, loop, tools if needed, and output contract. This mode should be added only when the exact course requirement is confirmed.
 
-This mode should be added only when the exact course requirement is confirmed.
+**This mode is now cancelled and removed from the active product plan.** It is not deferred and not conditional — the confirmation this section anticipated did not happen; instead, Milestone 12 was redefined. `ROADMAP.md` (Milestone 12), `SPEC.md` §7.3, and [Issue #32](https://github.com/Shlomi-Hazan/ase26-the-tribunal/issues/32) are the current authoritative sources on this decision; where this document differs from them, per its own stated precedence rule (see the "Document status" note at the top of this file), they govern. Milestone 12 is now the **Canonical Jon Snow Demo**, not Agent Execution.
 
 ---
 

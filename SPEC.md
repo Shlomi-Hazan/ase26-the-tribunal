@@ -413,9 +413,9 @@ The orchestration, validation, retry, economics, and failure rules are identical
 
 ### 7.3 Agent Execution
 
-A genuinely agentic execution mode remains unresolved course scope and is not a V1 acceptance criterion.
+A genuinely agentic execution mode is cancelled and removed from the product plan (ROADMAP.md M12; [Issue #32](https://github.com/Shlomi-Hazan/ase26-the-tribunal/issues/32)), not merely unresolved or deferred. It is not a V1 acceptance criterion and no future milestone reintroduces it without a fresh, separately confirmed and specified product decision.
 
-Ordinary model calls must not be renamed or marketed as “agents.” The architecture should avoid blocking a later strategy addition, but V1 must not contain speculative fake-agent complexity.
+Ordinary model calls must not be renamed or marketed as “agents.” This remains true regardless of the cancellation above.
 
 ---
 
