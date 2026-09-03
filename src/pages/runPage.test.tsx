@@ -4,7 +4,7 @@
 
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppRoutes } from "../app/App";
 import { renderWithAppProviders } from "../test/renderWithAppProviders";
 import { theme } from "../theme/theme";
@@ -1440,4 +1440,235 @@ describe("RunPage participant identity (product-wide, PR #34)", () => {
   // Snow fixture, preset, or name -- every scenario above uses generic
   // names (David Cohen, Sarah Levi, Justice Green) or the plain seat
   // fallback, proving the rule is a global product invariant.
+});
+
+// Milestone 13 (Issue #36 G2) -- the stuck-run staleness signal. Uses
+// fake timers so the elapsed-time computation is deterministic; zero
+// real network calls (fetch mocked as elsewhere in this file).
+describe("RunPage stuck-run staleness signal (Milestone 13, Issue #36 G2)", () => {
+  const NOW = new Date("2026-08-29T00:30:00.000Z").getTime();
+
+  beforeEach(() => {
+    // shouldAdvanceTime: RTL's async utilities (findByText/waitFor) poll
+    // via real setTimeout internally -- without this, those internal
+    // timers never fire under fake timers and every findBy*/waitFor call
+    // hangs until Vitest's own 5000ms test timeout. This still keeps
+    // Date.now()/new Date() pinned to the fixed NOW below for this
+    // test's own assertions; only the RTL-internal polling timers are
+    // allowed to actually tick in real time.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function isoOffsetFromNowMs(offsetMs: number): string {
+    return new Date(NOW - offsetMs).toISOString();
+  }
+
+  it("shows an honest 'taking longer than expected' caption when a non-terminal run's real elapsed execution time exceeds the engine's own worst-case timing envelope", async () => {
+    mockRunFetch(
+      baseRun({
+        status: "ADVOCATES_RUNNING",
+        majorityVerdict: null,
+        // Well past the ~300s (two sequential phases + margin) threshold.
+        startedAt: isoOffsetFromNowMs(400_000)
+      })
+    );
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+
+    expect(await screen.findByText(/taking longer than expected/i)).toBeVisible();
+  });
+
+  it("does not show the caption for a non-terminal run comfortably within the timing envelope", async () => {
+    mockRunFetch(
+      baseRun({
+        status: "ADVOCATES_RUNNING",
+        majorityVerdict: null,
+        startedAt: isoOffsetFromNowMs(10_000)
+      })
+    );
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+
+    await screen.findByText("Status: ADVOCATES_RUNNING");
+    expect(screen.queryByText(/taking longer than expected/i)).not.toBeInTheDocument();
+  });
+
+  it("never shows the caption on a COMPLETED run, even with a very old startedAt", async () => {
+    mockRunFetch(baseRun({ status: "COMPLETED", startedAt: isoOffsetFromNowMs(999_999_999) }));
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+
+    await screen.findByRole("heading", { name: "GUILTY" });
+    expect(screen.queryByText(/taking longer than expected/i)).not.toBeInTheDocument();
+  });
+
+  it("never shows the caption on a FAILED run, even with a very old startedAt", async () => {
+    mockRunFetch(
+      baseRun({
+        status: "FAILED",
+        majorityVerdict: null,
+        failureCode: "ADVOCATE_TERMINAL_FAILURE",
+        failureMessage: "Advocate advocate-pro-1 did not produce a valid speech after the permitted retry.",
+        startedAt: isoOffsetFromNowMs(999_999_999),
+        protocol: null
+      })
+    );
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+
+    await screen.findByRole("heading", { name: "The Tribunal could not complete" });
+    expect(screen.queryByText(/taking longer than expected/i)).not.toBeInTheDocument();
+  });
+
+  it("a null startedAt (not yet claimed) never shows the caption regardless of status", async () => {
+    mockRunFetch(baseRun({ status: "ADVOCATES_RUNNING", majorityVerdict: null, startedAt: null }));
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+
+    await screen.findByText("Status: ADVOCATES_RUNNING");
+    expect(screen.queryByText(/taking longer than expected/i)).not.toBeInTheDocument();
+  });
+
+  it("a fresh page mount/reload does not reset the elapsed clock -- the caption is derived from the persisted startedAt, never a client-side page-mount timestamp", async () => {
+    const run = baseRun({
+      status: "JUDGES_RUNNING",
+      majorityVerdict: null,
+      startedAt: isoOffsetFromNowMs(400_000)
+    });
+
+    // First mount.
+    mockRunFetch(run);
+    const first = renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+
+    expect(await screen.findByText(/taking longer than expected/i)).toBeVisible();
+    first.unmount();
+
+    // A second, completely fresh mount (simulating a reload) at the SAME
+    // fake system time, with the SAME persisted startedAt -- if the
+    // clock were (incorrectly) derived from a client-side page-mount
+    // timestamp, this fresh mount would show zero elapsed time and the
+    // caption would disappear. It must not. Re-mocked (a Response body
+    // can only be read once) rather than reused from the first mount.
+    mockRunFetch(run);
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    expect(await screen.findByText(/taking longer than expected/i)).toBeVisible();
+  });
+});
+
+// Milestone 13 (Issue #36 G5) -- XSS containment-and-visibility test
+// breadth. React's default escaped-text rendering already makes this
+// safe by construction (zero dangerouslySetInnerHTML/.innerHTML/eval
+// anywhere in the codebase, repo-wide grep, confirmed empty) -- what was
+// missing was breadth of PROOF across surfaces, and for each surface,
+// asserting BOTH that the hostile string renders as literal visible
+// text AND that no executable DOM element (a <script> tag) was actually
+// created from it -- not merely that the final visible text happens to
+// look right.
+describe("RunPage XSS containment (Milestone 13, Issue #36 G5)", () => {
+  const HOSTILE = "<script>window.__xssFired = true;</script>";
+
+  it("a hostile Charge Sheet defendant/act/exactQuestion renders as literal text in the Protocol view, never executed", async () => {
+    const user = userEvent.setup();
+
+    mockRunFetch(
+      baseRun({
+        protocol: resolvedProtocolFixture({
+          chargeSheet: {
+            defendant: HOSTILE,
+            act: HOSTILE,
+            exactQuestion: HOSTILE
+          }
+        })
+      })
+    );
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    await screen.findByRole("heading", { name: "GUILTY" });
+    await user.click(screen.getByRole("button", { expanded: false, name: /^Protocol/ }));
+
+    expect(document.querySelectorAll("script").length).toBe(0);
+    expect((window as unknown as { __xssFired?: boolean }).__xssFired).toBeUndefined();
+    // The hostile string is spread across three separate fields --
+    // scoped to any one of them being present as literal visible text.
+    expect(screen.getAllByText(/window\.__xssFired/).length).toBeGreaterThan(0);
+  });
+
+  it("a hostile advocate speech renders as literal text, never executed", async () => {
+    mockRunFetch(
+      baseRun({
+        participants: [
+          participant("advocate-pro-1", "ADVOCATE", "PRO", { speech: HOSTILE }),
+          participant("advocate-pro-2", "ADVOCATE", "PRO", { speech: "PRO II speech." }),
+          participant("advocate-con-1", "ADVOCATE", "CON", { speech: "CON I speech." }),
+          participant("advocate-con-2", "ADVOCATE", "CON", { speech: "CON II speech." }),
+          participant("judge-1", "JUDGE", null, { verdict: "GUILTY", reasoning: "Judge I reasoning." }),
+          participant("judge-2", "JUDGE", null, { verdict: "GUILTY", reasoning: "Judge II reasoning." }),
+          participant("judge-3", "JUDGE", null, { verdict: "NOT_GUILTY", reasoning: "Judge III reasoning." })
+        ]
+      })
+    );
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    await screen.findByRole("heading", { name: "GUILTY" });
+
+    expect(document.querySelectorAll("script").length).toBe(0);
+    expect((window as unknown as { __xssFired?: boolean }).__xssFired).toBeUndefined();
+    expect(screen.getByText(HOSTILE)).toBeInTheDocument();
+  });
+
+  it("a hostile judge reasoning renders as literal text, never executed", async () => {
+    mockRunFetch(
+      baseRun({
+        participants: [
+          participant("advocate-pro-1", "ADVOCATE", "PRO", { speech: "PRO I speech." }),
+          participant("advocate-pro-2", "ADVOCATE", "PRO", { speech: "PRO II speech." }),
+          participant("advocate-con-1", "ADVOCATE", "CON", { speech: "CON I speech." }),
+          participant("advocate-con-2", "ADVOCATE", "CON", { speech: "CON II speech." }),
+          participant("judge-1", "JUDGE", null, { verdict: "GUILTY", reasoning: HOSTILE }),
+          participant("judge-2", "JUDGE", null, { verdict: "GUILTY", reasoning: "Judge II reasoning." }),
+          participant("judge-3", "JUDGE", null, { verdict: "NOT_GUILTY", reasoning: "Judge III reasoning." })
+        ]
+      })
+    );
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    await screen.findByRole("heading", { name: "GUILTY" });
+
+    expect(document.querySelectorAll("script").length).toBe(0);
+    expect((window as unknown as { __xssFired?: boolean }).__xssFired).toBeUndefined();
+    expect(screen.getByText(HOSTILE)).toBeInTheDocument();
+  });
+
+  it("a hostile persisted profileName renders as literal text in the attempt audit table, never executed", async () => {
+    const user = userEvent.setup();
+
+    mockRunFetch(
+      baseRun({
+        participants: [
+          participant("advocate-pro-1", "ADVOCATE", "PRO", { speech: "PRO I speech." }),
+          participant("advocate-pro-2", "ADVOCATE", "PRO", { speech: "PRO II speech." }),
+          participant("advocate-con-1", "ADVOCATE", "CON", { speech: "CON I speech." }),
+          participant("advocate-con-2", "ADVOCATE", "CON", { speech: "CON II speech." }),
+          participant("judge-1", "JUDGE", null, { verdict: "GUILTY", reasoning: "Judge I reasoning." }),
+          participant("judge-2", "JUDGE", null, { verdict: "GUILTY", reasoning: "Judge II reasoning." }),
+          participant("judge-3", "JUDGE", null, { verdict: "NOT_GUILTY", reasoning: "Judge III reasoning." })
+        ].map((p) => (p.participantId === "advocate-pro-1" ? { ...p, profileName: HOSTILE } : p))
+      })
+    );
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    await screen.findByRole("heading", { name: "GUILTY" });
+    await user.click(screen.getByRole("button", { expanded: false, name: /Economics \/ Audit details/ }));
+
+    expect(document.querySelectorAll("script").length).toBe(0);
+    expect((window as unknown as { __xssFired?: boolean }).__xssFired).toBeUndefined();
+    const table = screen.getByRole("table", { name: /Model call attempt audit/i });
+
+    expect(within(table).getByText(HOSTILE)).toBeInTheDocument();
+  });
 });

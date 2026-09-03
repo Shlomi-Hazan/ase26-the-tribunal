@@ -6,6 +6,7 @@
 // access capability (demoAccess.ts), never the OpenRouter credential
 // itself -- see SECURITY.md Sec 3.1.1.
 import type { Handler, HandlerEvent } from "@netlify/functions";
+import { z } from "zod";
 import { createSupabaseIdempotentCaseRepository, type IdempotentCaseRepository } from "../server/cases";
 import {
   readJonSnowDemoServerConfig,
@@ -27,6 +28,12 @@ import {
   type TribunalExecutionRepository
 } from "../server/tribunal/repository";
 import { createServerSupabaseClient } from "../server/supabase";
+import { hashedAdmissionBucket, trustedSourceIp } from "../server/extraction/rateLimit";
+import { JON_SNOW_DEMO_RUN_START_RATE_LIMIT } from "../server/tribunal/rateLimitPolicy";
+import {
+  createSupabaseAdmissionControl,
+  type AdmissionControl
+} from "../server/admissionControl";
 
 // Mirrors netlify/functions/runs.ts's HandleRunsRequestDeps split
 // exactly: everything real Supabase/OpenRouter construction is injected,
@@ -34,6 +41,10 @@ import { createServerSupabaseClient } from "../server/supabase";
 // database, no real env vars). `readDemoConfig` is itself injectable
 // (rather than the two config values directly) so tests can also exercise
 // the "config throws" path (scenario C) without setting real env vars.
+// `admissionControl`/`sourceIp` (Milestone 13, Issue #36 G3): optional,
+// same pattern as runs.ts -- a caller that omits them gets the pre-M13
+// behavior (the rate-limit check is skipped); the real handler below
+// always supplies both.
 export type HandleDemoJonSnowRunsDeps = {
   caseRepository: IdempotentCaseRepository;
   runRepository: RunRepository;
@@ -42,7 +53,25 @@ export type HandleDemoJonSnowRunsDeps = {
   readDemoConfig: () => JonSnowDemoServerConfig;
   fetchImpl?: typeof fetch;
   backgroundFunctionBaseUrl?: string;
+  admissionControl?: AdmissionControl;
+  sourceIp?: string;
 };
+
+// Mirrors netlify/functions/runs.ts's own peekClientRequestId exactly --
+// a lightweight, standalone UUID check used only to key the
+// admission-control dedup, never a substitute for
+// acceptJonSnowDemoRun's own request validation.
+const clientRequestIdPeekSchema = z.string().uuid();
+
+function peekClientRequestId(rawBody: unknown): string | null {
+  if (typeof rawBody !== "object" || rawBody === null || !("clientRequestId" in rawBody)) {
+    return null;
+  }
+
+  const result = clientRequestIdPeekSchema.safeParse((rawBody as { clientRequestId: unknown }).clientRequestId);
+
+  return result.success ? result.data : null;
+}
 
 export async function handleDemoJonSnowRunsRequest(
   event: HandlerEvent,
@@ -80,7 +109,35 @@ export async function handleDemoJonSnowRunsRequest(
       return runJsonResponse(401, { error: "demo_access_denied" });
     }
 
-    const result = await acceptJonSnowDemoRun(parseJsonBody(event.body), {
+    const rawBody = parseJsonBody(event.body);
+
+    // Milestone 13 (Issue #36 G3): admission-control rate limiting for
+    // this operator-funded endpoint, only reached AFTER the access-
+    // capability gate above already passed (an invalid-token flood is
+    // already rejected for free by that check, before ever consuming an
+    // admission slot). Reuses the SAME authoritative
+    // check_and_record_admission RPC as generic /api/runs, under its
+    // own "jon-snow-demo-start" bucket -- a distinct admission pool that
+    // never shares capacity with the generic "run-start" bucket. This is
+    // what stops a leaked/shared demo access capability from permitting
+    // unbounded fresh clientRequestIds from one source; per SECURITY.md
+    // Sec 20, this is a bounded admission control, never a DDoS-proof
+    // authentication system.
+    if (deps.admissionControl) {
+      const bucket = hashedAdmissionBucket("jon-snow-demo-start", deps.sourceIp ?? trustedSourceIp());
+      const admitted = await deps.admissionControl.checkAndRecordAdmission(
+        bucket,
+        peekClientRequestId(rawBody),
+        JON_SNOW_DEMO_RUN_START_RATE_LIMIT.windowMs / 1000,
+        JON_SNOW_DEMO_RUN_START_RATE_LIMIT.maxAcceptedRequests
+      );
+
+      if (!admitted) {
+        return runJsonResponse(429, { error: "rate_limited" });
+      }
+    }
+
+    const result = await acceptJonSnowDemoRun(rawBody, {
       caseRepository: deps.caseRepository,
       runRepository: deps.runRepository,
       tribunalRepository: deps.tribunalRepository,
@@ -101,10 +158,12 @@ export async function handleDemoJonSnowRunsRequest(
 
 export const handler: Handler = async (event) => {
   try {
+    const client = createServerSupabaseClient();
+
     return await handleDemoJonSnowRunsRequest(event, {
       caseRepository: createSupabaseIdempotentCaseRepository(),
       runRepository: createSupabaseRunRepository(),
-      tribunalRepository: createSupabaseTribunalExecutionRepository(createServerSupabaseClient()),
+      tribunalRepository: createSupabaseTribunalExecutionRepository(client),
       // Metadata-only catalog re-check: the operator's own general
       // OPENROUTER_API_KEY (zero cost, same construction GET /api/models
       // already uses) -- never the demo execution credential.
@@ -113,7 +172,9 @@ export const handler: Handler = async (event) => {
         modelCache: sharedModelCache,
         endpointCache: sharedEndpointCache
       },
-      readDemoConfig: readJonSnowDemoServerConfig
+      readDemoConfig: readJonSnowDemoServerConfig,
+      admissionControl: createSupabaseAdmissionControl(client),
+      sourceIp: trustedSourceIp()
     });
   } catch (error) {
     // Repository/provider construction (e.g. missing Supabase/OpenRouter
