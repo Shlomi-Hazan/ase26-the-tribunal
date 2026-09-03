@@ -627,11 +627,11 @@ A one-click, deterministic, GoT-themed launch of the real Tribunal engine using 
 - A small Home surface at `/` (Create/New Tribunal, Past Cases, Featured Jon Snow Demo) — `/` currently redirects straight into the setup flow; no Home page exists yet.
 - A deterministic, version-controlled, schema-validated canonical preset (Charge Sheet + all seven participant profiles) — never a runtime Smart Extraction/LLM call.
 - Locked seat mapping: PRO I/II = Jon Snow/Tyrion Lannister (defense seat), CON I/II = Daenerys Targaryen/Grey Worm (prosecution seat), Judge I/II/III = Aharon Barak/Menachem Elon/Meir Shamgar judicial-method profiles — procedural seating only, never a fixed opinion or verdict.
-- A `/demo/jon-snow` launcher; run viewing stays on the existing generic `/runs/:runId`.
-- A shared, non-duplicated run-start submission/navigation path extracted from `ReviewPage.tsx` and reused by the launcher, preserving the existing `clientRequestId` idempotency contract.
+- A `/demo/jon-snow` launcher whose one-click result renders on a themed `/demo/jon-snow/runs/:runId` route reusing `RunPage`'s own data/logic behind a presentational wrapper only; historical/generic reopen (History, Case Detail, any direct link) continues to use the existing, unthemed, generic `/runs/:runId` unchanged — theme is decided solely by which fixed route was used, never by run content.
+- A shared run-start submission hook (idempotency/`convene()`/error state only) extracted from `ReviewPage.tsx` and reused by the launcher, preserving the existing `clientRequestId` idempotency contract; each caller keeps its own on-success responsibility (`ReviewPage`'s existing `recordSavedCase`; the launcher's themed navigation) rather than forcing both into the shared hook.
 - BYOK required to launch (no dev/operator key fallback, no bypass of normal preflight/backend authority) — reuses the existing connected-credential gate unchanged.
-- A documented default-model policy that explicitly rejects "cheapest wins," informed by the real `gpt-5-nano` CON II role-adherence miss observed live in run `b091e0e1-29b1-41ea-a990-017f57aaf5cb` (PR #31's gate) — with an explicit no-silent-fallback rule if the default becomes ineligible.
-- Theme isolation: GoT presentation confined to the Home Jon Snow card and `/demo/jon-snow`; every other route (including a reopened Jon Snow run) stays Tribunal-generic, decided without content-sniffing heuristics.
+- A documented default-model policy that explicitly rejects "cheapest wins," informed by the real `gpt-5-nano` CON II role-adherence miss observed live in the correctly BUDGET-tier run `b091e0e1-29b1-41ea-a990-017f57aaf5cb` (PR #31's gate) — with an explicit no-silent-fallback rule if the default becomes ineligible.
+- Theme isolation: GoT presentation confined to the Home Jon Snow card, `/demo/jon-snow`, and `/demo/jon-snow/runs/:runId`; every other route (including a historically reopened Jon Snow run) stays Tribunal-generic, decided without content-sniffing heuristics.
 
 ## Explicit non-goals
 
