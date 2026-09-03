@@ -85,11 +85,24 @@ export async function handleRunsRequest(
     // never penalized. Optional in the deps contract purely for
     // pre-M13 test compatibility; the real handler below always supplies
     // it.
-    if (deps.admissionControl) {
+    //
+    // Corrected (independent review, PR #37): a malformed/missing
+    // clientRequestId MUST skip the admission-control call ENTIRELY --
+    // calling checkAndRecordAdmission with `null` does NOT "skip rate
+    // limiting" as an earlier revision's own comment incorrectly
+    // claimed; the RPC counts every null-identity call as an
+    // independent event, so repeated malformed requests could otherwise
+    // exhaust the whole bucket and deny legitimate requests from the
+    // same source IP. A malformed/missing id instead falls straight
+    // through, unrated-limited, to acceptRun's own validation below,
+    // which rejects it with the correct `invalid_run` response.
+    const peekedClientRequestId = peekClientRequestId(rawBody);
+
+    if (deps.admissionControl && peekedClientRequestId !== null) {
       const bucket = hashedAdmissionBucket("run-start", deps.sourceIp ?? trustedSourceIp());
       const admitted = await deps.admissionControl.checkAndRecordAdmission(
         bucket,
-        peekClientRequestId(rawBody),
+        peekedClientRequestId,
         RUN_START_RATE_LIMIT.windowMs / 1000,
         RUN_START_RATE_LIMIT.maxAcceptedRequests
       );

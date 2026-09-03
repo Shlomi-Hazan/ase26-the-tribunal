@@ -40,6 +40,25 @@ describe("FakeAdmissionControl", () => {
     expect(await control.checkAndRecordAdmission("b", "2", 1, 1)).toBe(true);
   });
 
+  // Corrected (independent review, PR #37): the real check_and_record_
+  // admission RPC prunes with `created_at < now() - window` -- a strict
+  // less-than. An event whose timestamp lands EXACTLY at the boundary
+  // (`now - window`) does NOT satisfy that strict inequality, so the
+  // real RPC does NOT prune it -- it still counts. The fake must match
+  // this exactly, not evict on the boundary itself.
+  it("an event exactly at the window boundary (now - window) still counts, matching the real SQL's strict `<` pruning", async () => {
+    let now = 0;
+    const control = new FakeAdmissionControl(() => now);
+
+    expect(await control.checkAndRecordAdmission("b", "1", 1, 1)).toBe(true); // timestamp = 0
+    now = 1000; // exactly one window (1s) later -- windowStart = now - 1000 = 0, same as the event's own timestamp.
+    // The window is still "full" (the boundary event still counts), so
+    // a second, distinct request is rejected.
+    expect(await control.checkAndRecordAdmission("b", "2", 1, 1)).toBe(false);
+    now = 1001; // one ms past the boundary -- now the event is genuinely pruned.
+    expect(await control.checkAndRecordAdmission("b", "3", 1, 1)).toBe(true);
+  });
+
   it("a null requestId (e.g. a caller with no logical-request identity) never dedups against itself -- each call is independently counted", async () => {
     const control = new FakeAdmissionControl(() => 0);
 

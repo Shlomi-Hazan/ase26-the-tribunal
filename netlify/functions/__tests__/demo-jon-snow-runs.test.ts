@@ -822,4 +822,37 @@ describe("POST /api/demo/jon-snow/runs -- admission-control rate limiting (Issue
 
     expect(response.statusCode).toBe(201);
   });
+
+  // Corrected (independent review, PR #37) -- identical regression to
+  // netlify/functions/__tests__/runs.test.ts's own: a `null` requestId
+  // passed to checkAndRecordAdmission does NOT skip rate limiting by
+  // itself; malformed requests must never reach admission control at
+  // all, or repeated ones could exhaust the bucket for a legitimate
+  // source IP.
+  it("repeated malformed/missing clientRequestId requests never consume admission slots -- a subsequent valid request from the same source IP is still accepted, not 429", async () => {
+    const admissionControl = new FakeAdmissionControl();
+    const deps = baseDeps({ admissionControl, sourceIp: "203.0.113.1" });
+
+    for (let i = 0; i < JON_SNOW_DEMO_RUN_START_RATE_LIMIT.maxAcceptedRequests + 5; i += 1) {
+      const response = await handleDemoJonSnowRunsRequest(
+        {
+          httpMethod: "POST",
+          headers: validAccessHeaders(),
+          body: validBody({ clientRequestId: "not-a-uuid" })
+        } as unknown as HandlerEvent,
+        deps
+      );
+
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(response.body ?? "{}").error).toBe("invalid_run");
+    }
+
+    stubEligibleExecutionFetch();
+    const valid = await handleDemoJonSnowRunsRequest(
+      { httpMethod: "POST", headers: validAccessHeaders(), body: validBody() } as unknown as HandlerEvent,
+      deps
+    );
+
+    expect(valid.statusCode).toBe(201);
+  });
 });

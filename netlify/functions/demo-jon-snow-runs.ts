@@ -123,11 +123,20 @@ export async function handleDemoJonSnowRunsRequest(
     // unbounded fresh clientRequestIds from one source; per SECURITY.md
     // Sec 20, this is a bounded admission control, never a DDoS-proof
     // authentication system.
-    if (deps.admissionControl) {
+    //
+    // Corrected (independent review, PR #37): a malformed/missing
+    // clientRequestId MUST skip the admission-control call ENTIRELY --
+    // see the identical correction in netlify/functions/runs.ts for the
+    // full reasoning (a `null` identity is NOT exempt from counting
+    // against the RPC's sliding window; it would otherwise let repeated
+    // malformed requests exhaust the bucket for the same source IP).
+    const peekedClientRequestId = peekClientRequestId(rawBody);
+
+    if (deps.admissionControl && peekedClientRequestId !== null) {
       const bucket = hashedAdmissionBucket("jon-snow-demo-start", deps.sourceIp ?? trustedSourceIp());
       const admitted = await deps.admissionControl.checkAndRecordAdmission(
         bucket,
-        peekClientRequestId(rawBody),
+        peekedClientRequestId,
         JON_SNOW_DEMO_RUN_START_RATE_LIMIT.windowMs / 1000,
         JON_SNOW_DEMO_RUN_START_RATE_LIMIT.maxAcceptedRequests
       );

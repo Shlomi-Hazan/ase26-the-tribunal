@@ -787,4 +787,77 @@ describe("POST /api/runs -- admission-control rate limiting (Issue #36 G3)", () 
     expect(response.statusCode).toBe(400);
     expect(JSON.parse(response.body ?? "").error).toBe("invalid_run");
   });
+
+  // Corrected (independent review, PR #37): calling
+  // checkAndRecordAdmission with a `null` requestId does NOT "skip rate
+  // limiting" -- the RPC counts every null-identity call as an
+  // independent event, so an earlier revision's malformed-id handling
+  // could let repeated malformed requests exhaust the whole bucket and
+  // deny legitimate requests from the same source IP. This regression
+  // test proves the fix: malformed requests never touch the admission
+  // control layer at all.
+  it("repeated malformed/missing clientRequestId requests never consume admission slots -- a subsequent valid request from the same source IP is still accepted, not 429", async () => {
+    const admissionControl = new FakeAdmissionControl();
+    const requestDeps = deps(admissionControl);
+
+    // Send more malformed requests than the rate limit permits.
+    for (let i = 0; i < RUN_START_RATE_LIMIT.maxAcceptedRequests + 5; i += 1) {
+      const response = await handleRunsRequest(
+        {
+          httpMethod: "POST",
+          body: JSON.stringify({
+            clientRequestId: "not-a-uuid",
+            case: { kind: "existing", caseId: storedCase.id },
+            executionMode: "shared",
+            participants: validParticipants()
+          })
+        } as HandlerEvent,
+        requestDeps
+      );
+
+      // Every malformed request gets its normal validation error, never
+      // a 429 -- proving it never reached (or was blocked by) admission
+      // control.
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(response.body ?? "").error).toBe("invalid_run");
+    }
+
+    // A subsequent VALID request from the same source IP is still
+    // accepted -- the malformed flood above consumed zero admission
+    // slots.
+    const valid = await handleRunsRequest(
+      { httpMethod: "POST", body: validBody() } as HandlerEvent,
+      requestDeps
+    );
+
+    expect(valid.statusCode).toBe(201);
+  });
+
+  it("a missing clientRequestId field entirely also never consumes an admission slot", async () => {
+    const admissionControl = new FakeAdmissionControl();
+    const requestDeps = deps(admissionControl);
+
+    for (let i = 0; i < RUN_START_RATE_LIMIT.maxAcceptedRequests + 2; i += 1) {
+      const response = await handleRunsRequest(
+        {
+          httpMethod: "POST",
+          body: JSON.stringify({
+            case: { kind: "existing", caseId: storedCase.id },
+            executionMode: "shared",
+            participants: validParticipants()
+          })
+        } as HandlerEvent,
+        requestDeps
+      );
+
+      expect(response.statusCode).toBe(400);
+    }
+
+    const valid = await handleRunsRequest(
+      { httpMethod: "POST", body: validBody() } as HandlerEvent,
+      requestDeps
+    );
+
+    expect(valid.statusCode).toBe(201);
+  });
 });

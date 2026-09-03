@@ -335,16 +335,33 @@ function wrapLogicalCallInfrastructureError(
   });
 }
 
+// Corrected (independent review, PR #37): takes actualCostUsd and
+// derivedCostUsd SEPARATELY -- never a single already-collapsed
+// `actualCostUsd ?? derivedCostUsd` value -- and preserves the existing
+// Actual-vs-Derived distinction (RunPage.tsx's own attemptCostDisplay
+// uses the identical convention) rather than always labeling whatever
+// value was known as "derived," which was factually wrong whenever
+// OpenRouter had reported a real usage.cost.
 function describeKnownTelemetry(
   inputTokens: number | null,
   outputTokens: number | null,
-  costUsd: string | null
+  actualCostUsd: string | null,
+  derivedCostUsd: string | null
 ): string {
   const parts: string[] = [];
 
   if (inputTokens !== null) parts.push(`${inputTokens} input tokens`);
   if (outputTokens !== null) parts.push(`${outputTokens} output tokens`);
-  if (costUsd !== null) parts.push(`derived cost $${costUsd}`);
+
+  if (actualCostUsd !== null && derivedCostUsd !== null) {
+    // Both known and structurally distinct -- preserve both, never
+    // collapse into one ambiguous figure.
+    parts.push(`actual cost $${actualCostUsd} (derived comparison $${derivedCostUsd})`);
+  } else if (actualCostUsd !== null) {
+    parts.push(`actual cost $${actualCostUsd}`);
+  } else if (derivedCostUsd !== null) {
+    parts.push(`derived cost $${derivedCostUsd}`);
+  }
 
   return parts.length > 0
     ? `Known telemetry at the time of the persistence failure: ${parts.join(", ")}.`
@@ -609,7 +626,7 @@ export async function runLogicalCall(params: {
         error,
         "terminalize",
         [...economics, { inputTokens, outputTokens, costUsd }],
-        describeKnownTelemetry(inputTokens, outputTokens, costUsd)
+        describeKnownTelemetry(inputTokens, outputTokens, actualCostUsd, derivedCostUsd)
       );
     }
 
@@ -795,6 +812,55 @@ function classifyLogicalCallRejection(
   };
 }
 
+// Milestone 13 (Issue #36, item 4 -- independent review, PR #37):
+// deliberate, analyzed decision that the PRE-CLAIM path below
+// (runLoader.getById, runPreflight, and the ineligible-preflight
+// blockBudget call) is intentionally NOT wrapped in the same G1b
+// recovery guard that protects everything from claimForExecution
+// onward. This is not an oversight; it is the two-part reasoning the
+// review specifically required be documented rather than "fixed" with a
+// blind write:
+//
+// 1. getById and runPreflight are PURE READS -- if either throws, the
+//    run is PROVABLY still READY (no state-transitioning write was ever
+//    attempted). A READY run has incurred zero spend and remains
+//    naturally retriable: a later legitimate trigger (another
+//    POST /api/runs call with the same client_request_id, or a fresh
+//    Background Function invocation) simply redoes preflight/claim from
+//    scratch. There is nothing dishonest or stuck about this state --
+//    unlike a run wedged in ADVOCATES_RUNNING/JUDGES_RUNNING (real spend
+//    already committed, nothing else can ever move it), a READY run
+//    left alone is indistinguishable from "the worker has not run yet."
+//    Separately, even if recording something were desired here, no
+//    existing RPC can do it truthfully: fail_tribunal_run's own
+//    database-level guard only accepts ADVOCATES_RUNNING/JUDGES_RUNNING
+//    as a starting state (Sec 16-equivalent discipline) -- it would
+//    silently no-op (return false) against a READY run, never a
+//    migration-free way to make it succeed.
+// 2. blockBudget and claimForExecution are each an ATOMIC,
+//    state-transitioning write (`WHERE status = 'READY'`) whose outcome
+//    is genuinely AMBIGUOUS on a thrown error: the UPDATE may have
+//    already committed server-side before the network/response failed,
+//    or it may have never run at all, and this process cannot tell
+//    which from a thrown exception alone. Attempting a "recovery"
+//    failRun call after such an error would risk exactly the hazard
+//    this review named: blindly marking FAILED a run that a DIFFERENT,
+//    legitimate invocation may have actually won the claim for and is
+//    now actively (and validly) executing/spending against --
+//    corrupting that run's audit trail with a false failure while real
+//    work continues underneath it. No no-migration mechanism here can
+//    safely disambiguate "I won but lost the response" from "a genuine
+//    concurrent invocation won instead" (that would require a
+//    request-scoped lease/fencing token -- exactly the queue/lease
+//    infrastructure this milestone is explicitly told not to build).
+//    The only safe behavior is therefore to change nothing here: let
+//    the exception propagate exactly as it already did before this
+//    milestone, to the Background Function's own last-resort catch.
+//
+// Net conclusion: no safe no-migration write exists for this path, and
+// none is needed to satisfy M13's actual invariant (never a silently
+// stuck run that already incurred spend) -- a stuck READY run has
+// incurred none. No migration is proposed or applied.
 export async function executeTribunalRun(
   runId: string,
   deps: TribunalExecutionDeps

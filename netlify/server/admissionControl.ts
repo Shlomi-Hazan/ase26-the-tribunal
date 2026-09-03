@@ -81,7 +81,15 @@ export class FakeAdmissionControl implements AdmissionControl {
   ): Promise<boolean> {
     const now = this.clock();
     const windowStart = now - windowSeconds * 1000;
-    const existing = (this.events.get(bucket) ?? []).filter((event) => event.timestamp > windowStart);
+    // Corrected (independent review, PR #37): the real
+    // check_and_record_admission RPC prunes with
+    // `created_at < now() - window` -- i.e. an event whose timestamp is
+    // EXACTLY at the boundary (`timestamp === windowStart`) is NOT
+    // pruned, since it does not satisfy the strict `<`. `>= windowStart`
+    // (not `> windowStart`) is therefore the exact match: the previous
+    // strict `>` incorrectly evicted an exact-boundary event the real
+    // SQL would still count.
+    const existing = (this.events.get(bucket) ?? []).filter((event) => event.timestamp >= windowStart);
 
     if (requestId !== null && existing.some((event) => event.requestId === requestId)) {
       this.events.set(bucket, existing);
