@@ -618,34 +618,38 @@ Current. Planning: [Issue #32](https://github.com/Shlomi-Hazan/ase26-the-tribuna
 
 **Agent Mode is cancelled and removed from the product plan** (this replaces the milestone's prior "Agent Mode, If Confirmed" scope; it is not deferred or conditional — see [Issue #32](https://github.com/Shlomi-Hazan/ase26-the-tribunal/issues/32) §14–15 for the correction record and every other document touched by the cancellation).
 
+**Human product override (PR #34), superseding Issue #32's original BYOK-gated design:** the lecturer demo is now **operator-funded**, not BYOK. The lecturer never connects an OpenRouter credential — a dedicated, canonical-only, capability-gated server endpoint funds it instead (`SECURITY.md` §3.1.1, `docs/economics.md` §22.1). Everywhere below that still says "BYOK" describes the *generic* Tribunal only, which is completely unchanged.
+
 ## Goal
 
-A one-click, deterministic, GoT-themed launch of the real Tribunal engine using a fixed canonical case and a fixed seven-participant configuration derived verbatim from the lecturer's dossier — reusing the existing execution engine end-to-end, with no schema change and no duplicate execution/majority/economics/protocol logic.
+A true one-click, deterministic, GoT-themed launch of the real Tribunal engine directly from Home, using a fixed canonical case and a fixed seven-participant configuration derived verbatim from the lecturer's dossier — reusing the existing execution engine end-to-end, with no schema change and no duplicate execution/majority/economics/protocol logic.
 
 ## Scope
 
 - A small Home surface at `/` (Create/New Tribunal, Past Cases, Featured Jon Snow Demo) — `/` currently redirects straight into the setup flow; no Home page exists yet.
 - A deterministic, version-controlled, schema-validated canonical preset (Charge Sheet + all seven participant profiles) — never a runtime Smart Extraction/LLM call.
 - Locked seat mapping: PRO I/II = Jon Snow/Tyrion Lannister (defense seat), CON I/II = Daenerys Targaryen/Grey Worm (prosecution seat), Judge I/II/III = Aharon Barak/Menachem Elon/Meir Shamgar judicial-method profiles — procedural seating only, never a fixed opinion or verdict.
-- A `/demo/jon-snow` launcher whose one-click result renders on a themed `/demo/jon-snow/runs/:runId` route reusing `RunPage`'s own data/logic behind a presentational wrapper only; historical/generic reopen (History, Case Detail, any direct link) continues to use the existing, unthemed, generic `/runs/:runId` unchanged — theme is decided solely by which fixed route was used, never by run content.
-- A shared run-start submission hook (idempotency/`convene()`/error state only) extracted from `ReviewPage.tsx` and reused by the launcher, preserving the existing `clientRequestId` idempotency contract; each caller keeps its own on-success responsibility (`ReviewPage`'s existing `recordSavedCase`; the launcher's themed navigation) rather than forcing both into the shared hook.
-- BYOK required to launch (no dev/operator key fallback, no bypass of normal preflight/backend authority) — reuses the existing connected-credential gate unchanged.
-- A documented default-model policy that explicitly rejects "cheapest wins," informed by the real `gpt-5-nano` CON II role-adherence miss observed live in the correctly BUDGET-tier run `b091e0e1-29b1-41ea-a990-017f57aaf5cb` (PR #31's gate) — with an explicit no-silent-fallback rule if the default becomes ineligible.
+- Home's Jon Snow card exposes two actions: primary **Run Jon Snow Demo** (true one-click when a lecturer access capability is present and the default model is eligible/in-policy — calls the dedicated demo endpoint directly, no intermediate page) and secondary **Modify settings / models** (`/demo/jon-snow`, canonical case/seat detail, model chooser restricted to in-policy models, no credential field). Both paths land on the themed `/demo/jon-snow/runs/:runId` route, a presentational wrapper reusing `RunPage`'s own data/logic; historical/generic reopen (History, Case Detail, any direct link) continues to use the existing, unthemed, generic `/runs/:runId` unchanged — theme is decided solely by which fixed route was used, never by run content.
+- A dedicated, canonical-only server endpoint (`POST /api/demo/jon-snow/runs`) funded by its own operator credential (`JON_SNOW_DEMO_OPENROUTER_API_KEY`) and gated by a separate, revocable access capability (`JON_SNOW_DEMO_ACCESS_TOKEN`, carried via a prepared link's URL fragment) — reuses the exact same `acceptRun`/`triggerExecutionIfEligible` pipeline every other Tribunal run uses; the client can influence only the selected model and `clientRequestId`.
+- A strictly lower, additional cost ceiling for this operator-funded surface (`JON_SNOW_DEMO_MAX_ESTIMATE_USD` = $0.13), re-verified server-side against the live catalog on every request, underneath the completely unchanged $5.00 generic hard ceiling.
+- A shared idempotent-submission primitive (`useIdempotentStart`) reused by both the generic run-start hook (`useRunStart`, extracted from `ReviewPage.tsx`, preserving `recordSavedCase`) and the Jon Snow demo's own submit hook (`useJonSnowDemoStart`) — the same `clientRequestId` duplicate-spend-resistance rule, never duplicated.
+- A documented default-model policy that explicitly rejects "cheapest wins" while also honoring the demo's own cost ceiling, informed by the real `gpt-5-nano` CON II role-adherence miss observed live in the correctly BUDGET-tier run `b091e0e1-29b1-41ea-a990-017f57aaf5cb` (PR #31's gate) — with an explicit no-silent-fallback rule if the default becomes ineligible or repriced out of policy.
 - Theme isolation: GoT presentation confined to the Home Jon Snow card, `/demo/jon-snow`, and `/demo/jon-snow/runs/:runId`; every other route (including a historically reopened Jon Snow run) stays Tribunal-generic, decided without content-sniffing heuristics.
 
 ## Explicit non-goals
 
-Agent Mode, RAG, new authentication, a new majority/verdict system, a duplicate execution engine, a global GoT reskin, arbitrary user-created presets, runtime dossier extraction, and a role-adherence-classifier subsystem. See Issue #32 §19 for the full list.
+Agent Mode, RAG, new authentication, a new majority/verdict system, a duplicate execution engine, a global GoT reskin, arbitrary user-created presets, runtime dossier extraction, a role-adherence-classifier subsystem, and any weakening of the generic Tribunal's own BYOK requirement. See Issue #32 §19 for the full list.
 
 ## Verification
 
 - The canonical case/seat-mapping/personality-limit content is covered by deterministic tests (no live model call required to verify correctness).
+- Server security tests prove the dedicated demo endpoint is canonical-only, capability-gated, cost-capped, and never reachable as a fallback from generic `/api/runs` (and vice versa).
 - No database/schema migration lands with this milestone (confirmed by audit).
-- Existing engine, verdict vocabulary, deterministic majority, and $5.00 economics ceiling are unchanged.
+- Existing engine, verdict vocabulary, deterministic majority, and $5.00 generic economics ceiling are unchanged.
 
 ## Exit condition
 
-The Jon Snow demo launches the real Tribunal engine end-to-end from one click (given BYOK + an eligible default model), produces an ordinary historical run indistinguishable in structure from any other run, and Issue #32's full acceptance-criteria list is satisfied.
+The Jon Snow demo launches the real Tribunal engine end-to-end from one click on Home (given a valid lecturer access capability and an eligible, in-policy default model), never requires the lecturer to hold an OpenRouter credential, produces an ordinary historical run indistinguishable in structure from any other run, and Issue #32's full acceptance-criteria list (as corrected by the human product override) is satisfied.
 
 ---
 

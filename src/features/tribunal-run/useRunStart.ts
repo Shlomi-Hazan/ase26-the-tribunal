@@ -19,15 +19,22 @@
 // to the same `ConveneResult` (`{ run, executionTriggered }`,
 // src/services/runApi.ts, unchanged) that `convene()` itself already
 // returns, and each caller performs its own on-success responsibility
-// against that result -- see ReviewPage.tsx and JonSnowDemoPage.tsx.
-import { useRef, useState } from "react";
+// against that result -- see ReviewPage.tsx and JonSnowHomeCard/
+// JonSnowSettingsPage.
+//
+// Human product override (PR #34 Sec 19): the clientRequestId/snapshot
+// idempotency rule itself now lives in the shared, request-shape-generic
+// useIdempotentStart primitive (useIdempotentStart.ts), reused unchanged
+// by useJonSnowDemoStart below -- this hook is now a thin, unchanged-
+// contract wrapper around it, so ReviewPage.tsx (the only existing
+// caller) needed no further changes for this correction pass.
 import {
   convene,
-  RunApiError,
   type ConveneResult,
   type RunCaseRequest,
   type RunParticipantRequest
 } from "../../services/runApi";
+import { useIdempotentStart } from "./useIdempotentStart";
 
 export type ExecutionMode = "shared" | "separate";
 
@@ -41,59 +48,32 @@ export type UseRunStartResult = {
   ) => Promise<ConveneResult | null>;
 };
 
+type GenericRunStartInput = {
+  case: RunCaseRequest;
+  executionMode: ExecutionMode;
+  participants: RunParticipantRequest[];
+};
+
 export function useRunStart(): UseRunStartResult {
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState("");
-  // Milestone 6 client idempotency key lifecycle, unchanged by this
-  // extraction: stable across a retry of the same semantic submission,
-  // refreshed only when the underlying request actually changed.
-  const clientRequestIdRef = useRef<string | null>(null);
-  const requestSnapshotRef = useRef<string | null>(null);
+  const { isSubmitting, error, start: startIdempotent } = useIdempotentStart<
+    GenericRunStartInput,
+    ConveneResult
+  >((clientRequestId, input) =>
+    convene({
+      clientRequestId,
+      case: input.case,
+      executionMode: input.executionMode,
+      participants: input.participants
+    })
+  );
 
   async function start(
     caseRequest: RunCaseRequest,
     executionMode: ExecutionMode,
     participants: RunParticipantRequest[]
   ): Promise<ConveneResult | null> {
-    const snapshot = JSON.stringify({ case: caseRequest, executionMode, participants });
-
-    if (!clientRequestIdRef.current || requestSnapshotRef.current !== snapshot) {
-      clientRequestIdRef.current = crypto.randomUUID();
-      requestSnapshotRef.current = snapshot;
-    }
-
-    setError("");
-    setIsSubmitting(true);
-
-    try {
-      const result = await convene({
-        clientRequestId: clientRequestIdRef.current,
-        case: caseRequest,
-        executionMode,
-        participants
-      });
-
-      return result;
-    } catch (thrown) {
-      setError(formatRunError(thrown));
-
-      return null;
-    } finally {
-      setIsSubmitting(false);
-    }
+    return startIdempotent({ case: caseRequest, executionMode, participants });
   }
 
   return { isSubmitting, error, start };
-}
-
-function formatRunError(error: unknown): string {
-  if (error instanceof RunApiError) {
-    if (error.status === 409) {
-      return "This configuration could not be frozen because a prior request with the same submission id already produced a different result. Please try again.";
-    }
-
-    return error.errors.join(" ") || "Tribunal configuration could not be frozen.";
-  }
-
-  return "Tribunal configuration could not be frozen.";
 }

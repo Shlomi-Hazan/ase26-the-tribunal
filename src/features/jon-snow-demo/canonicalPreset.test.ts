@@ -8,6 +8,7 @@ import {
 import {
   JON_SNOW_CASE_SOURCE_TYPE,
   JON_SNOW_CHARGE_SHEET,
+  JON_SNOW_DOSSIER_DISCLAIMER,
   JON_SNOW_PARTICIPANTS,
   JON_SNOW_PRESET_VERSION
 } from "./canonicalPreset";
@@ -45,7 +46,11 @@ describe("Jon Snow canonical preset -- Charge Sheet", () => {
     expect(JON_SNOW_CHARGE_SHEET.act).toContain(
       "Westeros, a continent where powerful families compete for the Iron Throne"
     );
-    expect(JON_SNOW_CHARGE_SHEET.act).toContain("Agreed factual record:");
+    // Dossier-fidelity correction (PR #34 independent source review):
+    // the dossier's actual heading has NO colon -- an earlier revision
+    // added one, which is now removed.
+    expect(JON_SNOW_CHARGE_SHEET.act).toContain("Agreed factual record\n");
+    expect(JON_SNOW_CHARGE_SHEET.act).not.toContain("Agreed factual record:");
     // All five agreed-fact bullets, verbatim -- none dropped for length.
     expect(JON_SNOW_CHARGE_SHEET.act).toContain("King’s Landing had surrendered");
     expect(JON_SNOW_CHARGE_SHEET.act).toContain(
@@ -102,15 +107,25 @@ describe("Jon Snow canonical preset -- seat mapping", () => {
 });
 
 describe("Jon Snow canonical preset -- judicial-profile fidelity", () => {
-  it("preserves the dossier's non-impersonation/research-simulation qualification verbatim for every judge", () => {
+  // Dossier-fidelity correction (PR #34 independent source review): an
+  // earlier revision appended an invented sentence to every Judge
+  // personality that does not appear anywhere in the dossier. It must
+  // never reappear in a personality string; the dossier's real, single
+  // global disclaimer is a separate exported constant instead, asserted
+  // below.
+  it("never appends the invented non-impersonation sentence to a Judge personality", () => {
     for (const judgeId of ["judge-1", "judge-2", "judge-3"] as const) {
-      expect(JON_SNOW_PARTICIPANTS[judgeId].personality).toContain(
-        "These are research-based simulations of documented judicial method and writing characteristics"
+      expect(JON_SNOW_PARTICIPANTS[judgeId].personality).not.toContain(
+        "research-based simulations"
       );
-      expect(JON_SNOW_PARTICIPANTS[judgeId].personality).toContain(
-        "they do not impersonate the judge or predict how the real judge would decide this fictional case"
-      );
+      expect(JON_SNOW_PARTICIPANTS[judgeId].personality).not.toContain("impersonate");
     }
+  });
+
+  it("exposes the dossier's actual global disclaimer verbatim, once, as its own constant", () => {
+    expect(JON_SNOW_DOSSIER_DISCLAIMER).toBe(
+      "Fictional proceeding. The profiles adapt judicial methods; they do not impersonate the judges or predict a real court."
+    );
   });
 });
 

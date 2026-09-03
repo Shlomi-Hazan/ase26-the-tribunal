@@ -9,7 +9,16 @@ const forbiddenIdentifiers = [
   // Milestone 7A (docs/adr/0004-smart-package-extraction.md Decision 10):
   // server-only configuration, never browser-authoritative or
   // dossier-selected -- same treatment as OPENROUTER_API_KEY above.
-  "PACKAGE_EXTRACTION_MODEL_ID"
+  "PACKAGE_EXTRACTION_MODEL_ID",
+  // Milestone 12 (human product override, PR #34 -- SECURITY.md
+  // Sec 3.1.1): the operator-funded Jon Snow demo's OpenRouter provider
+  // credential and its separate revocable access capability are both
+  // server-only, same treatment as OPENROUTER_API_KEY above. The demo
+  // access CAPABILITY the browser holds in sessionStorage is a distinct
+  // per-viewer value the lecturer's own link supplies at runtime, never
+  // this literal env var name/value baked into the bundle.
+  "JON_SNOW_DEMO_OPENROUTER_API_KEY",
+  "JON_SNOW_DEMO_ACCESS_TOKEN"
 ];
 
 async function collectFiles(directory) {

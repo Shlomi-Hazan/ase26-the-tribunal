@@ -8,8 +8,8 @@ import { ChargeSheetPage } from "../pages/ChargeSheetPage";
 import { DeliberationPage } from "../pages/DeliberationPage";
 import { HistoryPage } from "../pages/HistoryPage";
 import { HomePage } from "../pages/HomePage";
-import { JonSnowDemoPage } from "../pages/JonSnowDemoPage";
 import { JonSnowRunPage } from "../pages/JonSnowRunPage";
+import { JonSnowSettingsPage } from "../pages/JonSnowSettingsPage";
 import { JudgesPage } from "../pages/JudgesPage";
 import { NotFoundPage } from "../pages/NotFoundPage";
 import { ResultPage } from "../pages/ResultPage";
@@ -34,11 +34,13 @@ export function AppRoutes() {
          and never confused with /demo/jon-snow below (Issue #32 Sec 10). */}
       <Route path="/demo/deliberation" element={<DeliberationPage />} />
       <Route path="/demo/result" element={<ResultPage />} />
-      {/* Milestone 12 (Issue #32 Sec 10): the Jon Snow launcher and its
-         themed run route. The generic /runs/:runId below is unchanged and
-         still reused by History/Case Detail regardless of a run's origin --
-         theme is decided solely by which of these two routes was used. */}
-      <Route path="/demo/jon-snow" element={<JonSnowDemoPage />} />
+      {/* Milestone 12 (Issue #32 Sec 10; human product override, PR #34
+         Sec 16): /demo/jon-snow is now "Modify settings / models" --
+         Home's Jon Snow card is the true one-click primary path. The
+         generic /runs/:runId below is unchanged and still reused by
+         History/Case Detail regardless of a run's origin -- theme is
+         decided solely by which of these two routes was used. */}
+      <Route path="/demo/jon-snow" element={<JonSnowSettingsPage />} />
       <Route path="/demo/jon-snow/runs/:runId" element={<JonSnowRunPage />} />
       <Route path="/runs/:runId" element={<RunPage />} />
       <Route path="/history" element={<HistoryPage />} />

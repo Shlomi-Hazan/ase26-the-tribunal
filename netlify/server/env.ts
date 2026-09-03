@@ -30,12 +30,36 @@ const internalFunctionSecretConfigSchema = z.object({
   INTERNAL_FUNCTION_SECRET: z.string().min(1)
 });
 
+// Milestone 12 (human product override, PR #34 -- SECURITY.md Sec 3.1.1):
+// the canonical Jon Snow lecturer demo is a narrow, explicit exception to
+// the generic BYOK boundary. Both values below are server-only and never
+// exposed to the browser (verify-client-bundle.mjs treats both as
+// forbidden client-bundle identifiers, alongside OPENROUTER_API_KEY).
+//
+// - JON_SNOW_DEMO_OPENROUTER_API_KEY: the OpenRouter provider credential
+//   used ONLY for the dedicated, canonical-only POST /api/demo/jon-snow/
+//   runs endpoint (netlify/server/tribunal/jonSnowDemoRun.ts). It is
+//   passed into the exact same triggerExecutionIfEligible every other
+//   Tribunal run already uses -- never a second execution path -- and it
+//   can never become a fallback for generic /api/runs (that endpoint
+//   never reads this value at all).
+// - JON_SNOW_DEMO_ACCESS_TOKEN: NOT an OpenRouter credential -- a
+//   revocable capability that gates who may invoke the operator-funded
+//   demo endpoint at all, checked against the request's
+//   X-Jon-Snow-Demo-Access header (netlify/server/tribunal/demoAccess.ts)
+//   before any case/run/provider work happens.
+const jonSnowDemoServerConfigSchema = z.object({
+  JON_SNOW_DEMO_OPENROUTER_API_KEY: z.string().min(1),
+  JON_SNOW_DEMO_ACCESS_TOKEN: z.string().min(1)
+});
+
 export type ServerEnvironment = Partial<
   Record<
     | keyof z.infer<typeof supabaseServerConfigSchema>
     | keyof z.infer<typeof openRouterServerConfigSchema>
     | keyof z.infer<typeof packageExtractionServerConfigSchema>
-    | keyof z.infer<typeof internalFunctionSecretConfigSchema>,
+    | keyof z.infer<typeof internalFunctionSecretConfigSchema>
+    | keyof z.infer<typeof jonSnowDemoServerConfigSchema>,
     string
   >
 >;
@@ -48,6 +72,7 @@ export type PackageExtractionServerConfig = z.infer<
 export type InternalFunctionSecretConfig = z.infer<
   typeof internalFunctionSecretConfigSchema
 >;
+export type JonSnowDemoServerConfig = z.infer<typeof jonSnowDemoServerConfigSchema>;
 
 export class ServerConfigError extends Error {
   constructor(message: string) {
@@ -116,6 +141,26 @@ export function readInternalFunctionSecretConfig(
   if (!result.success) {
     throw new ServerConfigError(
       "Missing or invalid internal function secret configuration."
+    );
+  }
+
+  return result.data;
+}
+
+// Mirrors readInternalFunctionSecretConfig exactly. Missing/invalid
+// config fails safely -- the dedicated demo endpoint must refuse the
+// entire request (netlify/functions/demo-jon-snow-runs.ts calls this
+// before touching Supabase/creating any run row) rather than silently
+// treating a misconfigured operator demo as "no credential" the way the
+// generic BYOK flow treats an unconnected user.
+export function readJonSnowDemoServerConfig(
+  environment: ServerEnvironment = process.env
+): JonSnowDemoServerConfig {
+  const result = jonSnowDemoServerConfigSchema.safeParse(environment);
+
+  if (!result.success) {
+    throw new ServerConfigError(
+      "Missing or invalid Jon Snow demo server configuration."
     );
   }
 

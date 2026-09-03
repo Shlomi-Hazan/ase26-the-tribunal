@@ -46,16 +46,19 @@ describe("application shell and routing", () => {
     expect(screen.getByRole("link", { name: "Past Cases" })).toHaveFocus();
   });
 
-  // Milestone 12 (Issue #32 Sec 5): `/` previously redirected straight
-  // into `/new/charge-sheet` -- it is now a small generic Home surface.
+  // Milestone 12 (Issue #32 Sec 5; human product override, PR #34
+  // Sec 13-14): `/` previously redirected straight into
+  // `/new/charge-sheet` -- it is now a small generic Home surface, and
+  // the Jon Snow card exposes two explicit actions.
   it("renders the Home route with Create/Past Cases/Jon Snow demo actions", () => {
     renderApp("/");
 
     expect(screen.getByRole("heading", { name: "Home" })).toBeVisible();
     expect(screen.getByRole("link", { name: "New Tribunal" })).toBeVisible();
     expect(screen.getByRole("link", { name: "View Past Cases" })).toBeVisible();
+    expect(screen.getByRole("button", { name: /run jon snow demo/i })).toBeVisible();
     expect(
-      screen.getByRole("link", { name: /enter the jon snow demo/i })
+      screen.getByRole("link", { name: /modify settings \/ models/i })
     ).toBeVisible();
   });
 

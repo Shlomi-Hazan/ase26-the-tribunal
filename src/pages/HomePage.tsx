@@ -7,13 +7,17 @@
 // stays Tribunal-generic.
 import { Box, Button, Card, CardContent, Stack, Typography } from "@mui/material";
 import { Link as RouterLink } from "react-router-dom";
+import { JonSnowHomeCard } from "../components/JonSnowHomeCard";
 import { PageHeader } from "../components/PageHeader";
 
 export function HomePage() {
   return (
     <Stack spacing={4}>
       <PageHeader
-        description="An educational multi-agent deliberation exercise: seven fixed participants argue and judge a case you provide."
+        // Human product override (PR #34 Sec 23): Agent Mode is
+        // cancelled -- ordinary Tribunal participant calls must not be
+        // marketed as agents.
+        description="An educational AI deliberation exercise with seven fixed participants."
         eyebrow="The Tribunal"
         title="Home"
       />
@@ -56,51 +60,7 @@ export function HomePage() {
             </Stack>
           </CardContent>
         </Card>
-        <Card
-          component="section"
-          sx={{
-            background: "linear-gradient(160deg, #1c2530 0%, #33261a 100%)",
-            border: "1px solid rgba(255, 255, 255, 0.12)",
-            color: "#f2e9d8"
-          }}
-        >
-          <CardContent>
-            <Stack spacing={1.5}>
-              <Typography
-                sx={{
-                  color: "#c9a35a",
-                  fontWeight: 800,
-                  letterSpacing: 1,
-                  textTransform: "uppercase"
-                }}
-                variant="caption"
-              >
-                Featured demo
-              </Typography>
-              <Typography component="h2" sx={{ color: "#f2e9d8" }} variant="h6">
-                The Realm v. Jon Snow
-              </Typography>
-              <Typography sx={{ color: "#cbbfa8" }} variant="body2">
-                A canonical, one-click case: Jon Snow and Tyrion Lannister for the defense,
-                Daenerys Targaryen and Grey Worm for the prosecution, judged by three
-                research-based judicial-method profiles. Real Tribunal engine, your own
-                OpenRouter credential.
-              </Typography>
-              <Button
-                component={RouterLink}
-                sx={{
-                  bgcolor: "#c9a35a",
-                  color: "#1c2530",
-                  "&:hover": { bgcolor: "#dab876" }
-                }}
-                to="/demo/jon-snow"
-                variant="contained"
-              >
-                Enter the Jon Snow Demo
-              </Button>
-            </Stack>
-          </CardContent>
-        </Card>
+        <JonSnowHomeCard />
       </Box>
     </Stack>
   );
