@@ -12,6 +12,7 @@ import {
   type IdempotentCaseRepository,
   type PersistedCase
 } from "../../server/cases";
+import { readJonSnowDemoServerConfig, ServerConfigError } from "../../server/env";
 import { FakeOpenRouterProvider } from "../../server/openrouter/fakeProvider";
 import { RunPersistenceError, type FreezeRunInput, type PersistedRun, type RunRepository, type RunSummary } from "../../server/runs";
 import { FakeTribunalExecutionRepository } from "../../server/tribunal/repository";
@@ -19,7 +20,9 @@ import { JON_SNOW_DEMO_ACCESS_HEADER } from "../../server/tribunal/demoAccess";
 import { handleDemoJonSnowRunsRequest, type HandleDemoJonSnowRunsDeps } from "../demo-jon-snow-runs";
 import { handleRunsRequest } from "../runs";
 
-const DEMO_ACCESS_TOKEN = "fake-demo-access-token-for-tests";
+// >= 32 chars (netlify/server/env.ts's JON_SNOW_DEMO_ACCESS_TOKEN
+// minimum) -- deliberately well over the boundary, not merely at it.
+const DEMO_ACCESS_TOKEN = "fake-demo-access-token-for-tests-well-over-the-minimum-length";
 const DEMO_OPENROUTER_KEY = "sk-or-v1-fake-demo-operator-key-for-tests";
 
 function cheapModel(overrides: Partial<import("../../server/openrouter/schemas").RawOpenRouterModel> = {}) {
@@ -237,6 +240,68 @@ function stubEligibleExecutionFetch() {
   );
 }
 
+// Final independent-review correction (scenario A): the AUTHORITATIVE
+// preflight re-check triggerExecutionIfEligible performs with the real
+// demo credential -- deliberately priced so its conservativeMaxCostUsd
+// lands above $0.13, simulating a price change that happened after the
+// earlier (possibly-cached) listEligibleModels() discovery check already
+// passed.
+function stubExpensiveExecutionFetch() {
+  vi.stubEnv("INTERNAL_FUNCTION_SECRET", "test-internal-secret");
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockImplementation((url: string) => {
+      if (url.endsWith("/models")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              data: [{ id: "openai/gpt-4o-mini", canonical_slug: "openai/gpt-4o-mini", name: "Model", context_length: 200_000 }]
+            }),
+            { status: 200 }
+          )
+        );
+      }
+
+      if (url.includes("/endpoints")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              data: {
+                endpoints: [
+                  {
+                    tag: "openai",
+                    provider_name: "OpenAI",
+                    name: "OpenAI",
+                    context_length: 200_000,
+                    max_prompt_tokens: 190_000,
+                    max_completion_tokens: 4000,
+                    supported_parameters: ["response_format", "max_completion_tokens"],
+                    quantization: null,
+                    status: 0,
+                    // Empirically verified against the real canonical
+                    // Jon Snow participants: conservativeMaxCostUsd
+                    // ~= $1.39 -- comfortably above $0.13, comfortably
+                    // below the $5.00 generic ceiling (eligible=true),
+                    // so this scenario actually exercises the new demo
+                    // gate rather than accidentally tripping the
+                    // existing $5 one.
+                    pricing: { prompt: "0.0000135", completion: "0.000027" }
+                  }
+                ]
+              }
+            }),
+            { status: 200 }
+          )
+        );
+      }
+
+      // The worker-invocation call must never be reached in this
+      // scenario -- fail loudly if it is.
+      throw new Error(`Unexpected fetch to ${url}: worker must not be invoked when authoritative pricing exceeds the demo ceiling.`);
+    })
+  );
+}
+
 function validBody(overrides: Record<string, unknown> = {}) {
   return JSON.stringify({
     clientRequestId: randomUUID(),
@@ -444,6 +509,38 @@ describe("POST /api/demo/jon-snow/runs -- cost policy", () => {
     expect(response.statusCode).toBe(400);
     expect((deps.runRepository as FakeRunRepository).freezeCallCount).toBe(0);
   });
+
+  // A: final independent-review correction. The early listEligibleModels()
+  // check (FakeOpenRouterProvider, baseDeps' cheap fixture) says the
+  // model is within $0.13 -- but the AUTHORITATIVE preflight re-check
+  // inside triggerExecutionIfEligible (stubExpensiveExecutionFetch,
+  // simulating a price change during the metadata cache's TTL) reports a
+  // fresh conservative cost above $0.13. The run must freeze (the early
+  // check passed, so acceptRun proceeds) but execution must be blocked
+  // before the worker is ever invoked -- zero completion.
+  it("A: blocks execution when the authoritative final preflight reports a fresh cost above $0.13, even though the earlier discovery check passed", async () => {
+    stubExpensiveExecutionFetch();
+    const deps = baseDeps();
+
+    const response = await handleDemoJonSnowRunsRequest(
+      { httpMethod: "POST", headers: validAccessHeaders(), body: validBody() } as unknown as HandlerEvent,
+      deps
+    );
+
+    expect(response.statusCode).toBe(201);
+    const payload = JSON.parse(response.body ?? "{}");
+
+    // The run WAS frozen (the early, possibly-stale check passed)...
+    expect((deps.runRepository as FakeRunRepository).freezeCallCount).toBe(1);
+    // ...but execution was blocked by the authoritative, fresh re-check,
+    // before the worker was ever invoked -- zero completion. Proven by
+    // exactly two fetch calls (GET .../models, GET .../endpoints) and no
+    // third call to the background worker at all -- stubExpensiveExecutionFetch
+    // throws if any other URL is requested, which would have failed this
+    // test with an uncaught error had the gate not fired first.
+    expect(payload.executionTriggered).toBe(false);
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("POST /api/demo/jon-snow/runs -- happy path reuses the existing engine", () => {
@@ -508,5 +605,46 @@ describe("generic /api/runs boundary", () => {
     // handler has no code path that even reads
     // JON_SNOW_DEMO_OPENROUTER_API_KEY; this asserts the observable
     // consequence (zero execution without a user-supplied credential).
+  });
+});
+
+// Final independent-review correction: the demo access token protects an
+// operator-funded spend endpoint, so a short/weak value must never be
+// configurable at all.
+describe("JON_SNOW_DEMO_ACCESS_TOKEN minimum length", () => {
+  const validKey = { JON_SNOW_DEMO_OPENROUTER_API_KEY: DEMO_OPENROUTER_KEY };
+
+  it("rejects a token shorter than 32 characters", () => {
+    expect(() =>
+      readJonSnowDemoServerConfig({
+        ...validKey,
+        JON_SNOW_DEMO_ACCESS_TOKEN: "short-token"
+      })
+    ).toThrow(ServerConfigError);
+  });
+
+  it("rejects a token exactly one character short of the minimum (31 chars)", () => {
+    expect(() =>
+      readJonSnowDemoServerConfig({
+        ...validKey,
+        JON_SNOW_DEMO_ACCESS_TOKEN: "a".repeat(31)
+      })
+    ).toThrow(ServerConfigError);
+  });
+
+  it("accepts a token at exactly the 32-character minimum", () => {
+    expect(() =>
+      readJonSnowDemoServerConfig({
+        ...validKey,
+        JON_SNOW_DEMO_ACCESS_TOKEN: "a".repeat(32)
+      })
+    ).not.toThrow();
+  });
+
+  it("accepts the >= 32-char fake token this file's own tests use", () => {
+    expect(DEMO_ACCESS_TOKEN.length).toBeGreaterThanOrEqual(32);
+    expect(() =>
+      readJonSnowDemoServerConfig({ ...validKey, JON_SNOW_DEMO_ACCESS_TOKEN: DEMO_ACCESS_TOKEN })
+    ).not.toThrow();
   });
 });

@@ -15,6 +15,20 @@
 // participant profile name/personality/seat mapping, prompt versions,
 // or execution mode (always SHARED) -- the only accepted client fields
 // are `modelId` and `clientRequestId`.
+//
+// Final correction (independent review): the $0.13 demo ceiling is
+// enforced TWICE, at two genuinely different points, neither of which
+// alone is authoritative on its own:
+//   1. Below, against listEligibleModels() -- a useful early UX
+//      rejection, but its metadata can be up to the shared metadata
+//      cache's TTL stale.
+//   2. Inside triggerExecutionIfEligible (triggerExecution.ts), via the
+//      `additionalMaxCostUsd` parameter -- the authoritative gate,
+//      checked against runPreflight()'s FRESH `conservativeMaxCostUsd`,
+//      computed with the real demo credential immediately before the
+//      one worker invocation. A price change during the metadata
+//      cache's TTL can never let an over-ceiling model reach a real
+//      completion, because this second check cannot be stale.
 
 import Decimal from "decimal.js";
 import { z } from "zod";
@@ -133,15 +147,22 @@ export async function acceptJonSnowDemoRun(
   );
 
   // Reuses the exact same trigger/preflight/execution path every other
-  // Tribunal run already uses -- the only difference from the generic
-  // flow is where the credential string came from (the operator's
-  // dedicated demo key, never a user-supplied one).
+  // Tribunal run already uses -- the differences from the generic flow
+  // are (a) the credential string came from the operator's dedicated
+  // demo key, never a user-supplied one, and (b) additionalMaxCostUsd:
+  // the authoritative, final re-check against JON_SNOW_DEMO_MAX_ESTIMATE_USD,
+  // computed by triggerExecutionIfEligible itself from FRESH preflight
+  // pricing -- not the listEligibleModels() discovery estimate checked
+  // above, which can be stale for up to the metadata cache's TTL. This
+  // is what makes $0.13 authoritative rather than merely an early UX
+  // rejection (final independent review correction).
   const triggerResult = await triggerExecutionIfEligible(run, deps.demoOpenRouterKey, {
     runRepository: deps.runRepository,
     caseRepository: deps.caseRepository,
     tribunalRepository: deps.tribunalRepository,
     fetchImpl: deps.fetchImpl,
-    backgroundFunctionBaseUrl: deps.backgroundFunctionBaseUrl
+    backgroundFunctionBaseUrl: deps.backgroundFunctionBaseUrl,
+    additionalMaxCostUsd: JON_SNOW_DEMO_MAX_ESTIMATE_USD
   });
 
   const finalRun =

@@ -54,10 +54,16 @@ export async function handleDemoJonSnowRunsRequest(
     }
 
     // C: missing/invalid JON_SNOW_DEMO_OPENROUTER_API_KEY or
-    // JON_SNOW_DEMO_ACCESS_TOKEN -- fails safely with a generic error,
-    // before any case/run/Supabase/provider work, and before the access
-    // header is even inspected, so a caller can never distinguish
-    // "server not configured" from "wrong token" by response shape.
+    // JON_SNOW_DEMO_ACCESS_TOKEN (e.g. a value shorter than the required
+    // 32-character minimum, netlify/server/env.ts) -- fails safely,
+    // before any case/run/Supabase/provider work. This response (503
+    // demo_not_configured) IS distinguishable from an authenticated-but-
+    // wrong-token rejection below (401 demo_access_denied) -- correction
+    // (independent review): an earlier version of this comment
+    // overclaimed the two were indistinguishable by response shape, which
+    // was never actually true of this code. The guarantee that matters,
+    // and does hold in both cases: zero case/run creation, zero
+    // OpenRouter completion/spend.
     let demoConfig: JonSnowDemoServerConfig;
 
     try {

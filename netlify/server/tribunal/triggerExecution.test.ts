@@ -478,3 +478,132 @@ describe("triggerExecutionIfEligible", () => {
     });
   });
 });
+
+// Milestone 12 (human product override, PR #34 final correction) --
+// the OPTIONAL additionalMaxCostUsd gate. Priced deliberately above the
+// Jon Snow demo's $0.13 ceiling but comfortably under the generic
+// $5.00 ceiling, so these tests prove the two gates are genuinely
+// independent, not merely that a cheap run passes both.
+function moderatelyExpensiveOpenRouterResponse(url: string): Response | null {
+  if (url.endsWith("/models")) {
+    return new Response(
+      JSON.stringify({
+        data: [{ id: MODEL_ID, canonical_slug: MODEL_ID, name: "Model", context_length: 200_000 }]
+      }),
+      { status: 200 }
+    );
+  }
+
+  if (url.includes("/endpoints")) {
+    return new Response(
+      JSON.stringify({
+        data: {
+          endpoints: [
+            {
+              tag: "openai",
+              provider_name: "OpenAI",
+              name: "OpenAI",
+              context_length: 200_000,
+              max_prompt_tokens: 190_000,
+              max_completion_tokens: 4000,
+              supported_parameters: ["response_format", "max_completion_tokens"],
+              quantization: null,
+              status: 0,
+              // Empirically verified against this exact fixture:
+              // conservativeMaxCostUsd ~= $1.00 -- comfortably above
+              // $0.13, comfortably below the $5.00 generic ceiling
+              // (eligible=true), so these tests actually exercise the
+              // new gate rather than accidentally tripping the existing
+              // $5 one.
+              pricing: { prompt: "0.0000135", completion: "0.000027" }
+            }
+          ]
+        }
+      }),
+      { status: 200 }
+    );
+  }
+
+  return null;
+}
+
+describe("triggerExecutionIfEligible -- additionalMaxCostUsd (Milestone 12, PR #34 final correction)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  // B: a generic caller (no additionalMaxCostUsd set -- exactly like
+  // every /api/runs call today) must be completely unaffected by this
+  // gate's existence, even for a run priced well above the Jon Snow
+  // demo's own $0.13 ceiling -- proving the new parameter is an opt-in
+  // no-op, not a behavior change for existing callers.
+  it("B: a generic caller without additionalMaxCostUsd is invoked normally even when cost exceeds the (unset) demo ceiling, following only the existing $5 ceiling", async () => {
+    vi.stubEnv("INTERNAL_FUNCTION_SECRET", "test-internal-secret");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((url: string) => {
+        const openRouterResponse = moderatelyExpensiveOpenRouterResponse(url);
+
+        return Promise.resolve(openRouterResponse ?? new Response("{}", { status: 202 }));
+      })
+    );
+
+    const run = eligibleRun();
+    const repository = new FakeTribunalExecutionRepository();
+    repository.setRunStatus(RUN_ID, "READY");
+
+    const result = await triggerExecutionIfEligible(run, "sk-or-v1-user-key", {
+      runRepository: fakeRunRepository(run),
+      caseRepository: fakeCaseRepository(),
+      tribunalRepository: repository,
+      backgroundFunctionBaseUrl: TRUSTED_BASE_URL
+      // additionalMaxCostUsd deliberately omitted.
+    });
+
+    expect(result).toEqual({ invoked: true });
+    expect(repository.runStatus.get(RUN_ID)).not.toBe("BLOCKED_BUDGET");
+  });
+
+  // The demo-cap counterpart of B, at this primitive's own level (the
+  // functions/__tests__/demo-jon-snow-runs.test.ts file proves the same
+  // thing through the real endpoint) -- the identically-priced run IS
+  // blocked, with zero worker invocation, once a caller opts in.
+  it("a caller that DOES set additionalMaxCostUsd is blocked before worker invocation for the same moderately-priced run that B leaves unaffected", async () => {
+    vi.stubEnv("INTERNAL_FUNCTION_SECRET", "test-internal-secret");
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      const openRouterResponse = moderatelyExpensiveOpenRouterResponse(url);
+
+      if (openRouterResponse) {
+        return Promise.resolve(openRouterResponse);
+      }
+
+      throw new Error(`Unexpected fetch to ${url}: worker must not be invoked once the demo cap blocks execution.`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const run = eligibleRun();
+    const repository = new FakeTribunalExecutionRepository();
+    repository.setRunStatus(RUN_ID, "READY");
+
+    const result = await triggerExecutionIfEligible(run, "sk-or-v1-demo-operator-key", {
+      runRepository: fakeRunRepository(run),
+      caseRepository: fakeCaseRepository(),
+      tribunalRepository: repository,
+      backgroundFunctionBaseUrl: TRUSTED_BASE_URL,
+      additionalMaxCostUsd: "0.13"
+    });
+
+    expect(result.invoked).toBe(false);
+    if (!result.invoked) {
+      expect(result.reason).toBe("blocked_budget");
+      if (result.reason === "blocked_budget") {
+        expect(result.blockedReasonCodes).toEqual(["DEMO_BUDGET_EXCEEDED"]);
+      }
+    }
+    expect(repository.runStatus.get(RUN_ID)).toBe("BLOCKED_BUDGET");
+    // Only the two metadata calls -- the worker was never invoked.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});

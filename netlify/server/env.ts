@@ -50,7 +50,15 @@ const internalFunctionSecretConfigSchema = z.object({
 //   before any case/run/provider work happens.
 const jonSnowDemoServerConfigSchema = z.object({
   JON_SNOW_DEMO_OPENROUTER_API_KEY: z.string().min(1),
-  JON_SNOW_DEMO_ACCESS_TOKEN: z.string().min(1)
+  // Final independent-review correction: this capability gates an
+  // operator-funded spend endpoint, not merely a display toggle -- a
+  // one-character value would be trivially guessable. Require a
+  // reasonable minimum length so a short/weak token can never be
+  // configured; the real value is still generated and stored by the
+  // operator, never by this code.
+  JON_SNOW_DEMO_ACCESS_TOKEN: z
+    .string()
+    .min(32, "JON_SNOW_DEMO_ACCESS_TOKEN must be at least 32 characters.")
 });
 
 export type ServerEnvironment = Partial<
