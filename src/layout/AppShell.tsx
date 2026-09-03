@@ -11,6 +11,7 @@ import type { ReactNode } from "react";
 import { NavLink } from "react-router-dom";
 
 const navItems = [
+  { to: "/", label: "Home" },
   { to: "/new/charge-sheet", label: "New Case" },
   { to: "/history", label: "Past Cases" }
 ];
@@ -37,7 +38,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             py: { xs: 1.5, sm: 0 }
           }}
         >
-          <Typography component={NavLink} to="/new/charge-sheet" variant="h6" sx={{ textDecoration: "none" }}>
+          <Typography component={NavLink} to="/" variant="h6" sx={{ textDecoration: "none" }}>
             The Tribunal
           </Typography>
           <Stack
@@ -49,6 +50,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             {navItems.map((item) => (
               <Link
                 component={NavLink}
+                end={item.to === "/"}
                 key={item.to}
                 to={item.to}
                 sx={{

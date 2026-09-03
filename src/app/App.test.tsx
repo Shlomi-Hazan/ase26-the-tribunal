@@ -23,6 +23,7 @@ describe("application shell and routing", () => {
     renderApp();
 
     expect(screen.getByRole("link", { name: "The Tribunal" })).toBeVisible();
+    expect(screen.getByRole("link", { name: "Home" })).toBeVisible();
     expect(screen.getByRole("link", { name: "New Case" })).toBeVisible();
     expect(screen.getByRole("link", { name: "Past Cases" })).toBeVisible();
     expect(screen.getByText(/not legal advice/i)).toBeVisible();
@@ -36,10 +37,26 @@ describe("application shell and routing", () => {
     expect(screen.getByRole("link", { name: "The Tribunal" })).toHaveFocus();
 
     await user.tab();
+    expect(screen.getByRole("link", { name: "Home" })).toHaveFocus();
+
+    await user.tab();
     expect(screen.getByRole("link", { name: "New Case" })).toHaveFocus();
 
     await user.tab();
     expect(screen.getByRole("link", { name: "Past Cases" })).toHaveFocus();
+  });
+
+  // Milestone 12 (Issue #32 Sec 5): `/` previously redirected straight
+  // into `/new/charge-sheet` -- it is now a small generic Home surface.
+  it("renders the Home route with Create/Past Cases/Jon Snow demo actions", () => {
+    renderApp("/");
+
+    expect(screen.getByRole("heading", { name: "Home" })).toBeVisible();
+    expect(screen.getByRole("link", { name: "New Tribunal" })).toBeVisible();
+    expect(screen.getByRole("link", { name: "View Past Cases" })).toBeVisible();
+    expect(
+      screen.getByRole("link", { name: /enter the jon snow demo/i })
+    ).toBeVisible();
   });
 
   it("renders New Case and Past Cases routes", () => {
