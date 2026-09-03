@@ -194,7 +194,11 @@ export type StoredRun = {
   participants: PersistedRunParticipant[];
 };
 
-type RunResponse = {
+// Exported so src/services/jonSnowDemoApi.ts (Milestone 12, PR #34) can
+// parse the SAME response envelope from the dedicated demo endpoint
+// without a second parsing/error implementation -- both endpoints return
+// this exact shape.
+export type RunResponse = {
   run: StoredRun;
   // Milestone 8: present only on the POST /api/runs response -- true only
   // when this exact request's synchronous preflight passed and the
@@ -279,7 +283,7 @@ export async function listRunsForCase(caseId: string): Promise<RunSummary[]> {
   return (payload as RunSummariesResponse).runs;
 }
 
-async function parseRunPayload(response: Response): Promise<RunResponse> {
+export async function parseRunPayload(response: Response): Promise<RunResponse> {
   const payload = (await response.json().catch(() => ({}))) as
     | RunResponse
     | ErrorResponse;

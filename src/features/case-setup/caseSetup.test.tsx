@@ -969,6 +969,93 @@ describe("case setup workflow", () => {
     expect(requestBody.clientRequestId.length).toBeGreaterThan(0);
   });
 
+  // Milestone 12 (Issue #32 Sec 7, independent-review correction): a
+  // locked regression test proving the useRunStart extraction did not
+  // silently drop ReviewPage's own recordSavedCase side effect for a
+  // bare Convene (no prior explicit Save Case) -- the same behavior
+  // "reuses the saved case identity on Convene after Save Case" already
+  // proves for the Save Case path, exercised here via a fresh Convene of
+  // a new case instead.
+  it("records the newly frozen case as the current saved case after a bare Convene, without a prior Save Case", async () => {
+    const user = userEvent.setup();
+    queueFetchResponse(
+      new Response(
+        JSON.stringify({
+          run: {
+            id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            caseId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+            executionMode: "shared",
+            status: "READY",
+            createdAt: "2026-08-25T10:00:00.000Z",
+            participants: []
+          }
+        }),
+        { status: 201 }
+      )
+    );
+    queueFetchResponse(
+      new Response(
+        JSON.stringify({
+          run: {
+            id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            caseId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+            executionMode: "shared",
+            status: "READY",
+            createdAt: "2026-08-25T10:05:00.000Z",
+            participants: []
+          }
+        }),
+        { status: 201 }
+      )
+    );
+
+    renderWithAppProviders(<AppRoutes />);
+    await user.type(screen.getByLabelText(/defendant/i), "Alex Rowan");
+    await user.type(screen.getByLabelText(/^act/i), "Entered the restricted lab.");
+    await user.type(
+      screen.getByLabelText(/exact question/i),
+      "Did Alex knowingly violate the lab protocol?"
+    );
+    await user.click(screen.getByRole("button", { name: /continue to advocates/i }));
+    await user.click(screen.getByRole("link", { name: /continue to judges/i }));
+    await user.click(screen.getByRole("link", { name: /review tribunal/i }));
+    await connectOpenRouter(user);
+    await user.click(screen.getByRole("button", { name: "Convene Tribunal" }));
+
+    expect(await screen.findByText(/tribunal configuration frozen/i)).toBeVisible();
+
+    // Remount Review (ReviewPage's own local conveneResult resets;
+    // SetupState/savedCase, held in SetupProvider above AppRoutes, does
+    // not) and Convene again -- if recordSavedCase fired on the first,
+    // bare Convene, this second submission must reuse the SAME case
+    // identity rather than sending a second "new" case.
+    await user.click(
+      within(screen.getByLabelText("Case setup progress")).getByRole("link", {
+        name: /Charge Sheet/i
+      })
+    );
+    await user.click(
+      within(screen.getByLabelText("Case setup progress")).getByRole("link", {
+        name: /Review/i
+      })
+    );
+
+    expect(
+      await screen.findByRole("button", { name: "Convene Tribunal" })
+    ).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Convene Tribunal" }));
+
+    expect(await screen.findByText(/tribunal configuration frozen/i)).toBeVisible();
+
+    const [, requestInit] = nonModelsFetchCalls()[1];
+    const requestBody = JSON.parse(requestInit!.body as string);
+
+    expect(requestBody.case).toEqual({
+      kind: "existing",
+      caseId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+    });
+  });
+
   // M9 (Separate-Model Tribunal, Issue #20) UI-level coverage.
 
   it("M9-B/U/W: Separate Mode auto-selects each seat's own role-appropriate model and Convenes with two distinct configured models", async () => {

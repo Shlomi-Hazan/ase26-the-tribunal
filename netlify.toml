@@ -94,6 +94,15 @@
   to = "/.netlify/functions/runs"
   status = 200
 
+# Milestone 12 (human product override, PR #34) -- the dedicated,
+# operator-funded, canonical-only Jon Snow demo endpoint. A separate
+# Function from /api/runs, never a fallback for it (SECURITY.md
+# Sec 3.1.1).
+[[redirects]]
+  from = "/api/demo/jon-snow/runs"
+  to = "/.netlify/functions/demo-jon-snow-runs"
+  status = 200
+
 [[redirects]]
   from = "/api/preflight"
   to = "/.netlify/functions/preflight"

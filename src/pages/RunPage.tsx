@@ -32,6 +32,7 @@ import {
 } from "../components/describeHistoricalAdvocateSide";
 import { JudgeVoteGroup } from "../components/JudgeVoteGroup";
 import { PageHeader } from "../components/PageHeader";
+import { getSeatLabel, resolveParticipantIdentity } from "../components/participantIdentity";
 import { PublicDemoRetentionNotice } from "../components/PublicDemoRetentionNotice";
 import { StatusBadge } from "../components/StatusBadge";
 import { verdictColor } from "../components/verdictColor";
@@ -214,6 +215,14 @@ function ParticipantGrid({ run }: { run: StoredRun }) {
   const promptVersionById = new Map(
     run.participants.map((participant) => [participant.participantId, participant.promptVersion])
   );
+  // Human product decision (PR #34, product-wide participant-identity
+  // correction): the persisted profileName, keyed by participantId --
+  // already part of PersistedRunParticipant, no schema change. Applied
+  // via the single shared resolveParticipantIdentity rule below, never a
+  // Jon-Snow-specific mapping.
+  const profileNameById = new Map(
+    run.participants.map((participant) => [participant.participantId, participant.profileName])
+  );
   const judgesActive = run.status === "JUDGES_RUNNING" || run.status === "COMPLETED" || run.status === "FAILED";
 
   return (
@@ -225,6 +234,7 @@ function ParticipantGrid({ run }: { run: StoredRun }) {
           </Typography>
           <ParticipantRow
             participants={advocateParticipants}
+            profileNameById={profileNameById}
             promptVersionById={promptVersionById}
             statuses={advocateParticipants.map((p) => STATUS_MAP[statusById.get(p.id) ?? "PENDING"])}
           />
@@ -238,6 +248,7 @@ function ParticipantGrid({ run }: { run: StoredRun }) {
             </Typography>
             <ParticipantRow
               participants={judgeParticipants}
+              profileNameById={profileNameById}
               promptVersionById={promptVersionById}
               statuses={judgeParticipants.map((p) => STATUS_MAP[statusById.get(p.id) ?? "PENDING"])}
             />
@@ -252,10 +263,12 @@ function ParticipantGrid({ run }: { run: StoredRun }) {
 
 function ParticipantRow({
   participants,
+  profileNameById,
   promptVersionById,
   statuses
 }: {
   participants: Array<{ id: string; label: string; side?: string }>;
+  profileNameById: Map<string, string | null>;
   promptVersionById: Map<string, string>;
   statuses: ParticipantStatus[];
 }) {
@@ -268,22 +281,38 @@ function ParticipantRow({
         mt: 2
       }}
     >
-      {participants.map((participant, index) => (
-        <Stack
-          key={participant.id}
-          spacing={1}
-          sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2, p: 2 }}
-        >
-          <Typography sx={{ fontWeight: 800 }}>{participant.label}</Typography>
-          {participant.side === "PRO" || participant.side === "CON" ? (
-            <AdvocateSideMeaning
-              promptVersion={promptVersionById.get(participant.id) ?? ""}
-              side={participant.side}
-            />
-          ) : null}
-          <StatusBadge status={statuses[index]} />
-        </Stack>
-      ))}
+      {participants.map((participant, index) => {
+        // Human product decision (PR #34): profileName primary, seat
+        // secondary, generic seat alone when no meaningful name exists
+        // -- the single centralized rule, no ad hoc `profileName ||
+        // label` logic here.
+        const identity = resolveParticipantIdentity(
+          profileNameById.get(participant.id),
+          participant.label
+        );
+
+        return (
+          <Stack
+            key={participant.id}
+            spacing={1}
+            sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2, p: 2 }}
+          >
+            <Typography sx={{ fontWeight: 800 }}>{identity.primary}</Typography>
+            {identity.secondarySeatLabel ? (
+              <Typography color="text.secondary" variant="body2">
+                {identity.secondarySeatLabel}
+              </Typography>
+            ) : null}
+            {participant.side === "PRO" || participant.side === "CON" ? (
+              <AdvocateSideMeaning
+                promptVersion={promptVersionById.get(participant.id) ?? ""}
+                side={participant.side}
+              />
+            ) : null}
+            <StatusBadge status={statuses[index]} />
+          </Stack>
+        );
+      })}
     </Box>
   );
 }
@@ -355,9 +384,17 @@ function CompletedResult({ run }: { run: StoredRun }) {
     // Safe: checkResultIntegrity already proved every judge has a valid
     // verdict/non-empty reasoning above.
     const participant = run.participants.find((entry) => entry.participantId === judge.id)!;
+    // Human product decision (PR #34, product-wide participant-identity
+    // correction): primary/secondary identity via the single shared
+    // rule -- displayName is set only when a meaningful profileName
+    // exists, so JudgeVoteGroup/the reasoning accordion below fall back
+    // to the existing bare seat label exactly as before whenever it
+    // doesn't.
+    const identity = resolveParticipantIdentity(participant.profileName, judge.label);
 
     return {
       judge: judge.label,
+      displayName: identity.secondarySeatLabel ? identity.primary : undefined,
       verdict: participant.verdict as "GUILTY" | "NOT_GUILTY",
       model: participant.modelId,
       personality: participant.personality,
@@ -368,9 +405,12 @@ function CompletedResult({ run }: { run: StoredRun }) {
     // Safe: checkResultIntegrity already proved every advocate has a
     // non-empty speech above.
     const participant = run.participants.find((entry) => entry.participantId === advocate.id)!;
+    const identity = resolveParticipantIdentity(participant.profileName, advocate.label);
 
     return {
-      participant: advocate.label,
+      participantId: advocate.id,
+      displayName: identity.primary,
+      seatLabel: identity.secondarySeatLabel,
       side: advocate.side ?? "PRO",
       model: participant.modelId,
       personality: participant.personality,
@@ -396,7 +436,12 @@ function CompletedResult({ run }: { run: StoredRun }) {
             {majorityVerdict}
           </Typography>
           <Typography color="text.secondary">
-            Deterministic majority of the three judge votes -- real execution, user-funded.
+            {/* Human product decision (PR #34): the generic Tribunal is
+               BYOK/user-funded, but the operator-funded Jon Snow demo
+               (Issue #32 Sec 21) is not -- this line must be true for
+               every run regardless of which funded it, with no route
+               sniffing to pick a wording. */}
+            Deterministic majority of the three judge votes — real model execution.
           </Typography>
           {run.totalCostUsd ? (
             <Typography color="text.secondary" sx={{ mt: 1 }} variant="body2">
@@ -411,11 +456,16 @@ function CompletedResult({ run }: { run: StoredRun }) {
           <AccordionSummary expandIcon={<AccordionExpandIcon />}>
             <Stack spacing={0.25}>
               <Typography sx={{ fontWeight: 800 }}>
-                {vote.judge} --{" "}
+                {vote.displayName ?? vote.judge} --{" "}
                 <Typography color={verdictColor(vote.verdict)} component="span" sx={{ fontWeight: 800 }}>
                   {vote.verdict}
                 </Typography>
               </Typography>
+              {vote.displayName ? (
+                <Typography color="text.secondary" variant="body2">
+                  {vote.judge}
+                </Typography>
+              ) : null}
               <Typography color="text.secondary" variant="caption">
                 View reasoning
               </Typography>
@@ -427,11 +477,12 @@ function CompletedResult({ run }: { run: StoredRun }) {
         </Accordion>
       ))}
       {speeches.map((speech) => (
-        <Accordion key={speech.participant}>
+        <Accordion key={speech.participantId}>
           <AccordionSummary expandIcon={<AccordionExpandIcon />}>
             <Stack spacing={0.25}>
-              <Typography sx={{ fontWeight: 800 }}>
-                {speech.participant} -- {speech.side}
+              <Typography sx={{ fontWeight: 800 }}>{speech.displayName}</Typography>
+              <Typography color="text.secondary" variant="body2">
+                {speech.seatLabel ? `${speech.seatLabel} -- ${speech.side}` : speech.side}
               </Typography>
               <AdvocateSideMeaning promptVersion={speech.promptVersion} side={speech.side} />
               <Typography color="text.secondary" variant="caption">
@@ -571,11 +622,27 @@ function AttemptDetailField({ label, value }: { label: string; value: string | n
   );
 }
 
-function AttemptDetailRow({ attempt }: { attempt: AttemptAudit }) {
+function AttemptDetailRow({
+  attempt,
+  profileName
+}: {
+  attempt: AttemptAudit;
+  profileName: string | null;
+}) {
   const [expanded, setExpanded] = useState(false);
   const detailId = attemptDetailId(attempt);
   const rowLabel = `${attempt.participantId} attempt ${attempt.attemptNumber}`;
   const cost = attemptCostDisplay(attempt);
+  // Human product decision (PR #34, product-wide participant-identity
+  // correction): AttemptAudit itself carries no profileName (no schema
+  // change) -- mapped in from run.participants by participantId,
+  // EconomicsAuditAccordion below, then displayed via the same shared
+  // rule as every other real-run participant surface. Final correction:
+  // the fallback/secondary identity is the human seat label ("PRO I"),
+  // never the raw technical participantId -- the latter is still
+  // available in the expanded technical detail below, where it belongs.
+  const seatLabel = getSeatLabel(attempt.participantId);
+  const identity = resolveParticipantIdentity(profileName, seatLabel);
 
   return (
     <>
@@ -599,7 +666,16 @@ function AttemptDetailRow({ attempt }: { attempt: AttemptAudit }) {
             <AccordionExpandIcon />
           </IconButton>
         </TableCell>
-        <TableCell>{attempt.participantId}</TableCell>
+        <TableCell>
+          <Stack spacing={0}>
+            <Typography variant="body2">{identity.primary}</Typography>
+            {identity.secondarySeatLabel ? (
+              <Typography color="text.secondary" variant="caption">
+                {identity.secondarySeatLabel}
+              </Typography>
+            ) : null}
+          </Stack>
+        </TableCell>
         <TableCell>{attempt.attemptNumber}</TableCell>
         <TableCell>{attempt.configuredModelId}</TableCell>
         <TableCell>{formatTokenCount(attempt.inputTokens)}</TableCell>
@@ -625,6 +701,7 @@ function AttemptDetailRow({ attempt }: { attempt: AttemptAudit }) {
                   <Typography sx={{ fontWeight: 800 }} variant="body2">
                     Model / routing
                   </Typography>
+                  <AttemptDetailField label="Participant ID" value={attempt.participantId} />
                   <AttemptDetailField label="Configured model" value={attempt.configuredModelId} />
                   <AttemptDetailField label="Canonical model" value={attempt.canonicalModelId} />
                   <AttemptDetailField label="Provider endpoint" value={attempt.providerEndpointTag} />
@@ -681,6 +758,10 @@ function AttemptDetailRow({ attempt }: { attempt: AttemptAudit }) {
 }
 
 function EconomicsAuditAccordion({ run }: { run: StoredRun }) {
+  const profileNameById = new Map(
+    run.participants.map((participant) => [participant.participantId, participant.profileName])
+  );
+
   return (
     <Accordion>
       <AccordionSummary expandIcon={<AccordionExpandIcon />}>
@@ -711,7 +792,11 @@ function EconomicsAuditAccordion({ run }: { run: StoredRun }) {
               </TableHead>
               <TableBody>
                 {run.attempts.map((attempt) => (
-                  <AttemptDetailRow key={`${attempt.participantId}-${attempt.attemptNumber}`} attempt={attempt} />
+                  <AttemptDetailRow
+                    key={`${attempt.participantId}-${attempt.attemptNumber}`}
+                    attempt={attempt}
+                    profileName={profileNameById.get(attempt.participantId) ?? null}
+                  />
                 ))}
               </TableBody>
             </Table>
@@ -776,6 +861,14 @@ function ProtocolAccordion({ protocol }: { protocol: StoredRun["protocol"] }) {
   const promptVersionByParticipantId = new Map(
     protocol.participants.map((entry) => [entry.participantId, entry.promptVersion])
   );
+  // Human product decision (PR #34, product-wide participant-identity
+  // correction): protocol.advocates[]/protocol.judges[] carry only
+  // participantId, not profileName -- cross-referenced the same way as
+  // promptVersion above, so the Advocates/Judges lists below identify
+  // WHO produced each speech/verdict, not only the bare participant id.
+  const profileNameByParticipantId = new Map(
+    protocol.participants.map((entry) => [entry.participantId, entry.profileName])
+  );
 
   return (
     <Accordion>
@@ -817,59 +910,94 @@ function ProtocolAccordion({ protocol }: { protocol: StoredRun["protocol"] }) {
                only identity/model/prompt version -- profile name (when
                set) and personality too. One small bordered block per
                participant keeps long personality text readable rather
-               than squeezed into a single inline sentence. */}
-            {protocol.participants.map((entry) => (
-              <Stack
-                key={entry.participantId}
-                spacing={0.25}
-                sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2, p: 1.5 }}
-              >
-                <Typography sx={{ fontWeight: 700 }} variant="body2">
-                  {entry.participantId} -- {entry.role}
-                  {entry.side ? ` (${entry.side})` : ""}
-                </Typography>
-                {entry.profileName ? (
-                  <Typography variant="body2">Profile: {entry.profileName}</Typography>
-                ) : null}
-                <Typography variant="body2">Personality: {entry.personality}</Typography>
-                <Typography variant="body2">Model: {entry.modelId}</Typography>
-                <Typography variant="body2">Prompt version: {entry.promptVersion}</Typography>
-                {/* PRO/CON semantic correction (Issue #30): version-aware,
-                   fail-closed side meaning -- never applies the current
-                   advocate-v2 explanation to a historical advocate-v1
-                   participant, and never silently claims a meaning for
-                   an unrecognized/placeholder prompt version. */}
-                {entry.side ? (
-                  <AdvocateSideMeaning promptVersion={entry.promptVersion} side={entry.side} />
-                ) : null}
-              </Stack>
-            ))}
+               than squeezed into a single inline sentence.
+               Final independent-review correction (PR #34, product-wide
+               participant-identity): profileName primary, human seat
+               label secondary -- never the raw technical participantId,
+               and never a redundant separate "Profile: X" line once it
+               is already the primary heading. */}
+            {protocol.participants.map((entry) => {
+              const seatLabel = getSeatLabel(entry.participantId);
+              const identity = resolveParticipantIdentity(entry.profileName, seatLabel);
+              const seatAndRole = `${seatLabel} · ${entry.role}`;
+
+              return (
+                <Stack
+                  key={entry.participantId}
+                  spacing={0.25}
+                  sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2, p: 1.5 }}
+                >
+                  <Typography sx={{ fontWeight: 700 }} variant="body2">
+                    {identity.secondarySeatLabel ? identity.primary : seatAndRole}
+                  </Typography>
+                  {identity.secondarySeatLabel ? (
+                    <Typography color="text.secondary" variant="body2">
+                      {seatAndRole}
+                    </Typography>
+                  ) : null}
+                  <Typography variant="body2">Personality: {entry.personality}</Typography>
+                  <Typography variant="body2">Model: {entry.modelId}</Typography>
+                  <Typography variant="body2">Prompt version: {entry.promptVersion}</Typography>
+                  {/* PRO/CON semantic correction (Issue #30): version-aware,
+                     fail-closed side meaning -- never applies the current
+                     advocate-v2 explanation to a historical advocate-v1
+                     participant, and never silently claims a meaning for
+                     an unrecognized/placeholder prompt version. */}
+                  {entry.side ? (
+                    <AdvocateSideMeaning promptVersion={entry.promptVersion} side={entry.side} />
+                  ) : null}
+                </Stack>
+              );
+            })}
           </Stack>
           <Stack spacing={0.5}>
             <Typography sx={{ fontWeight: 800 }} variant="body2">
               Advocates
             </Typography>
-            {protocol.advocates.map((entry) => (
-              <Stack key={entry.participantId} spacing={0.25}>
-                <Typography variant="body2">
-                  {entry.participantId} ({entry.side}): {entry.speech}
-                </Typography>
-                <AdvocateSideMeaning
-                  promptVersion={promptVersionByParticipantId.get(entry.participantId) ?? ""}
-                  side={entry.side}
-                />
-              </Stack>
-            ))}
+            {protocol.advocates.map((entry) => {
+              // Final independent-review correction: the human seat
+              // label ("PRO I"), never the raw technical participantId,
+              // is the correct secondary identity here.
+              const identity = resolveParticipantIdentity(
+                profileNameByParticipantId.get(entry.participantId),
+                getSeatLabel(entry.participantId)
+              );
+              const label = identity.secondarySeatLabel
+                ? `${identity.primary} (${identity.secondarySeatLabel})`
+                : identity.primary;
+
+              return (
+                <Stack key={entry.participantId} spacing={0.25}>
+                  <Typography variant="body2">
+                    {label} ({entry.side}): {entry.speech}
+                  </Typography>
+                  <AdvocateSideMeaning
+                    promptVersion={promptVersionByParticipantId.get(entry.participantId) ?? ""}
+                    side={entry.side}
+                  />
+                </Stack>
+              );
+            })}
           </Stack>
           <Stack spacing={0.5}>
             <Typography sx={{ fontWeight: 800 }} variant="body2">
               Judges
             </Typography>
-            {protocol.judges.map((entry) => (
-              <Typography key={entry.participantId} variant="body2">
-                {entry.participantId} ({entry.verdict}): {entry.reasoning}
-              </Typography>
-            ))}
+            {protocol.judges.map((entry) => {
+              const identity = resolveParticipantIdentity(
+                profileNameByParticipantId.get(entry.participantId),
+                getSeatLabel(entry.participantId)
+              );
+              const label = identity.secondarySeatLabel
+                ? `${identity.primary} (${identity.secondarySeatLabel})`
+                : identity.primary;
+
+              return (
+                <Typography key={entry.participantId} variant="body2">
+                  {label} ({entry.verdict}): {entry.reasoning}
+                </Typography>
+              );
+            })}
           </Stack>
           <Stack spacing={0.5}>
             <Typography sx={{ fontWeight: 800 }} variant="body2">

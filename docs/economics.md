@@ -910,3 +910,15 @@ never about how much or how the guardrails compute.
   user's own credential rather than the operator's, since the worker has
   no metadata-only exemption to make — every OpenRouter call it makes at
   all is on the path to a possible paid completion.
+- **Milestone 12 exception (human product override, `SECURITY.md`
+  Sec 3.1.1):** the canonical Jon Snow lecturer demo is a narrow,
+  deliberate override of "operator spends $0," scoped to exactly one
+  dedicated endpoint (`POST /api/demo/jon-snow/runs`), funded by its own
+  separate `JON_SNOW_DEMO_OPENROUTER_API_KEY`, capped at a strictly
+  lower `JON_SNOW_DEMO_MAX_ESTIMATE_USD` ($0.13, re-verified server-side
+  against the live catalog on every request) underneath the unchanged
+  $5.00 hard ceiling, and gated by a separate, revocable access
+  capability (`JON_SNOW_DEMO_ACCESS_TOKEN`) so an anonymous visitor
+  cannot spend it. Every other endpoint in this document — including
+  generic `POST /api/runs` — is completely unaffected and still requires
+  the connected user's own credential exactly as described above.

@@ -6,6 +6,7 @@
 // logged, or exposed in a response; it exists only in this request's own
 // in-memory handling and the one forwarded header.
 
+import Decimal from "decimal.js";
 import { runPreflight } from "../openrouter/preflight";
 import { createPreflightRunLoader } from "../openrouter/preflightRunLoader";
 import type { CaseRepository } from "../cases";
@@ -34,6 +35,24 @@ export type TriggerExecutionDeps = {
   // set to redirect both INTERNAL_FUNCTION_SECRET and the user's
   // OpenRouter key to an attacker-controlled origin.
   backgroundFunctionBaseUrl?: string;
+  // Milestone 12 (human product override, PR #34 final correction) --
+  // OPTIONAL, additional, stricter conservative-cost ceiling, checked
+  // against the SAME authoritative runPreflight() result already
+  // computed below, immediately before worker invocation. Generic
+  // /api/runs callers omit this entirely and behave EXACTLY as before
+  // this change -- the existing $5.00 MAX_RUN_COST_USD ceiling (enforced
+  // inside runPreflight itself, unchanged) remains the only cost gate
+  // for them. The Jon Snow demo endpoint (jonSnowDemoRun.ts) passes
+  // JON_SNOW_DEMO_MAX_ESTIMATE_USD here: its own earlier
+  // listEligibleModels() check (acceptJonSnowDemoRun) uses discovery
+  // metadata that can be up to the metadata cache's TTL stale, so a
+  // price change during that window could otherwise pass the earlier
+  // check and still reach a real completion above the demo ceiling but
+  // below $5.00. This gate re-checks against FRESH, authoritative
+  // preflight pricing -- computed using the real (demo) credential,
+  // immediately before the one worker invocation -- so it can never be
+  // bypassed by a stale metadata read.
+  additionalMaxCostUsd?: string;
 };
 
 function resolveBackgroundFunctionUrl(baseUrlOverride?: string): string {
@@ -83,6 +102,29 @@ export async function triggerExecutionIfEligible(
       run.id,
       reasonCodes[0] ?? "BUDGET_EXCEEDED",
       `Synchronous preflight blocked: ${reasonCodes.join(", ") || "ineligible"}`
+    );
+
+    return { invoked: false, reason: "blocked_budget", blockedReasonCodes: reasonCodes };
+  }
+
+  // Milestone 12 (human product override, PR #34 final correction): the
+  // authoritative, additional demo-spend gate. Runs only when a caller
+  // opted in (deps.additionalMaxCostUsd set) -- generic /api/runs never
+  // sets this, so this block is a complete no-op for every existing
+  // caller. Compares the SAME preflight.conservativeMaxCostUsd the
+  // generic $5.00 check above already used -- fresh, authoritative,
+  // computed with the real credential -- never the caller's own earlier,
+  // possibly-stale discovery-time estimate.
+  if (
+    deps.additionalMaxCostUsd !== undefined &&
+    new Decimal(preflight.conservativeMaxCostUsd).gt(new Decimal(deps.additionalMaxCostUsd))
+  ) {
+    const reasonCodes = ["DEMO_BUDGET_EXCEEDED"];
+
+    await deps.tribunalRepository.blockBudget(
+      run.id,
+      reasonCodes[0],
+      `Authoritative preflight cost $${preflight.conservativeMaxCostUsd} exceeds the additional demo maximum $${deps.additionalMaxCostUsd}.`
     );
 
     return { invoked: false, reason: "blocked_budget", blockedReasonCodes: reasonCodes };

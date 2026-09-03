@@ -9,7 +9,7 @@ import {
   Typography
 } from "@mui/material";
 import Decimal from "decimal.js";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 import { Link as RouterLink, useNavigate } from "react-router-dom";
 import {
   CURRENT_ADVOCATE_SIDE_DESCRIPTION,
@@ -31,15 +31,10 @@ import {
   type SetupState
 } from "../features/case-setup/setupState";
 import { useSetup } from "../features/case-setup/useSetup";
+import { useRunStart } from "../features/tribunal-run/useRunStart";
 import { allParticipants, type Participant } from "../mocks/tribunalMockData";
 import { CaseApiError, saveCase, type StoredCase } from "../services/caseApi";
-import {
-  convene,
-  RunApiError,
-  type RunCaseRequest,
-  type RunParticipantRequest,
-  type StoredRun
-} from "../services/runApi";
+import type { RunCaseRequest, RunParticipantRequest, StoredRun } from "../services/runApi";
 
 export function ReviewPage() {
   const { state, dispatch } = useSetup();
@@ -47,21 +42,19 @@ export function ReviewPage() {
   const [saveError, setSaveError] = useState("");
   const [savedCase, setSavedCase] = useState<StoredCase | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-  const [conveneError, setConveneError] = useState("");
   const [conveneResult, setConveneResult] = useState<StoredRun | null>(null);
-  const [isConvening, setIsConvening] = useState(false);
+  // Milestone 12 (Issue #32 Sec 7): the clientRequestId/snapshot
+  // idempotency rule, the convene() call, and submit/error state now
+  // live in the shared useRunStart hook, reused unchanged by the Jon
+  // Snow demo launcher -- this page keeps only what is genuinely its
+  // own: charge-sheet/participant construction and its own on-success
+  // behavior (recordSavedCase, navigation) below.
+  const { isSubmitting: isConvening, error: conveneError, start: startRun } = useRunStart();
   // Milestone 8 (user-funded BYOK): Convene is disabled until an
   // OpenRouter credential is connected -- server-side enforcement
   // (OPENROUTER_NOT_CONNECTED) is independent and authoritative
   // regardless of this client-side gate.
   const [openRouterConnected, setOpenRouterConnected] = useState(() => hasUserOpenRouterKey());
-  // Milestone 6 client idempotency key lifecycle: stable across a retry of
-  // the same semantic submission, refreshed only when the underlying
-  // request actually changed (docs/adr/0002-participant-configuration-
-  // freeze.md Decision 8; SPEC.md CONFIG-008/008A). Refs, not state --
-  // this is bookkeeping, not something that should trigger a re-render.
-  const clientRequestIdRef = useRef<string | null>(null);
-  const requestSnapshotRef = useRef<string | null>(null);
   // Independent audit correction (Issue #17 blocker 1): the real
   // eligible catalog, not mock/tribunalMockData. Also passes the
   // auto-select callback -- a setup can reach Review directly (e.g.
@@ -260,51 +253,30 @@ export function ReviewPage() {
 
     const caseRequest = buildCaseRequest(state);
     const participants = buildParticipantsRequest(state);
-    const snapshot = JSON.stringify({
-      case: caseRequest,
-      executionMode: state.executionMode,
-      participants
-    });
 
-    // Reuse the existing client_request_id only while the semantic
-    // submission is unchanged from the last attempt; a materially edited
-    // resubmission gets a fresh key rather than reusing one that would
-    // now describe different data under the old identity.
-    if (!clientRequestIdRef.current || requestSnapshotRef.current !== snapshot) {
-      clientRequestIdRef.current = crypto.randomUUID();
-      requestSnapshotRef.current = snapshot;
+    const result = await startRun(caseRequest, state.executionMode, participants);
+
+    if (!result) {
+      // useRunStart already captured the formatted error in `conveneError`.
+      return;
     }
 
-    setConveneError("");
-    setIsConvening(true);
+    const { run, executionTriggered } = result;
 
-    try {
-      const { run, executionTriggered } = await convene({
-        clientRequestId: clientRequestIdRef.current,
-        case: caseRequest,
-        executionMode: state.executionMode,
-        participants
-      });
+    if (caseRequest.kind === "new") {
+      dispatch({ type: "recordSavedCase", id: run.caseId });
+    }
 
-      if (caseRequest.kind === "new") {
-        dispatch({ type: "recordSavedCase", id: run.caseId });
-      }
+    setConveneResult(run);
 
-      setConveneResult(run);
-
-      // Milestone 8: navigate to the real run page only when execution
-      // was actually triggered by this request (ARCHITECTURE.md Sec 12's
-      // /runs/:runId route). A BLOCKED_BUDGET run also has something
-      // useful to show there; any other non-trigger outcome (e.g. an
-      // unreachable worker invocation) stays on Review with the frozen
-      // run id visible instead of navigating to an unchanging blank page.
-      if (executionTriggered || run.status === "BLOCKED_BUDGET") {
-        navigate(`/runs/${run.id}`);
-      }
-    } catch (error) {
-      setConveneError(formatRunError(error));
-    } finally {
-      setIsConvening(false);
+    // Milestone 8: navigate to the real run page only when execution
+    // was actually triggered by this request (ARCHITECTURE.md Sec 12's
+    // /runs/:runId route). A BLOCKED_BUDGET run also has something
+    // useful to show there; any other non-trigger outcome (e.g. an
+    // unreachable worker invocation) stays on Review with the frozen
+    // run id visible instead of navigating to an unchanging blank page.
+    if (executionTriggered || run.status === "BLOCKED_BUDGET") {
+      navigate(`/runs/${run.id}`);
     }
   }
 
@@ -618,18 +590,6 @@ function formatCaseError(error: unknown) {
   }
 
   return "Case could not be saved.";
-}
-
-function formatRunError(error: unknown) {
-  if (error instanceof RunApiError) {
-    if (error.status === 409) {
-      return "This configuration could not be frozen because a prior request with the same submission id already produced a different result. Please try again.";
-    }
-
-    return error.errors.join(" ") || "Tribunal configuration could not be frozen.";
-  }
-
-  return "Tribunal configuration could not be frozen.";
 }
 
 function formatSourceType(sourceType: string) {
