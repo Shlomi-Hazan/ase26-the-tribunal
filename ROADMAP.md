@@ -50,7 +50,7 @@ Do not begin later milestones by destabilizing incomplete earlier work.
 | 10 | Protocol & Economics | ✅ Complete |
 | 11 | Past Cases & Auditability | ✅ Complete |
 | 12 | Canonical Jon Snow Demo | ✅ Complete |
-| 13 | Failure & Security Hardening | ⬜ Planned |
+| 13 | Failure & Security Hardening | ✅ Complete |
 | 14 | UI Polish & Accessibility | ⬜ Planned |
 | 15 | Production Deployment | ⬜ Planned |
 | 16 | Final Verification & Course Audit | ⬜ Planned |
@@ -691,6 +691,21 @@ Security checklist in `SECURITY.md` plus automated/manual evidence.
 ## Exit condition
 
 Every tested failure has an explicit, non-deceptive user state and an actionable, non-secret audit trail.
+
+### Closeout (2026-09-03)
+
+Complete. Planning: [Issue #36](https://github.com/Shlomi-Hazan/ase26-the-tribunal/issues/36) (closed). Implementation: [PR #37](https://github.com/Shlomi-Hazan/ase26-the-tribunal/pull/37), approved head `766722983de46b6aa271506354a21679c2264bdb`, merged into `main` at `ce30cec69641ed8c9caa90d9610f8aa7ec8469b9`.
+
+Delivered through three independent-review correction rounds:
+
+- **G1a/G1b — database-error hardening** (`netlify/server/tribunal/execution.ts`): a `TribunalPersistenceError` (or any other exception) inside a logical call is classified precisely (`DATABASE_ERROR` vs. `UNEXPECTED_LOGICAL_CALL_ERROR`) with stage-aware economics preservation (never fabricated, and Actual/Derived cost kept distinct); the whole post-claim execution body is wrapped in a best-effort recovery guard, never recursing/rethrowing. The pre-claim path is deliberately left unguarded — analyzed and documented rather than coded around, since a read failure leaves the run provably still `READY` (zero spend) and `blockBudget`/`claimForExecution` are themselves ambiguous atomic writes where a blind recovery write risks falsely failing a run a different, legitimate invocation actually won. No migration. `RunPage` now shows an honest "Waiting for execution to start" state for `READY`, never claiming active deliberation.
+- **G2 — stuck-run staleness signal**: a new shared, isomorphic timing-policy module (`src/features/tribunal-run/executionTimingPolicy.ts`) keeps the server engine and `RunPage` in sync; a non-fabricating "taking longer than expected" caption is derived from the persisted `run.startedAt`, never `createdAt` or a client-side timestamp.
+- **G3 — admission-control rate limiting**: both `POST /api/runs` and `POST /api/demo/jon-snow/runs` now reuse the existing, authoritative `check_and_record_admission` RPC (already proven in Milestone 7A) under independent bucket namespaces — no migration, the RPC/table are bucket-generic by original design.
+- **G4 — prompt-injection containment proof** and **G5 — XSS containment-and-visibility test breadth** for the core Tribunal path, both proving containment rather than any claim of semantic immunity or perfect sanitization.
+- **CI flake mitigation**: `vite.config.ts` `maxWorkers: 2`, verified on 3 consecutive green CI runs on the same head before further review.
+- **Dependency/supply-chain audit** (`SECURITY.md` Sec 17.1): first recorded `npm audit` result — 8 advisories, all traced to the dev-only `netlify-cli`, no deployed-runtime exposure, accepted/deferred (no safe forward fix offered by npm; `netlify-cli` was not downgraded).
+
+`npm run verify` passed in full at the approved head (1019/1019 tests). No database/schema migration at any point in this milestone. Zero live Tribunal runs, zero OpenRouter completions across the entire milestone.
 
 ---
 
