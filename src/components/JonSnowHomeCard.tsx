@@ -14,6 +14,24 @@ import { JON_SNOW_DEFAULT_MODEL_ID } from "../features/jon-snow-demo/jonSnowDefa
 import { JON_SNOW_DEMO_MAX_ESTIMATE_USD } from "../features/jon-snow-demo/jonSnowDemoEconomics";
 import { useJonSnowDemoStart } from "../features/tribunal-run/useJonSnowDemoStart";
 import { hasJonSnowDemoAccess } from "../services/jonSnowDemoAccess";
+import { JonSnowCrest } from "./JonSnowCrest";
+import { jonSnowCtaBlue } from "../theme/jonSnowTheme";
+
+// Milestone 14 (Ivory & Iron, Issue #39 Phase 2, final correction pass):
+// human design decision -- this card stays intentionally dark, a
+// deliberate "portal" cue into the themed chamber, on an otherwise fully
+// Ivory & Iron Home page. Colors below are the real Night/Iron/Frost/
+// Dire-Bronze tokens (jonSnowTheme.ts's own palette values, inlined here
+// rather than wrapping this one card in a second ThemeProvider, since
+// only the card -- never the rest of Home -- goes dark). Every existing
+// behavior below (one-click Run gating, Modify-settings link, model/
+// demo-access/cost-policy handling, navigation) is unchanged.
+const night = "#0B0F14";
+const iron = "#161B22";
+const ironBorder = "#2A323D";
+const frost = "#D8DEE6";
+const steel = "#7C8695";
+const direBronze = "#A98548";
 
 export function JonSnowHomeCard() {
   const navigate = useNavigate();
@@ -62,41 +80,50 @@ export function JonSnowHomeCard() {
     }
   }
 
+  const alertSx = {
+    backgroundColor: iron,
+    border: `1px solid ${ironBorder}`,
+    color: frost
+  };
+
   return (
     <Card
       component="section"
       sx={{
-        background: "linear-gradient(160deg, #1c2530 0%, #33261a 100%)",
-        border: "1px solid rgba(255, 255, 255, 0.12)",
-        color: "#f2e9d8"
+        background: `linear-gradient(160deg, ${iron} 0%, ${night} 100%)`,
+        border: `1px solid ${ironBorder}`,
+        color: frost
       }}
     >
       <CardContent>
         <Stack spacing={1.5}>
-          <Typography
-            sx={{ color: "#c9a35a", fontWeight: 800, letterSpacing: 1, textTransform: "uppercase" }}
-            variant="caption"
-          >
-            Featured demo
-          </Typography>
-          <Typography component="h2" sx={{ color: "#f2e9d8" }} variant="h6">
+          <Stack direction="row" sx={{ alignItems: "center", justifyContent: "space-between" }}>
+            <Typography
+              sx={{ color: direBronze, fontWeight: 800, letterSpacing: 1, textTransform: "uppercase" }}
+              variant="caption"
+            >
+              Featured demo
+            </Typography>
+            <JonSnowCrest size={32} />
+          </Stack>
+          <Typography component="h2" sx={{ color: frost, fontFamily: '"Fraunces", Georgia, serif' }} variant="h6">
             The Realm v. Jon Snow
           </Typography>
-          <Typography sx={{ color: "#cbbfa8" }} variant="body2">
+          <Typography sx={{ color: steel }} variant="body2">
             A canonical, one-click case: Jon Snow and Tyrion Lannister for the defense, Daenerys
             Targaryen and Grey Worm for the prosecution, judged by three research-based
             judicial-method profiles. Real Tribunal engine, operator-funded.
           </Typography>
 
-          <Box sx={{ borderTop: "1px solid rgba(255,255,255,0.12)", pt: 1.5 }}>
+          <Box sx={{ borderTop: `1px solid ${ironBorder}`, pt: 1.5 }}>
             {modelsLoading ? (
-              <Typography sx={{ color: "#cbbfa8" }} variant="body2">
+              <Typography sx={{ color: steel }} variant="body2">
                 Checking demo availability...
               </Typography>
             ) : modelsError ? (
-              <Alert severity="error">{modelsError}</Alert>
+              <Alert severity="error" sx={alertSx}>{modelsError}</Alert>
             ) : (
-              <Typography sx={{ color: "#cbbfa8" }} variant="body2">
+              <Typography sx={{ color: steel }} variant="body2">
                 Default model: {defaultModel?.name ?? JON_SNOW_DEFAULT_MODEL_ID} · 7 expected
                 logical calls · conservative estimate{" "}
                 {defaultModel ? `$${defaultModel.conservativeFullTribunalEstimateUsd}` : "unavailable"}{" "}
@@ -104,20 +131,20 @@ export function JonSnowHomeCard() {
               </Typography>
             )}
             {catalogReady && !defaultInPolicy ? (
-              <Alert severity="warning" sx={{ mt: 1 }}>
+              <Alert severity="warning" sx={{ ...alertSx, mt: 1 }}>
                 The configured default model is not currently eligible within the operator-funded
                 demo's ${JON_SNOW_DEMO_MAX_ESTIMATE_USD} maximum. Use Modify settings / models to
                 choose another eligible model.
               </Alert>
             ) : null}
             {!hasAccess ? (
-              <Alert severity="info" sx={{ mt: 1 }}>
+              <Alert severity="info" sx={{ ...alertSx, mt: 1 }}>
                 One-click Run requires a lecturer presentation link. Open Modify settings / models
                 to review the canonical case.
               </Alert>
             ) : null}
             {runStartError ? (
-              <Alert severity="error" sx={{ mt: 1 }}>
+              <Alert severity="error" sx={{ ...alertSx, mt: 1 }}>
                 {runStartError}
               </Alert>
             ) : null}
@@ -128,9 +155,13 @@ export function JonSnowHomeCard() {
               disabled={!canRun}
               onClick={handleRun}
               sx={{
-                bgcolor: "#c9a35a",
-                color: "#1c2530",
-                "&:hover": { bgcolor: "#dab876" }
+                bgcolor: jonSnowCtaBlue,
+                color: "#FFFFFF",
+                // Hover deepens further (never toward the thematic
+                // #4C7A9E, whose white-text contrast is a borderline
+                // ~4.58:1) -- contrast can only improve on hover, never
+                // regress toward the locked rule's boundary.
+                "&:hover": { bgcolor: "#335A75" }
               }}
               variant="contained"
             >
@@ -138,7 +169,7 @@ export function JonSnowHomeCard() {
             </Button>
             <Button
               component={RouterLink}
-              sx={{ borderColor: "rgba(242,233,216,0.5)", color: "#f2e9d8" }}
+              sx={{ borderColor: ironBorder, color: frost, "&:hover": { borderColor: direBronze } }}
               to="/demo/jon-snow"
               variant="outlined"
             >

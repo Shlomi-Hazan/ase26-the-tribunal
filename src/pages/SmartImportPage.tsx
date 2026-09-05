@@ -523,21 +523,47 @@ export function SmartImportPage() {
               <Button disabled={busy} onClick={handlePasteSubmit} variant="outlined">
                 {phase === "preflighting" ? <CircularProgress size={20} /> : "Check Eligibility & Cost"}
               </Button>
-              <input
-                accept=".txt,.md,.pdf,text/plain,text/markdown,application/pdf"
-                aria-label="Smart Import dossier file"
-                hidden
-                onChange={handleFileChange}
-                ref={fileInputRef}
-                type="file"
-              />
-              <Button
-                disabled={busy}
-                onClick={() => fileInputRef.current?.click()}
-                variant="outlined"
+              {/* Milestone 14 (Ivory & Iron, Issue #39 Phase 3): a quiet
+                  bordered "drop-zone" surface, restyle only -- the click-
+                  to-browse behavior below is byte-identical (same hidden
+                  input, same ref, same onChange); no drag-and-drop
+                  handling is added, since that would be new functionality
+                  outside this milestone's scope. */}
+              <Box
+                sx={{
+                  alignItems: "center",
+                  border: "1px dashed",
+                  borderColor: "divider",
+                  borderRadius: 2,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 1,
+                  justifyContent: "center",
+                  minWidth: { sm: 220 },
+                  px: 3,
+                  py: 2,
+                  textAlign: "center"
+                }}
               >
-                Upload .txt / .md / .pdf
-              </Button>
+                <input
+                  accept=".txt,.md,.pdf,text/plain,text/markdown,application/pdf"
+                  aria-label="Smart Import dossier file"
+                  hidden
+                  onChange={handleFileChange}
+                  ref={fileInputRef}
+                  type="file"
+                />
+                <Button
+                  disabled={busy}
+                  onClick={() => fileInputRef.current?.click()}
+                  variant="outlined"
+                >
+                  Upload .txt / .md / .pdf
+                </Button>
+                <Typography color="text.secondary" variant="caption">
+                  .txt, .md, or .pdf
+                </Typography>
+              </Box>
             </Stack>
             <Box>
               <Button onClick={() => navigate("/new/charge-sheet")} variant="text">

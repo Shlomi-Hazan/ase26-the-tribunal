@@ -41,6 +41,7 @@ import { verdictColor } from "../components/verdictColor";
 // locally re-derived threshold and never an import of execution.ts
 // itself (server-only).
 import { computeStalenessThresholdMs } from "../features/tribunal-run/executionTimingPolicy";
+import { monoFontStack } from "../theme/theme";
 import {
   advocateParticipants,
   judgeParticipants,
@@ -685,8 +686,15 @@ function attemptDetailId(attempt: AttemptAudit): string {
 }
 
 function AttemptDetailField({ label, value }: { label: string; value: string | null }) {
+  // Milestone 14 (Ivory & Iron): mono/tabular-nums applied to the WHOLE
+  // line (label + value together), not a nested span around the value
+  // alone -- a nested element would introduce a second, separately
+  // text-matchable node whose bare content happens to coincide with the
+  // same value shown elsewhere (e.g. the main audit row), breaking
+  // several existing "this raw value is not shown here" assertions.
+  // Same visual ledger effect, zero DOM-structure change.
   return (
-    <Typography variant="body2">
+    <Typography sx={{ fontFamily: monoFontStack, fontVariantNumeric: "tabular-nums" }} variant="body2">
       {label}: {value ?? "Unavailable"}
     </Typography>
   );
@@ -746,20 +754,28 @@ function AttemptDetailRow({
             ) : null}
           </Stack>
         </TableCell>
-        <TableCell>{attempt.attemptNumber}</TableCell>
-        <TableCell>{attempt.configuredModelId}</TableCell>
-        <TableCell>{formatTokenCount(attempt.inputTokens)}</TableCell>
-        <TableCell>{formatTokenCount(attempt.outputTokens)}</TableCell>
-        <TableCell>{formatTokenCount(attempt.totalTokens)}</TableCell>
-        <TableCell>
+        <TableCell sx={{ fontFamily: monoFontStack }}>{attempt.attemptNumber}</TableCell>
+        <TableCell sx={{ fontFamily: monoFontStack }}>{attempt.configuredModelId}</TableCell>
+        <TableCell sx={{ fontFamily: monoFontStack, fontVariantNumeric: "tabular-nums" }}>
+          {formatTokenCount(attempt.inputTokens)}
+        </TableCell>
+        <TableCell sx={{ fontFamily: monoFontStack, fontVariantNumeric: "tabular-nums" }}>
+          {formatTokenCount(attempt.outputTokens)}
+        </TableCell>
+        <TableCell sx={{ fontFamily: monoFontStack, fontVariantNumeric: "tabular-nums" }}>
+          {formatTokenCount(attempt.totalTokens)}
+        </TableCell>
+        <TableCell sx={{ fontFamily: monoFontStack, fontVariantNumeric: "tabular-nums" }}>
           {cost.text}
           {cost.source ? (
-            <Typography color="text.secondary" component="span" sx={{ ml: 0.5 }} variant="caption">
+            <Typography color="text.secondary" component="span" sx={{ fontFamily: "inherit", ml: 0.5 }} variant="caption">
               ({cost.source})
             </Typography>
           ) : null}
         </TableCell>
-        <TableCell>{formatLatency(attempt.latencyMs)}</TableCell>
+        <TableCell sx={{ fontFamily: monoFontStack, fontVariantNumeric: "tabular-nums" }}>
+          {formatLatency(attempt.latencyMs)}
+        </TableCell>
         <TableCell>{attempt.status}</TableCell>
       </TableRow>
       <TableRow>

@@ -11,6 +11,7 @@ import { Alert, Box, Button, Card, CardContent, MenuItem, Stack, TextField, Typo
 import Decimal from "decimal.js";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { JonSnowCrest } from "../components/JonSnowCrest";
 import { PageHeader } from "../components/PageHeader";
 import { useEligibleModels } from "../features/case-setup/useEligibleModels";
 import {
@@ -80,11 +81,19 @@ export function JonSnowSettingsPage() {
 
   return (
     <Stack spacing={4}>
-      <PageHeader
-        description="Case T-001: The Realm v. Jon Snow -- a canonical, deterministic case run through the real Tribunal engine, operator-funded."
-        eyebrow="Modify settings / models"
-        title="Jon Snow Demo Settings"
-      />
+      {/* Milestone 14 (Ivory & Iron, Issue #39 Phase 4): the crest is the
+          one added thematic touch here -- PageHeader itself is the same
+          shared, generic component every other page uses (now rendering
+          in the full dark chamber automatically via AppThemeProvider,
+          since this page has no ad-hoc colors of its own). */}
+      <Stack direction="row" sx={{ alignItems: "flex-start", justifyContent: "space-between" }}>
+        <PageHeader
+          description="Case T-001: The Realm v. Jon Snow -- a canonical, deterministic case run through the real Tribunal engine, operator-funded."
+          eyebrow="Modify settings / models"
+          title="Jon Snow Demo Settings"
+        />
+        <JonSnowCrest size={44} />
+      </Stack>
       <Alert severity="info">{JON_SNOW_DOSSIER_DISCLAIMER}</Alert>
       <Card>
         <CardContent>
