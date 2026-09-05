@@ -4,6 +4,18 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>The Tribunal</title>
+    <!-- Milestone 14 (Ivory & Iron) -- font delivery decision: Google
+       Fonts, preconnected, with an explicit font-display: swap (the
+       fonts.googleapis.com stylesheet already sets this per-face). A
+       real fallback stack is declared alongside every font-family in
+       src/theme/theme.ts and jonSnowTheme.ts, so text is never invisible
+       while these load. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Public+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+    />
   </head>
   <body>
     <div id="root"></div>

@@ -1,4 +1,3 @@
-import { CssBaseline, ThemeProvider } from "@mui/material";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { SetupProvider } from "../features/case-setup/SetupProvider";
 import { AppShell } from "../layout/AppShell";
@@ -16,7 +15,7 @@ import { ResultPage } from "../pages/ResultPage";
 import { ReviewPage } from "../pages/ReviewPage";
 import { RunPage } from "../pages/RunPage";
 import { SmartImportPage } from "../pages/SmartImportPage";
-import { theme } from "../theme/theme";
+import { AppThemeProvider } from "./AppThemeProvider";
 
 export function AppRoutes() {
   return (
@@ -51,22 +50,26 @@ export function AppRoutes() {
 }
 
 export function AppFrame() {
+  // Milestone 14 (Ivory & Iron, Issue #39 Phase 4): AppThemeProvider is
+  // ABOVE AppShell so the AppBar itself picks up the Jon Snow dark
+  // chamber on /demo/jon-snow* routes, not just the page content below
+  // it. It reads useLocation() and so must stay inside BrowserRouter
+  // (see App() below).
   return (
-    <SetupProvider>
-      <AppShell>
-        <AppRoutes />
-      </AppShell>
-    </SetupProvider>
+    <AppThemeProvider>
+      <SetupProvider>
+        <AppShell>
+          <AppRoutes />
+        </AppShell>
+      </SetupProvider>
+    </AppThemeProvider>
   );
 }
 
 export function App() {
   return (
-    <ThemeProvider theme={theme}>
-      <CssBaseline />
-      <BrowserRouter>
-        <AppFrame />
-      </BrowserRouter>
-    </ThemeProvider>
+    <BrowserRouter>
+      <AppFrame />
+    </BrowserRouter>
   );
 }

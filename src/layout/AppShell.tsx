@@ -12,7 +12,7 @@ import { NavLink } from "react-router-dom";
 
 const navItems = [
   { to: "/", label: "Home" },
-  { to: "/new/charge-sheet", label: "New Case" },
+  { to: "/new/charge-sheet", label: "New Tribunal" },
   { to: "/history", label: "Past Cases" }
 ];
 
@@ -38,7 +38,12 @@ export function AppShell({ children }: { children: ReactNode }) {
             py: { xs: 1.5, sm: 0 }
           }}
         >
-          <Typography component={NavLink} to="/" variant="h6" sx={{ textDecoration: "none" }}>
+          <Typography
+            component={NavLink}
+            to="/"
+            variant="h6"
+            sx={{ fontFamily: '"Fraunces", Georgia, serif', textDecoration: "none" }}
+          >
             The Tribunal
           </Typography>
           <Stack
@@ -54,18 +59,25 @@ export function AppShell({ children }: { children: ReactNode }) {
                 key={item.to}
                 to={item.to}
                 sx={{
-                  borderRadius: 1,
+                  borderBottom: "2px solid transparent",
                   color: "text.secondary",
                   fontWeight: 700,
-                  px: 1.5,
+                  px: 0.5,
                   py: 0.75,
                   textDecoration: "none",
+                  whiteSpace: "nowrap",
+                  transition: "color 150ms ease, border-color 150ms ease",
+                  "&:hover": {
+                    color: "text.primary"
+                  },
                   "&.active": {
-                    bgcolor: "rgba(143, 98, 56, 0.12)",
+                    borderBottomColor: "primary.dark",
                     color: "text.primary"
                   },
                   "&:focus-visible": {
-                    outline: "3px solid rgba(45, 95, 115, 0.45)",
+                    borderRadius: 1,
+                    outline: "2px solid",
+                    outlineColor: "primary.main",
                     outlineOffset: 2
                   }
                 }}
