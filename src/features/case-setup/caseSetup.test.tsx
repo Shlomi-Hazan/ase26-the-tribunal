@@ -557,10 +557,23 @@ describe("case setup workflow", () => {
     // (never color-only) side explanation is now shown on every
     // advocate card -- two PRO ("PRO — Defense") and two CON
     // ("CON — Opposition").
-    expect(screen.getAllByText("PRO — Defense")).toHaveLength(2);
-    expect(screen.getAllByText("CON — Opposition")).toHaveLength(2);
-    expect(screen.getAllByText("Supports the defendant · argues NOT_GUILTY")).toHaveLength(2);
-    expect(screen.getAllByText("Argues against the defendant · argues GUILTY")).toHaveLength(2);
+    //
+    // Milestone 14 (Advocates high-fidelity redesign): AdvocatesPage now
+    // also renders one PRO-side and one CON-side group heading using
+    // this exact same locked text (deliberately reusing it, never a
+    // divergent variant, per advocateSideCopy.ts's own "never diverges
+    // between screens" rule) -- so each string now appears 3 times (2
+    // cards + 1 group heading), not 2.
+    expect(screen.getAllByText("PRO — Defense")).toHaveLength(3);
+    expect(screen.getAllByText("CON — Opposition")).toHaveLength(3);
+    // Milestone 14 (Advocates refinement pass): the two advocate cards
+    // display a locally reworded, display-only version of this same
+    // locked text ("NOT_GUILTY"/"GUILTY" -> "Not Guilty"/"Guilty") --
+    // the underlying shared advocateSideCopy.ts constant, and every
+    // other surface that consumes it verbatim (ReviewPage, RunPage's
+    // historical caption), are untouched.
+    expect(screen.getAllByText("Supports the defendant · argues Not Guilty")).toHaveLength(2);
+    expect(screen.getAllByText("Argues against the defendant · argues Guilty")).toHaveLength(2);
 
     renderWithAppProviders(<AppRoutes />, "/new/judges");
     // Same flush for JudgesPage's own JUDGE role catalog fetch.

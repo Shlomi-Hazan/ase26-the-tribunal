@@ -148,3 +148,18 @@ export function UploadIcon(props: IconProps) {
     </Icon>
   );
 }
+
+// Milestone 14 (Advocates refinement pass) -- a neutral "legal counsel"
+// mark (a briefcase), replacing a generic person/portrait glyph on the
+// advocate cards. Gender-neutral, not a figure/face, immediately reads
+// as "representation/counsel" rather than a placeholder avatar.
+export function CounselIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M9 7V5.5A1.5 1.5 0 0 1 10.5 4h3A1.5 1.5 0 0 1 15 5.5V7" />
+      <rect height="12" rx="1.6" width="18" x="3" y="7" />
+      <path d="M3 12.5h18" />
+      <path d="M10.6 12.5v1.6h2.8v-1.6" />
+    </Icon>
+  );
+}

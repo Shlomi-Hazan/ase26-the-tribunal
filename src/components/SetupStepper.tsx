@@ -84,7 +84,12 @@ export function SetupStepper() {
               key={step.path}
               sx={{
                 alignItems: "center",
-                bgcolor: "transparent",
+                // Refinement pass: a soft gold-tinted wash behind the
+                // active step, connecting visually to its underline
+                // (same element, same bottom border) so the current
+                // step reads clearly at a glance -- still a flat tint,
+                // never a filled "button" pill.
+                bgcolor: active ? "rgba(184,137,43,0.1)" : "transparent",
                 borderBottom: "2px solid",
                 borderBottomColor: active ? "#B8892B" : "transparent",
                 borderRadius: "8px",
@@ -93,10 +98,10 @@ export function SetupStepper() {
                 fontWeight: active ? 700 : 600,
                 justifyContent: "flex-start",
                 minWidth: 0,
-                px: 1,
+                px: active ? 1.25 : 1,
                 py: 0.75,
                 "&:hover": {
-                  bgcolor: "action.hover",
+                  bgcolor: active ? "rgba(184,137,43,0.16)" : "action.hover",
                   color: "text.primary"
                 }
               }}
