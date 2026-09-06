@@ -37,6 +37,25 @@ export function DocumentIcon(props: IconProps) {
   );
 }
 
+export function HomeIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="m3.5 11 8.5-7 8.5 7" />
+      <path d="M6 10.2V20h12v-9.8" />
+      <path d="M10 20v-5h4v5" />
+    </Icon>
+  );
+}
+
+export function PlusSquareIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <rect height="15" rx="2" width="15" x="4.5" y="4.5" />
+      <path d="M12 8.5v7M8.5 12h7" />
+    </Icon>
+  );
+}
+
 export function ClockHistoryIcon(props: IconProps) {
   return (
     <Icon {...props}>

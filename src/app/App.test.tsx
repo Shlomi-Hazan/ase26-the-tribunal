@@ -1,6 +1,7 @@
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { JON_SNOW_DEFAULT_MODEL_ID } from "../features/jon-snow-demo/jonSnowDefaultModel";
 import { AppShell } from "../layout/AppShell";
 import { renderWithAppProviders } from "../test/renderWithAppProviders";
 import { AppRoutes } from "./App";
@@ -59,7 +60,33 @@ describe("application shell and routing", () => {
   // change. "New Tribunal" now appears three times on this route (nav,
   // hero, card), so it is asserted with getAllByRole rather than a
   // single unique match.
-  it("renders the Home route with Create/Past Cases/Jon Snow demo actions", () => {
+  it("renders the Home route with Create/Past Cases/Jon Snow demo actions", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          models: [
+            {
+              id: JON_SNOW_DEFAULT_MODEL_ID,
+              canonicalModelId: `${JON_SNOW_DEFAULT_MODEL_ID}-20260101`,
+              name: "OpenAI: GPT-4o mini",
+              providerName: "Azure",
+              contextLength: 128_000,
+              promptPricePerMillion: "0.15",
+              completionPricePerMillion: "0.6",
+              isFree: false,
+              priceTier: "BUDGET",
+              conservativeFullTribunalEstimateUsd: "0.06",
+              supportsStructuredOutput: true
+            }
+          ]
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        }
+      )
+    );
+
     renderApp("/");
 
     expect(
@@ -68,11 +95,20 @@ describe("application shell and routing", () => {
     expect(
       screen.getAllByRole("link", { name: "New Tribunal" }).length
     ).toBeGreaterThanOrEqual(1);
-    expect(screen.getByRole("link", { name: "View Past Cases" })).toBeVisible();
-    expect(screen.getByRole("button", { name: /run jon snow demo/i })).toBeVisible();
+    // Milestone 14 visual-correction pass (PR #40): the Past Cases
+    // feature card is now the whole-card navigation link itself
+    // (aria-label "Past Cases", matching the reference direction) --
+    // that name collides with the nav's own "Past Cases" link, same as
+    // "New Tribunal" above.
     expect(
-      screen.getByRole("link", { name: /modify settings \/ models/i })
-    ).toBeVisible();
+      screen.getAllByRole("link", { name: "Past Cases" }).length
+    ).toBeGreaterThanOrEqual(1);
+    expect(screen.getByRole("link", { name: /open jon snow demo/i })).toBeVisible();
+    expect(screen.getByRole("link", { name: /open the realm v\. jon snow demo/i })).toHaveAttribute(
+      "href",
+      "/demo/jon-snow"
+    );
+    expect(await screen.findByText(/openai: gpt-4o mini/i)).toBeVisible();
   });
 
   it("renders New Case and Past Cases routes", () => {
@@ -144,20 +180,47 @@ function runningRunResponse() {
 }
 
 describe("Milestone 14 route-scoped theming (Issue #39 Phase 4)", () => {
-  it("1: keeps Home's shell Ivory & Iron (light) while the Jon Snow card renders its own dark portal", () => {
+  it("1: keeps Home's shell Ivory & Iron (light) while the Jon Snow card renders its own dark portal", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          models: [
+            {
+              id: JON_SNOW_DEFAULT_MODEL_ID,
+              canonicalModelId: `${JON_SNOW_DEFAULT_MODEL_ID}-20260101`,
+              name: "OpenAI: GPT-4o mini",
+              providerName: "Azure",
+              contextLength: 128_000,
+              promptPricePerMillion: "0.15",
+              completionPricePerMillion: "0.6",
+              isFree: false,
+              priceTier: "BUDGET",
+              conservativeFullTribunalEstimateUsd: "0.06",
+              supportsStructuredOutput: true
+            }
+          ]
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        }
+      )
+    );
+
     renderApp("/");
 
     expect(getComputedStyle(screen.getByRole("banner")).backgroundColor).toBe(LIGHT_APPBAR_BG);
 
     // Milestone 12/14 human decision: JonSnowHomeCard stays intentionally
-    // dark on an otherwise fully light Home page -- its own frost
-    // (#D8DEE6) text color, applied directly in the card's own sx (not
-    // from the ambient theme), is the signal this is the one deliberate
-    // dark surface here.
+    // dark on an otherwise fully light Home page -- its own brighter
+    // frost (#E3E8EE) text color, applied directly in the card's own sx
+    // (not from the ambient theme), is the signal this is the one
+    // deliberate dark surface here.
     const card = screen.getByText("Featured demo").closest(".MuiCard-root");
 
     expect(card).not.toBeNull();
-    expect(getComputedStyle(card as Element).color).toBe("rgb(216, 222, 230)");
+    expect(getComputedStyle(card as Element).color).toBe("rgb(227, 232, 238)");
+    expect(await screen.findByText(/openai: gpt-4o mini/i)).toBeVisible();
   });
 
   it("2: renders /demo/jon-snow as a full dark shell, AppBar included", () => {
