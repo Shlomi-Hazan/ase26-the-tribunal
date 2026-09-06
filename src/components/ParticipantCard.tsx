@@ -26,7 +26,7 @@ import {
   ImportApiError,
   importPersonalityFile
 } from "../services/importApi";
-import { CounselIcon, UploadIcon } from "./icons/LineIcons";
+import { CounselIcon, ScaleIcon, UploadIcon } from "./icons/LineIcons";
 import { RoleModelSelect } from "./RoleModelSelect";
 
 export function ParticipantCard({
@@ -45,15 +45,16 @@ export function ParticipantCard({
   roleModels?: RoleEligibleModel[];
   roleModelsLoading?: boolean;
   roleModelsError?: string;
-  // Milestone 14 (Advocates high-fidelity redesign): a purely additive,
-  // opt-in presentation switch. Omitted (the default), this renders
-  // EXACTLY the prior markup/styling -- JudgesPage never passes this,
-  // so Judges is byte-for-byte unaffected. Passed only by AdvocatesPage,
-  // to give each advocate's card the "participant dossier" treatment
-  // approved for that screen alone. Every field, id, label, dispatch
-  // call, validation rule, and import handler below is identical in
-  // both presentations -- only the surrounding layout/styling differs.
-  presentation?: "advocateDossier";
+  // Milestone 14 (Advocates high-fidelity redesign; Judges follow-up
+  // pass added "judgeDossier"): a purely additive, opt-in presentation
+  // switch. Omitted (the default), this renders EXACTLY the original
+  // plain markup/styling -- safe for any future caller that doesn't
+  // pass it. "advocateDossier" (AdvocatesPage only) and "judgeDossier"
+  // (JudgesPage only) each get their own restyled header/card
+  // treatment below. Every field, id, label, dispatch call, validation
+  // rule, and import handler is identical across all three
+  // presentations -- only the surrounding layout/styling differs.
+  presentation?: "advocateDossier" | "judgeDossier";
 }) {
   const { state, dispatch } = useSetup();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -136,10 +137,25 @@ export function ParticipantCard({
   }
 
   const isAdvocateDossier = presentation === "advocateDossier";
+  const isJudgeDossier = presentation === "judgeDossier";
+  const isPremiumPresentation = isAdvocateDossier || isJudgeDossier;
+  // Milestone 14 (Judges follow-up pass): each of the three fixed judge
+  // seats gets its own subtle wash tone (gold / stone / taupe-iron),
+  // keyed off the participant's own fixed id -- never a color-only
+  // signal (the seat's own label/heading text is always shown too).
+  // Falls back to the Judge I tone for any id this map doesn't
+  // recognize, so an unexpected/future id never renders unstyled.
+  const judgeSeatTone: Record<string, string> = {
+    "judge-1": "184,137,43", // muted gold
+    "judge-2": "150,140,120", // soft stone
+    "judge-3": "120,110,95" // restrained taupe/iron
+  };
+  const judgeTone = judgeSeatTone[participant.id] ?? judgeSeatTone["judge-1"];
   // Local-only, opt-in field styling -- the same warm parchment-tinted
-  // treatment approved on Charge Sheet. Judges' cards never set this
-  // (sx={undefined} is a no-op) and keep the plain default MUI look.
-  const dossierFieldSx = isAdvocateDossier
+  // treatment approved on Charge Sheet/Advocates. Judges' PLAIN cards
+  // (i.e. any caller that omits `presentation`) never set this
+  // (sx={undefined} is a no-op) and keep the original default MUI look.
+  const dossierFieldSx = isPremiumPresentation
     ? {
         "& .MuiOutlinedInput-root": {
           backgroundColor: "rgba(184,137,43,0.035)",
@@ -172,34 +188,51 @@ export function ParticipantCard({
               borderTop: "3px solid",
               borderTopColor: participant.side === "PRO" ? "#B8892B" : "#6B6355"
             }
-          : {
-              borderTop: "4px solid",
-              borderTopColor:
-                participant.side === "PRO"
-                  ? "info.main"
-                  : participant.side === "CON"
-                    ? "secondary.main"
-                    : "primary.main"
-            }
+          : isJudgeDossier
+            ? {
+                // Judges follow-up pass: the three seats share ONE top
+                // rule (never a per-seat color) so all three read as
+                // one coordinated bench -- only the background wash
+                // varies per seat, and only subtly, per judgeTone above.
+                backgroundImage: `linear-gradient(160deg, rgba(${judgeTone},0.08) 0%, rgba(${judgeTone},0) 30%)`,
+                borderRadius: "12px",
+                borderTop: "3px solid",
+                borderTopColor: "#8C6423"
+              }
+            : {
+                borderTop: "4px solid",
+                borderTopColor:
+                  participant.side === "PRO"
+                    ? "info.main"
+                    : participant.side === "CON"
+                      ? "secondary.main"
+                      : "primary.main"
+              }
       }
     >
       <CardContent>
         <Stack spacing={2}>
-          {isAdvocateDossier ? (
+          {isPremiumPresentation ? (
             <Stack direction="row" spacing={1.25} sx={{ alignItems: "flex-start", justifyContent: "space-between" }}>
               <Stack direction="row" spacing={1.5}>
-                {/* Milestone 14 (Advocates refinement pass, corrected):
-                    a neutral "counsel" mark (briefcase), not a person/
-                    portrait glyph -- reads as "representation," never
-                    as a placeholder avatar or emoji-like figure. Side
-                    marker only in combination with the PRO/CON text
+                {/* Milestone 14: a neutral, original mark -- never a
+                    person/portrait glyph, emoji, or realistic face --
+                    reads as the seat's role. Always paired with a text
                     label beside it (color alone is never the signal). */}
                 <Box
                   sx={{
                     alignItems: "center",
-                    bgcolor: participant.side === "PRO" ? "rgba(184,137,43,0.12)" : "rgba(107,99,85,0.14)",
+                    bgcolor: isAdvocateDossier
+                      ? participant.side === "PRO"
+                        ? "rgba(184,137,43,0.12)"
+                        : "rgba(107,99,85,0.14)"
+                      : "rgba(140,100,53,0.12)",
                     borderRadius: "50%",
-                    color: participant.side === "PRO" ? "#8C6423" : "#6B6355",
+                    color: isAdvocateDossier
+                      ? participant.side === "PRO"
+                        ? "#8C6423"
+                        : "#6B6355"
+                      : "#8C6423",
                     display: "flex",
                     flexShrink: 0,
                     height: 44,
@@ -207,13 +240,13 @@ export function ParticipantCard({
                     width: 44
                   }}
                 >
-                  <CounselIcon size={20} />
+                  {isAdvocateDossier ? <CounselIcon size={20} /> : <ScaleIcon size={20} />}
                 </Box>
                 <Stack spacing={0.5}>
                   <Typography component="h2" sx={{ fontFamily: '"Fraunces", Georgia, serif' }} variant="h5">
                     {participant.label}
                   </Typography>
-                  {participant.side ? (
+                  {isAdvocateDossier && participant.side ? (
                     <>
                       <Typography
                         sx={{ color: participant.side === "PRO" ? "#8C6423" : "text.secondary", fontWeight: 700 }}
@@ -225,14 +258,25 @@ export function ParticipantCard({
                         {toReadableVerdictDirection(CURRENT_ADVOCATE_SIDE_DESCRIPTION[participant.side])}
                       </Typography>
                     </>
+                  ) : isJudgeDossier ? (
+                    <>
+                      <Typography sx={{ color: "#6B6355", fontWeight: 700 }} variant="body2">
+                        Judicial Seat
+                      </Typography>
+                      <Typography color="text.secondary" variant="body2">
+                        Independent judge — evaluates the completed arguments and returns one
+                        verdict.
+                      </Typography>
+                    </>
                   ) : (
                     <Typography color="text.secondary">Independent judge</Typography>
                   )}
                 </Stack>
               </Stack>
-              {/* Import moved here (top-right, quiet) per the refinement
-                  pass -- same ref/handler/behavior as the plain
-                  presentation's button below, just relocated and
+              {/* Import moved here (top-right, quiet) per the Advocates
+                  refinement pass, now shared by the judge presentation
+                  too -- same ref/handler/behavior as the plain
+                  presentation's bottom button, just relocated and
                   restyled as a small secondary action. */}
               <Button
                 disabled={isImporting}
@@ -338,7 +382,7 @@ export function ParticipantCard({
             ref={fileInputRef}
             type="file"
           />
-          {!isAdvocateDossier ? (
+          {!isPremiumPresentation ? (
             <Button
               disabled={isImporting}
               onClick={() => fileInputRef.current?.click()}
