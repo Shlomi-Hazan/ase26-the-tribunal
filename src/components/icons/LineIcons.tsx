@@ -139,3 +139,12 @@ export function ChevronRightIcon(props: IconProps) {
     </Icon>
   );
 }
+
+export function UploadIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M12 15.5V4M8 8l4-4 4 4" />
+      <path d="M4.5 15.5V19a1 1 0 0 0 1 1h13a1 1 0 0 0 1-1v-3.5" />
+    </Icon>
+  );
+}

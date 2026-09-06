@@ -33,25 +33,29 @@ export function SetupStepper() {
 
   return (
     <Box aria-label="Case setup progress" component="nav" sx={{ position: "relative" }}>
-      {/* Milestone 14 visual-correction pass (PR #40): a purely
-          decorative connecting line behind the steps, echoing Home's
-          "How it works" numbered-step motif. Presentational only -- it
-          carries no text and is not part of any step's accessible
-          name. */}
+      {/* Milestone 14 (Charge Sheet high-fidelity redesign): an
+          institutional, less "four rounded buttons" treatment -- plain
+          text steps with a small numbered marker, a restrained gold
+          underline on the active step, and a thin connecting rule
+          behind the whole row (echoing Home's "How it works" motif).
+          Every step remains the SAME interactive element (a real
+          RouterLink Button) with the SAME accessible name, aria-current,
+          and "Complete" text as before -- no step is made interactive
+          or non-interactive beyond what it already was. */}
       <Box
         aria-hidden="true"
         sx={{
           bgcolor: "divider",
           display: { xs: "none", sm: "block" },
           height: "1px",
-          left: 24,
+          left: 4,
           position: "absolute",
-          right: 24,
-          top: 24,
+          right: 4,
+          top: 20,
           zIndex: 0
         }}
       />
-      <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ position: "relative", zIndex: 1 }}>
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={{ xs: 0.5, sm: 3 }} sx={{ position: "relative", zIndex: 1 }}>
         {steps.map((step, index) => {
           const active = index === activeIndex;
           // A step shows Complete only once it has genuinely been LEFT --
@@ -75,29 +79,45 @@ export function SetupStepper() {
           return (
             <Button
               aria-current={active ? "step" : undefined}
-              color={active ? "primary" : "inherit"}
               component={RouterLink}
+              disableRipple
               key={step.path}
               sx={{
-                bgcolor: active ? undefined : "background.paper",
-                borderColor: complete ? "#8C6423" : undefined
+                alignItems: "center",
+                bgcolor: "transparent",
+                borderBottom: "2px solid",
+                borderBottomColor: active ? "#B8892B" : "transparent",
+                borderRadius: "8px",
+                color: active ? "text.primary" : "text.secondary",
+                display: "inline-flex",
+                fontWeight: active ? 700 : 600,
+                justifyContent: "flex-start",
+                minWidth: 0,
+                px: 1,
+                py: 0.75,
+                "&:hover": {
+                  bgcolor: "action.hover",
+                  color: "text.primary"
+                }
               }}
               to={step.path}
-              variant={active ? "contained" : "outlined"}
+              variant="text"
             >
               <Typography
                 component="span"
                 sx={{
                   alignItems: "center",
-                  bgcolor: active ? "rgba(255,255,255,0.25)" : complete ? "rgba(140,100,35,0.12)" : "action.hover",
+                  border: "1px solid",
+                  borderColor: active ? "#8C6423" : complete ? "#B8892B" : "divider",
                   borderRadius: "50%",
-                  color: complete && !active ? "#8C6423" : undefined,
+                  color: active ? "#8C6423" : complete ? "#8C6423" : "text.secondary",
                   display: "inline-flex",
+                  flexShrink: 0,
                   fontWeight: 800,
-                  height: 22,
+                  height: 20,
                   justifyContent: "center",
                   mr: 1,
-                  width: 22
+                  width: 20
                 }}
                 variant="caption"
               >
