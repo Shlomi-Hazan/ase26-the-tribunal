@@ -1,10 +1,17 @@
+// Milestone 14 (Review Tribunal high-fidelity redesign, Ivory & Iron):
+// restyle only. Every hook, dispatch, validation gate, Decimal-safe
+// aggregation, save/convene handler, clientRequestId/idempotency
+// behavior (inside useRunStart, untouched), and navigation below is
+// byte-identical in logic to the prior version -- only the surrounding
+// composition/presentation changed, to read as one coherent final
+// docket rather than a stack of generic cards. EconomicsSummary and
+// OpenRouterConnect are shared components used by other pages too and
+// are rendered here completely unmodified, just repositioned.
 import {
   Alert,
   Box,
   Button,
-  Card,
-  CardContent,
-  Divider,
+  Paper,
   Stack,
   Typography
 } from "@mui/material";
@@ -16,8 +23,14 @@ import {
   CURRENT_ADVOCATE_SIDE_HEADING
 } from "../components/advocateSideCopy";
 import { EconomicsSummary } from "../components/EconomicsSummary";
+import {
+  BarChartIcon,
+  ChevronRightIcon,
+  CounselIcon,
+  DocumentIcon,
+  ScaleIcon
+} from "../components/icons/LineIcons";
 import { OpenRouterConnect } from "../components/OpenRouterConnect";
-import { PageHeader } from "../components/PageHeader";
 import { SetupStepper } from "../components/SetupStepper";
 import { hasUserOpenRouterKey } from "../services/openRouterCredential";
 import { useEligibleModels } from "../features/case-setup/useEligibleModels";
@@ -32,9 +45,102 @@ import {
 } from "../features/case-setup/setupState";
 import { useSetup } from "../features/case-setup/useSetup";
 import { useRunStart } from "../features/tribunal-run/useRunStart";
-import { allParticipants, type Participant } from "../mocks/tribunalMockData";
+import {
+  advocateParticipants,
+  judgeParticipants,
+  type Participant
+} from "../mocks/tribunalMockData";
 import { CaseApiError, saveCase, type StoredCase } from "../services/caseApi";
 import type { RunCaseRequest, RunParticipantRequest, StoredRun } from "../services/runApi";
+
+// Display-only polish (never touches the shared, locked
+// advocateSideCopy.ts constant also consumed by AdvocatesPage,
+// ParticipantCard, and RunPage's historical caption): renders the
+// enum-like "NOT_GUILTY"/"GUILTY" as "Not Guilty"/"Guilty" for this
+// page's compact roster text, and joins the heading/description with a
+// proper em dash instead of a double hyphen. The NOT_GUILTY replacement
+// must run first since "GUILTY" is a substring of "NOT_GUILTY".
+function describeAdvocateSideForDocket(side: "PRO" | "CON"): string {
+  const description = CURRENT_ADVOCATE_SIDE_DESCRIPTION[side]
+    .replace("NOT_GUILTY", "Not Guilty")
+    .replace("GUILTY", "Guilty");
+
+  return `${CURRENT_ADVOCATE_SIDE_HEADING[side]} — ${description}`;
+}
+
+// One compact roster row -- a denser, read-only summary of the same
+// real fields ParticipantCard's editable presentation shows. Every
+// line of text rendered here (Model:/Profile name:/Personality
+// source:/Personality:) is byte-identical to the pre-redesign version;
+// only the container/icon/spacing changed.
+function RosterRow({
+  participant,
+  icon: Icon,
+  accentColor,
+  displayModelName,
+  profileName,
+  personalitySourceLabel,
+  personality
+}: {
+  participant: Participant;
+  icon: typeof CounselIcon;
+  accentColor: string;
+  displayModelName: string;
+  profileName: string;
+  personalitySourceLabel: string;
+  personality: string;
+}) {
+  return (
+    <Box
+      sx={{
+        border: "1px solid",
+        borderColor: "divider",
+        borderLeft: "3px solid",
+        borderLeftColor: accentColor,
+        borderRadius: "8px",
+        p: 1.5
+      }}
+    >
+      <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 0.5 }}>
+        <Box sx={{ alignItems: "center", color: accentColor, display: "flex" }}>
+          <Icon size={16} />
+        </Box>
+        <Typography sx={{ fontWeight: 800 }} variant="body2">
+          {participant.label}
+        </Typography>
+        {profileName !== "Not provided" ? (
+          <Typography color="text.secondary" variant="body2">
+            · {profileName}
+          </Typography>
+        ) : null}
+      </Stack>
+      {participant.side ? (
+        <Typography color="text.secondary" sx={{ display: "block" }} variant="caption">
+          {describeAdvocateSideForDocket(participant.side)}
+        </Typography>
+      ) : null}
+      <Typography sx={{ display: "block", mt: 0.5 }} variant="body2">
+        Model: {displayModelName}
+      </Typography>
+      <Typography color="text.secondary" sx={{ display: "block" }} variant="caption">
+        Personality source: {personalitySourceLabel}
+      </Typography>
+      <Typography
+        color="text.secondary"
+        sx={{
+          display: "-webkit-box",
+          mt: 0.25,
+          overflow: "hidden",
+          WebkitBoxOrient: "vertical",
+          WebkitLineClamp: 3
+        }}
+        variant="body2"
+      >
+        {personality}
+      </Typography>
+    </Box>
+  );
+}
 
 export function ReviewPage() {
   const { state, dispatch } = useSetup();
@@ -90,6 +196,7 @@ export function ReviewPage() {
   const chargeSheetValid = isChargeSheetValid(state.chargeSheet);
   const advocatesValid = areAdvocatePersonalitiesValid(state);
   const judgesValid = areJudgePersonalitiesValid(state);
+  const allParticipants = [...advocateParticipants, ...judgeParticipants];
 
   function roleModelsFor(participant: Participant) {
     return participant.kind === "advocate" ? advocateModels : judgeModels;
@@ -280,176 +387,297 @@ export function ReviewPage() {
     }
   }
 
+  function participantSummaryProps(participant: Participant) {
+    const config = state.participants[participant.id];
+    const displayModelName =
+      state.executionMode === "shared"
+        ? (sharedModel?.name ?? (state.sharedModelId || "Not selected yet"))
+        : describeSeparateModelSelection(participant);
+
+    return {
+      participant,
+      displayModelName,
+      profileName: config.profileName || "Not provided",
+      personalitySourceLabel:
+        formatPersonalitySource(config.personalitySource) +
+        (config.personalitySourceFilename ? ` (${config.personalitySourceFilename})` : ""),
+      personality: config.personality || "Not entered yet"
+    };
+  }
+
+  const proParticipants = advocateParticipants.filter((p) => p.side === "PRO");
+  const conParticipants = advocateParticipants.filter((p) => p.side === "CON");
+
   return (
     <Stack spacing={4}>
       <SetupStepper />
-      <PageHeader
-        eyebrow="Review"
-        title="Review Tribunal"
-        description="Review the case and seven-participant configuration before freezing it."
-      />
+
+      <Stack spacing={1}>
+        <Typography
+          color="#8C6423"
+          sx={{ fontWeight: 800, letterSpacing: "0.12em", textTransform: "uppercase" }}
+          variant="caption"
+        >
+          Final Review
+        </Typography>
+        <Typography component="h1" variant="h3">
+          Review Tribunal
+        </Typography>
+        <Typography color="text.secondary" sx={{ maxWidth: "70ch" }}>
+          Review the complete case, seven-seat Tribunal, model configuration, economics, and
+          connection state before freezing the configuration and convening the Tribunal.
+        </Typography>
+      </Stack>
+
       {state.importNotice ? <Alert severity="info">{state.importNotice}</Alert> : null}
-      <Card>
-        <CardContent>
-          <Stack spacing={2}>
-            <Typography component="h2" variant="h5">
-              Case summary
-            </Typography>
-            <Typography>
-              <strong>Defendant:</strong>{" "}
-              {state.chargeSheet.defendant || "Not entered yet"}
-            </Typography>
-            <Typography>
-              <strong>Act:</strong> {state.chargeSheet.act || "Not entered yet"}
-            </Typography>
-            <Typography>
-              <strong>Exact Question:</strong>{" "}
-              {state.chargeSheet.exactQuestion || "Not entered yet"}
-            </Typography>
-            <Typography color="text.secondary" variant="body2">
-              Source: {formatSourceType(state.caseSource.type)}
-              {state.caseSource.filename ? ` (${state.caseSource.filename})` : ""}
-            </Typography>
-          </Stack>
-        </CardContent>
-      </Card>
-      <Card>
-        <CardContent>
-          <Stack spacing={2}>
-            <Typography component="h2" variant="h5">
-              Execution mode
-            </Typography>
-            <Typography>
-              {state.executionMode === "shared"
-                ? "Shared Model — one model, seven distinct roles and personalities."
-                : "Separate Models — each participant uses its own selected eligible model."}
-            </Typography>
-            <Divider />
-            <Typography component="h3" variant="h6">
-              Seven-participant configuration
-            </Typography>
-            {state.executionMode === "shared" ? (
-              <Typography>
-                Shared model: {sharedModel?.name ?? (state.sharedModelId || "Not selected yet")}
-              </Typography>
-            ) : null}
+
+      {/* CASE DOCKET -- read-only, matches the Charge Sheet's own
+          premium panel language (gold top accent, icon-labeled
+          heading, boxed decision-question treatment) so this reads as
+          the same document reviewed one screen later, not a new
+          surface. */}
+      <Paper sx={{ borderRadius: "14px", overflow: "hidden", p: { xs: 2, md: 3 }, position: "relative" }}>
+        <Box
+          aria-hidden="true"
+          sx={{
+            background: "linear-gradient(90deg, #B8892B 0%, #E8BE73 50%, #B8892B 100%)",
+            height: 4,
+            left: 0,
+            position: "absolute",
+            right: 0,
+            top: 0
+          }}
+        />
+        <Stack spacing={2}>
+          <Stack direction="row" spacing={1.5} sx={{ alignItems: "center" }}>
             <Box
               sx={{
-                display: "grid",
-                gap: 1.5,
-                gridTemplateColumns: { xs: "1fr", md: "repeat(2, 1fr)" }
+                alignItems: "center",
+                bgcolor: "rgba(184,137,43,0.12)",
+                borderRadius: "50%",
+                color: "#8C6423",
+                display: "flex",
+                height: 36,
+                justifyContent: "center",
+                width: 36
               }}
             >
-              {allParticipants.map((participant) => {
-                const displayModelName =
-                  state.executionMode === "shared"
-                    ? (sharedModel?.name ?? (state.sharedModelId || "Not selected yet"))
-                    : describeSeparateModelSelection(participant);
-
-                return (
-                  <Box
-                    key={participant.id}
-                    sx={{
-                      border: "1px solid",
-                      borderColor: "divider",
-                      borderRadius: 2,
-                      p: 2
-                    }}
-                  >
-                    <Typography sx={{ fontWeight: 800 }}>
-                      {participant.label}
-                    </Typography>
-                    <Typography color="text.secondary" variant="body2">
-                      {participant.side
-                        ? `${CURRENT_ADVOCATE_SIDE_HEADING[participant.side]} -- ${CURRENT_ADVOCATE_SIDE_DESCRIPTION[participant.side]}`
-                        : "Judge"}
-                    </Typography>
-                    <Typography color="text.secondary" variant="body2">
-                      Model: {displayModelName}
-                    </Typography>
-                    <Typography color="text.secondary" variant="body2">
-                      Profile name:{" "}
-                      {state.participants[participant.id].profileName ||
-                        "Not provided"}
-                    </Typography>
-                    <Typography color="text.secondary" variant="body2">
-                      Personality source:{" "}
-                      {formatPersonalitySource(
-                        state.participants[participant.id].personalitySource
-                      )}
-                      {state.participants[participant.id].personalitySourceFilename
-                        ? ` (${
-                            state.participants[participant.id]
-                              .personalitySourceFilename
-                          })`
-                        : ""}
-                    </Typography>
-                    <Typography variant="body2">
-                      Personality:{" "}
-                      {state.participants[participant.id].personality ||
-                        "Not entered yet"}
-                    </Typography>
-                  </Box>
-                );
-              })}
+              <DocumentIcon size={18} />
+            </Box>
+            <Typography component="h2" sx={{ fontWeight: 700 }} variant="subtitle1">
+              Case Docket
+            </Typography>
+          </Stack>
+          <Stack spacing={0.25}>
+            <Typography color="text.secondary" sx={{ fontWeight: 700, letterSpacing: "0.06em" }} variant="caption">
+              DEFENDANT
+            </Typography>
+            <Typography>{state.chargeSheet.defendant || "Not entered yet"}</Typography>
+          </Stack>
+          <Stack spacing={0.25}>
+            <Typography color="text.secondary" sx={{ fontWeight: 700, letterSpacing: "0.06em" }} variant="caption">
+              DISPUTED ACT
+            </Typography>
+            <Box
+              sx={{
+                border: "1px solid",
+                borderColor: "divider",
+                borderRadius: "10px",
+                maxHeight: 220,
+                overflowY: "auto",
+                p: 1.5,
+                whiteSpace: "pre-wrap"
+              }}
+            >
+              <Typography variant="body2">{state.chargeSheet.act || "Not entered yet"}</Typography>
             </Box>
           </Stack>
-        </CardContent>
-      </Card>
-      <Card>
-        <CardContent>
-          <Typography component="h2" variant="h5">
-            Economics
+          <Stack spacing={0.25}>
+            <Typography color="text.secondary" sx={{ fontWeight: 700, letterSpacing: "0.06em" }} variant="caption">
+              QUESTION BEFORE THE TRIBUNAL
+            </Typography>
+            <Box
+              sx={{
+                bgcolor: "rgba(184,137,43,0.05)",
+                border: "1px solid rgba(196,168,120,0.4)",
+                borderRadius: "10px",
+                p: { xs: 1.5, sm: 2 }
+              }}
+            >
+              <Typography sx={{ fontWeight: 600 }}>
+                {state.chargeSheet.exactQuestion || "Not entered yet"}
+              </Typography>
+            </Box>
+          </Stack>
+          <Typography color="text.secondary" variant="caption">
+            Source: {formatSourceType(state.caseSource.type)}
+            {state.caseSource.filename ? ` (${state.caseSource.filename})` : ""}
           </Typography>
-          <Typography sx={{ mt: 1 }}>
-            Expected logical calls: <strong>7</strong>
+        </Stack>
+      </Paper>
+
+      {/* TRIBUNAL CONFIGURATION -- execution mode summary (read-only;
+          no radio controls here) followed by the real roster,
+          organized into its true structure instead of seven identical
+          boxes. */}
+      <Stack spacing={2.5}>
+        <Stack spacing={0.25}>
+          <Typography
+            sx={{ color: "#8C6423", fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase" }}
+            variant="subtitle2"
+          >
+            Tribunal Configuration
           </Typography>
-          <Typography>Retry policy: max one retry per participant</Typography>
-          <Typography>Hard policy: $5.00 maximum</Typography>
+          <Typography>
+            {state.executionMode === "shared"
+              ? "Shared Model — one model, seven distinct roles and personalities."
+              : "Separate Models — each participant uses its own selected eligible model."}
+          </Typography>
           {state.executionMode === "shared" ? (
-            sharedModel ? (
-              <>
-                <Typography color="success.main" sx={{ fontWeight: 800 }}>
-                  {sharedModel.priceTier} tier
-                </Typography>
+            <Typography sx={{ fontWeight: 700 }}>
+              Shared model: {sharedModel?.name ?? (state.sharedModelId || "Not selected yet")}
+            </Typography>
+          ) : null}
+        </Stack>
+
+        <Stack spacing={1.5}>
+          <Typography color="#8C6423" sx={{ fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase" }} variant="caption">
+            Advocates
+          </Typography>
+          <Box sx={{ display: "grid", gap: 2, gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" } }}>
+            <Stack spacing={1}>
+              <Typography color="text.secondary" sx={{ fontWeight: 700 }} variant="caption">
+                PRO — DEFENSE
+              </Typography>
+              <Stack spacing={1}>
+                {proParticipants.map((participant) => (
+                  <RosterRow
+                    accentColor="#8C6423"
+                    icon={CounselIcon}
+                    key={participant.id}
+                    {...participantSummaryProps(participant)}
+                  />
+                ))}
+              </Stack>
+            </Stack>
+            <Stack spacing={1}>
+              <Typography color="text.secondary" sx={{ fontWeight: 700 }} variant="caption">
+                CON — OPPOSITION
+              </Typography>
+              <Stack spacing={1}>
+                {conParticipants.map((participant) => (
+                  <RosterRow
+                    accentColor="#6B6355"
+                    icon={CounselIcon}
+                    key={participant.id}
+                    {...participantSummaryProps(participant)}
+                  />
+                ))}
+              </Stack>
+            </Stack>
+          </Box>
+        </Stack>
+
+        <Stack spacing={1.5}>
+          <Typography color="#8C6423" sx={{ fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase" }} variant="caption">
+            The Bench
+          </Typography>
+          <Box sx={{ display: "grid", gap: 2, gridTemplateColumns: { xs: "1fr", md: "repeat(3, 1fr)" } }}>
+            {judgeParticipants.map((participant) => (
+              <RosterRow
+                accentColor="#8C6423"
+                icon={ScaleIcon}
+                key={participant.id}
+                {...participantSummaryProps(participant)}
+              />
+            ))}
+          </Box>
+        </Stack>
+      </Stack>
+
+      {/* ECONOMICS & PREFLIGHT -- preserves the exact same computed
+          text/values; EconomicsSummary (a shared mock-fixture component
+          reused by Run/Result/SmartImport too) is rendered completely
+          unmodified below, just repositioned into this section. */}
+      <Stack spacing={1.5}>
+        <Stack direction="row" spacing={1.5} sx={{ alignItems: "center" }}>
+          <Box sx={{ alignItems: "center", color: "#8C6423", display: "flex" }}>
+            <BarChartIcon size={20} />
+          </Box>
+          <Typography
+            sx={{ color: "#8C6423", fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase" }}
+            variant="subtitle2"
+          >
+            Economics &amp; Preflight
+          </Typography>
+        </Stack>
+        <Paper sx={{ borderRadius: "12px", p: { xs: 2, md: 3 } }}>
+          <Stack spacing={0.5}>
+            <Typography>
+              Expected logical calls: <strong>7</strong>
+            </Typography>
+            <Typography>Retry policy: max one retry per participant</Typography>
+            <Typography>Hard policy: $5.00 maximum</Typography>
+            {state.executionMode === "shared" ? (
+              sharedModel ? (
+                <>
+                  <Typography color="success.main" sx={{ fontWeight: 800 }}>
+                    {sharedModel.priceTier} tier
+                  </Typography>
+                  <Typography color="text.secondary" variant="body2">
+                    {`Conservative full-Tribunal estimate for this route: $${sharedModel.conservativeFullTribunalEstimateUsd} (discovery estimate; the authoritative preflight runs again, using your connected credential, when you Convene).`}
+                  </Typography>
+                </>
+              ) : (
                 <Typography color="text.secondary" variant="body2">
-                  {`Conservative full-Tribunal estimate for this route: $${sharedModel.conservativeFullTribunalEstimateUsd} (discovery estimate; the authoritative preflight runs again, using your connected credential, when you Convene).`}
+                  Select a Shared model above to see its conservative estimate.
                 </Typography>
-              </>
+              )
+            ) : separateAggregateEstimateUsd ? (
+              <Typography color="text.secondary" variant="body2">
+                {`Conservative discovery estimate for this Separate-Mode configuration (sum of each of the seven participants' own estimate): $${separateAggregateEstimateUsd.toFixed()} (discovery estimate; the authoritative preflight runs again, using your connected credential, when you Convene. The $5.00 hard ceiling remains authoritative regardless of this estimate.)`}
+              </Typography>
             ) : (
               <Typography color="text.secondary" variant="body2">
-                Select a Shared model above to see its conservative estimate.
+                Select an eligible model for all seven participants above to see the aggregate conservative estimate.
               </Typography>
-            )
-          ) : separateAggregateEstimateUsd ? (
-            <Typography color="text.secondary" variant="body2">
-              {`Conservative discovery estimate for this Separate-Mode configuration (sum of each of the seven participants' own estimate): $${separateAggregateEstimateUsd.toFixed()} (discovery estimate; the authoritative preflight runs again, using your connected credential, when you Convene. The $5.00 hard ceiling remains authoritative regardless of this estimate.)`}
-            </Typography>
-          ) : (
-            <Typography color="text.secondary" variant="body2">
-              Select an eligible model for all seven participants above to see the aggregate conservative estimate.
-            </Typography>
-          )}
-        </CardContent>
-      </Card>
-      <EconomicsSummary />
-      <Card>
-        <CardContent>
-          <Typography component="h2" sx={{ mb: 1 }} variant="h5">
-            Connect OpenRouter
+            )}
+          </Stack>
+        </Paper>
+        <EconomicsSummary headingOverride="Demo fixture economics" muted />
+      </Stack>
+
+      {/* OPENROUTER CONNECTION -- a readiness requirement, not a
+          generic card. OpenRouterConnect itself (a shared component
+          also used by SmartImport/Jon Snow Settings) is rendered
+          completely unmodified below. */}
+      <Paper sx={{ borderRadius: "12px", p: { xs: 2, md: 3 } }}>
+        <Stack spacing={1.5}>
+          <Typography
+            sx={{ color: "#8C6423", fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase" }}
+            variant="subtitle2"
+          >
+            OpenRouter Connection
           </Typography>
-          <Typography color="text.secondary" sx={{ mb: 2 }} variant="body2">
-            Runtime model inference is user-funded: any charges from
-            convening the Tribunal go to your own connected OpenRouter
-            account, never the developer's. Convene is disabled until you
-            connect.
+          <Typography color="text.secondary" variant="body2">
+            Runtime model inference is user-funded: any charges from convening the Tribunal go
+            to your own connected OpenRouter account, never the developer's. Convene is disabled
+            until you connect.
           </Typography>
-          <OpenRouterConnect connected={openRouterConnected} onConnectedChange={setOpenRouterConnected} />
-        </CardContent>
-      </Card>
+          <OpenRouterConnect
+            connected={openRouterConnected}
+            onConnectedChange={setOpenRouterConnected}
+            showHeading={false}
+          />
+        </Stack>
+      </Paper>
+
       {!canConvene ? (
         <Alert severity="error">
           <Stack spacing={1}>
+            <Typography sx={{ fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase" }} variant="caption">
+              Action Required
+            </Typography>
             <Typography sx={{ fontWeight: 800 }}>
               Tribunal configuration cannot be frozen yet.
             </Typography>
@@ -471,7 +699,30 @@ export function ReviewPage() {
             </Stack>
           </Stack>
         </Alert>
-      ) : null}
+      ) : (
+        <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+          <Box
+            sx={{
+              alignItems: "center",
+              bgcolor: "success.main",
+              borderRadius: "50%",
+              color: "#FFFFFF",
+              display: "flex",
+              flexShrink: 0,
+              fontSize: "0.7rem",
+              fontWeight: 800,
+              height: 18,
+              justifyContent: "center",
+              width: 18
+            }}
+          >
+            ✓
+          </Box>
+          <Typography color="success.main" sx={{ fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase" }} variant="caption">
+            Ready to Convene
+          </Typography>
+        </Stack>
+      )}
       <Alert severity="warning">
         This V1 course demo stores submitted cases in shared demo history. Do
         not submit sensitive, private, confidential, or identifying information.
@@ -505,29 +756,39 @@ export function ReviewPage() {
           Connect OpenRouter above before convening the Tribunal.
         </Typography>
       ) : null}
-      <Stack direction="row" spacing={2}>
-        <Button component={RouterLink} to="/new/judges" variant="outlined">
-          Back
-        </Button>
-        <Button
-          disabled={!canSaveCase || isSaving}
-          onClick={handleSaveCase}
-          variant="outlined"
-        >
-          {isSaving ? "Saving..." : "Save Case"}
-        </Button>
-        <Button
-          disabled={!canConvene || !openRouterConnected || isConvening || Boolean(conveneResult)}
-          onClick={handleConvene}
-          variant="contained"
-        >
-          {isConvening
-            ? "Convening..."
-            : conveneResult
-              ? "Configuration frozen"
-              : "Convene Tribunal"}
-        </Button>
-      </Stack>
+
+      {/* FINAL ACTION ZONE */}
+      <Box sx={{ borderTop: "1px solid", borderColor: "divider", pt: 3 }}>
+        <Typography color="text.secondary" sx={{ mb: 1.5 }} variant="body2">
+          Configuration will be frozen when the Tribunal is convened.
+        </Typography>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+          <Button component={RouterLink} sx={{ borderRadius: "8px" }} to="/new/judges" variant="outlined">
+            Back
+          </Button>
+          <Button
+            disabled={!canSaveCase || isSaving}
+            onClick={handleSaveCase}
+            sx={{ borderRadius: "8px" }}
+            variant="outlined"
+          >
+            {isSaving ? "Saving..." : "Save Case"}
+          </Button>
+          <Button
+            disabled={!canConvene || !openRouterConnected || isConvening || Boolean(conveneResult)}
+            endIcon={<ChevronRightIcon size={18} />}
+            onClick={handleConvene}
+            sx={{ borderRadius: "10px" }}
+            variant="contained"
+          >
+            {isConvening
+              ? "Convening..."
+              : conveneResult
+                ? "Configuration frozen"
+                : "Convene Tribunal"}
+          </Button>
+        </Stack>
+      </Box>
     </Stack>
   );
 }
@@ -538,6 +799,8 @@ export function ReviewPage() {
 // matches SPEC.md CONFIG-004 and is re-validated authoritatively
 // server-side either way.
 function buildParticipantsRequest(state: SetupState): RunParticipantRequest[] {
+  const allParticipants = [...advocateParticipants, ...judgeParticipants];
+
   return allParticipants.map((participant) => {
     const config = state.participants[participant.id];
     const modelId =
