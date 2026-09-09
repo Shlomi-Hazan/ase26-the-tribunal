@@ -51,7 +51,7 @@ Do not begin later milestones by destabilizing incomplete earlier work.
 | 11 | Past Cases & Auditability | ✅ Complete |
 | 12 | Canonical Jon Snow Demo | ✅ Complete |
 | 13 | Failure & Security Hardening | ✅ Complete |
-| 14 | UI Polish & Accessibility | ⬜ Planned |
+| 14 | UI Polish & Accessibility | ✅ Complete |
 | 15 | Production Deployment | ⬜ Planned |
 | 16 | Final Verification & Course Audit | ⬜ Planned |
 
