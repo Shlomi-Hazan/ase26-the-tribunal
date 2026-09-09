@@ -229,12 +229,17 @@ describe("Milestone 14 route-scoped theming (Issue #39 Phase 4)", () => {
     expect(getComputedStyle(screen.getByRole("banner")).backgroundColor).toBe(DARK_APPBAR_BG);
   });
 
-  it("3: renders /demo/jon-snow/runs/:runId as a full dark shell, AppBar included", async () => {
+  // M14 presentation-routing correction (PR #40): the legacy
+  // /demo/jon-snow/runs/:runId URL no longer renders its own dark
+  // presentation at all -- it redirects to the generic /runs/:runId
+  // (src/app/App.tsx's LegacyJonSnowRunRedirect), which stays Ivory &
+  // Iron like every other run regardless of origin.
+  it("3: redirects the legacy /demo/jon-snow/runs/:runId to the generic light-themed run route", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(runningRunResponse());
     renderApp(`/demo/jon-snow/runs/${JON_SNOW_RUN_ID}`);
 
     expect(await screen.findByText(/deliberation in progress/i)).toBeVisible();
-    expect(getComputedStyle(screen.getByRole("banner")).backgroundColor).toBe(DARK_APPBAR_BG);
+    expect(getComputedStyle(screen.getByRole("banner")).backgroundColor).toBe(LIGHT_APPBAR_BG);
   });
 
   it("4: /runs/:runId stays Ivory & Iron (light) for the exact same canonical Jon Snow run", async () => {

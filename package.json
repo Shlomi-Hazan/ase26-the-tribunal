@@ -24,6 +24,7 @@
     "@emotion/styled": "^11.14.1",
     "@mui/material": "^9.3.1",
     "@netlify/functions": "^6.0.0",
+    "@react-pdf/renderer": "^4.9.0",
     "@supabase/supabase-js": "^2.112.4",
     "decimal.js": "^10.6.0",
     "pdfjs-dist": "6.2.108",

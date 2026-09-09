@@ -11,11 +11,16 @@
 // navigation): the two current callers need genuinely different things
 // there -- ReviewPage's `recordSavedCase` dispatch is SetupState/
 // SetupProvider-specific and has no meaning for the Jon Snow demo
-// launcher, and the two callers navigate to different routes on success
-// (the generic `/runs/:runId` vs. the themed `/demo/jon-snow/runs/:runId`
-// -- Issue #32 Sec 10). Coupling this hook to SetupProvider merely to
-// keep `recordSavedCase` working, or hard-coding a single navigation
-// target, would both break that requirement. Instead `start()` resolves
+// launcher. (Both callers navigate to the same generic `/runs/:runId`
+// on success as of the M14 presentation-routing correction, PR #40 --
+// the earlier themed `/demo/jon-snow/runs/:runId` presentation route
+// this comment used to reference has been removed in favor of a
+// backward-compatible redirect, App.tsx's LegacyJonSnowRunRedirect --
+// but each caller still performs its own on-success responsibility
+// independently, which is the point this hook's shape protects.)
+// Coupling this hook to SetupProvider merely to keep `recordSavedCase`
+// working, or hard-coding a single on-success responsibility, would
+// break that independence. Instead `start()` resolves
 // to the same `ConveneResult` (`{ run, executionTriggered }`,
 // src/services/runApi.ts, unchanged) that `convene()` itself already
 // returns, and each caller performs its own on-success responsibility

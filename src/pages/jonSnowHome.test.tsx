@@ -82,7 +82,11 @@ describe("Home -- Jon Snow featured demo card", () => {
 
     await user.click(card);
 
-    expect(await screen.findByText(/model & economics/i)).toBeVisible();
+    // Milestone 14 cinematic redesign (PR #40): "Model & economics" was
+    // the old dashboard card's heading; the settings/economics content
+    // now lives in the redesigned page's "Run Configuration" section, so
+    // the page-load anchor here is the page's own h1 instead.
+    expect(await screen.findByRole("heading", { name: /the realm v\. jon snow/i })).toBeVisible();
     expect(
       vi.mocked(globalThis.fetch).mock.calls.some(([url]) => url === "/api/demo/jon-snow/runs")
     ).toBe(false);
