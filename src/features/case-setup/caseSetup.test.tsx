@@ -193,7 +193,7 @@ afterEach(() => {
   sessionStorage.clear();
 });
 
-describe("case setup workflow", () => {
+describe("case setup workflow", { timeout: 10_000 }, () => {
   it("blocks Charge Sheet continuation until required fields are valid", async () => {
     const user = userEvent.setup();
     renderWithAppProviders(<AppRoutes />);
@@ -1198,7 +1198,7 @@ describe("case setup workflow", () => {
     expect(screen.getByText(/CON I requires a current eligible Advocate model\./i)).toBeVisible();
     expect(screen.getByText(/CON II requires a current eligible Advocate model\./i)).toBeVisible();
     expect(screen.getByRole("button", { name: "Convene Tribunal" })).toBeDisabled();
-  }, 10_000);
+  });
 
   // M9 pre-live audit correction (Issue #20): a genuine ONE-seat stale
   // scenario, distinct from the whole-catalog-empty case above -- PRO I
@@ -1320,7 +1320,7 @@ describe("case setup workflow", () => {
     // No POST /api/runs occurs -- Convene was never clicked and stayed
     // disabled throughout.
     expect(nonModelsFetchCalls().filter(([url]) => url === "/api/runs")).toHaveLength(0);
-  }, 10_000);
+  });
 
   it("M9-X: Shared -> Separate -> Shared -> Separate preserves the already-valid per-seat Separate assignments", async () => {
     const user = userEvent.setup();
