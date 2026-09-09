@@ -11,12 +11,41 @@ import {
 } from "@mui/material";
 import { mockEconomicsRows } from "../mocks/tribunalMockData";
 
-export function EconomicsSummary({ detailed = false }: { detailed?: boolean }) {
+export function EconomicsSummary({
+  detailed = false,
+  headingOverride,
+  muted = false
+}: {
+  detailed?: boolean;
+  // M14 Review-page visual refinement: both props are additive/opt-in --
+  // omitted, this renders exactly as before (ResultPage's <EconomicsSummary
+  // detailed /> call is byte-identical). `headingOverride` lets a caller
+  // rename the visible heading without touching the underlying mock
+  // fixture data; `muted` lets a caller visually subordinate this block
+  // (e.g. Review, which shows its own real conservative estimate above
+  // this one and needs this fixture block to read as clearly secondary)
+  // without changing any value, calculation, or the disclaimer below.
+  headingOverride?: string;
+  muted?: boolean;
+}) {
   return (
-    <Card component="section" data-testid="economics-section">
+    <Card
+      component="section"
+      data-testid="economics-section"
+      sx={
+        muted
+          ? { bgcolor: "action.hover", border: "1px solid", borderColor: "divider", boxShadow: "none" }
+          : undefined
+      }
+    >
       <CardContent>
-        <Typography component="h2" variant="h5">
-          Mock economics
+        <Typography
+          color={muted ? "text.secondary" : undefined}
+          component="h2"
+          sx={muted ? { fontWeight: 700 } : undefined}
+          variant={muted ? "subtitle2" : "h5"}
+        >
+          {headingOverride ?? "Mock economics"}
         </Typography>
         <Typography color="text.secondary" sx={{ mt: 1 }}>
           7 logical calls · 8 attempts · 18,420 tokens · $0.17 · 7.4s

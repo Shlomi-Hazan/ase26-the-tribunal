@@ -91,6 +91,104 @@ describe("JudgeVoteGroup optional displayName (product-wide, PR #34)", () => {
   });
 });
 
+// Milestone 14 (COMPLETED-result judge-vote premium redesign) --
+// `presentation="premium"` is additive/opt-in: every test above (no
+// `presentation` prop supplied) proves the ORIGINAL branch is
+// byte-for-byte unchanged. These tests cover the new, separate branch
+// only -- never coupled to any specific case, using the same generic
+// mock fixtures as the rest of this file.
+describe("JudgeVoteGroup premium presentation (Milestone 14, opt-in)", () => {
+  it("keeps the same data-testid and renders all three judge identities", () => {
+    render(
+      <ThemeProvider theme={theme}>
+        <CssBaseline />
+        <JudgeVoteGroup presentation="premium" votes={VOTES} />
+      </ThemeProvider>
+    );
+
+    expect(screen.getByTestId("judge-vote-group")).toBeInTheDocument();
+    expect(screen.getByText("Judge I")).toBeVisible();
+    expect(screen.getByText("Judge II")).toBeVisible();
+    expect(screen.getByText("Judge III")).toBeVisible();
+  });
+
+  it("renders human-facing 'NOT GUILTY' (no underscore) when a verdictLabel formatter is supplied", () => {
+    render(
+      <ThemeProvider theme={theme}>
+        <CssBaseline />
+        <JudgeVoteGroup
+          presentation="premium"
+          verdictLabel={(verdict) => (verdict === "NOT_GUILTY" ? "NOT GUILTY" : "GUILTY")}
+          votes={VOTES}
+        />
+      </ThemeProvider>
+    );
+
+    expect(screen.getAllByText("GUILTY")).toHaveLength(2);
+    expect(screen.getByText("NOT GUILTY")).toBeVisible();
+    expect(screen.queryByText("NOT_GUILTY")).not.toBeInTheDocument();
+  });
+
+  it("still retains the literal enum text when no verdictLabel is supplied, even in premium presentation", () => {
+    render(
+      <ThemeProvider theme={theme}>
+        <CssBaseline />
+        <JudgeVoteGroup presentation="premium" votes={VOTES} />
+      </ThemeProvider>
+    );
+
+    expect(screen.getAllByText("GUILTY")).toHaveLength(2);
+    expect(screen.getByText("NOT_GUILTY")).toBeVisible();
+  });
+
+  it("shows a supplied displayName as primary with the seat label as secondary context, same as the default branch", () => {
+    render(
+      <ThemeProvider theme={theme}>
+        <CssBaseline />
+        <JudgeVoteGroup
+          presentation="premium"
+          votes={[{ judge: "Judge I", displayName: "Justice Green", verdict: "GUILTY" }]}
+        />
+      </ThemeProvider>
+    );
+
+    expect(screen.getByText("Justice Green")).toBeVisible();
+    expect(screen.getByText("Judge I")).toBeVisible();
+  });
+
+  describe("deterministic panel summary (derived only from the persisted votes)", () => {
+    it("shows 'Unanimous · 3–0' when all three votes match", () => {
+      render(
+        <ThemeProvider theme={theme}>
+          <CssBaseline />
+          <JudgeVoteGroup
+            presentation="premium"
+            votes={[
+              { judge: "Judge I", verdict: "GUILTY" },
+              { judge: "Judge II", verdict: "GUILTY" },
+              { judge: "Judge III", verdict: "GUILTY" }
+            ]}
+          />
+        </ThemeProvider>
+      );
+
+      expect(screen.getByText("Unanimous · 3–0")).toBeVisible();
+    });
+
+    it("shows 'Majority · 2–1' for a split panel", () => {
+      render(
+        <ThemeProvider theme={theme}>
+          <CssBaseline />
+          <JudgeVoteGroup presentation="premium" votes={VOTES} />
+        </ThemeProvider>
+      );
+
+      // VOTES above is 2 GUILTY / 1 NOT_GUILTY.
+      expect(screen.getByText("Majority · 2–1")).toBeVisible();
+    });
+  });
+});
+
 function hexToRgb(hex: string): string {
   const value = hex.replace("#", "");
   const r = Number.parseInt(value.slice(0, 2), 16);

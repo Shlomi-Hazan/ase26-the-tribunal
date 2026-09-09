@@ -60,6 +60,19 @@ function formatRunError(error: unknown): string {
       return "This configuration could not be frozen because a prior request with the same submission id already produced a different result. Please try again.";
     }
 
+    // M14 access-gate fix (live-verified root cause): a 401
+    // demo_access_denied means the Jon Snow demo's access capability
+    // (src/services/jonSnowDemoAccess.ts) is missing or invalid --
+    // this happens before any case/run is even attempted, so it is
+    // never a freeze/persistence failure. The generic fallback below
+    // was misreporting it as exactly that. This module stays generic
+    // over both /api/runs and the Jon Snow demo endpoint -- checking
+    // this specific errorCode is a no-op for every other caller, since
+    // only the demo endpoint ever returns it.
+    if (error.status === 401 && error.errorCode === "demo_access_denied") {
+      return "Jon Snow demo access is missing or invalid. Open the prepared demo link again.";
+    }
+
     return error.errors.join(" ") || "Tribunal configuration could not be frozen.";
   }
 

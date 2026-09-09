@@ -47,24 +47,34 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-// Milestone 12 (Issue #32 Sec 10-11) -- theme is a pure function of which
-// route reached the run, never of the run's own content. Both routes
-// fetch and render the IDENTICAL underlying run (same RUN_ID, same
-// RunPage data/logic); only the presentational wrapper differs.
-describe("Jon Snow theme routing", () => {
-  it("renders the themed wrapper on /demo/jon-snow/runs/:runId", async () => {
+// M14 presentation-routing correction (PR #40): a Jon Snow run is a real
+// Tribunal run and must render through the exact same generic Ivory &
+// Iron `/runs/:runId` presentation every other run uses -- the dark
+// cinematic identity (JonSnowRunPage, now removed) belonged to the
+// settings page only, never to the run/result screen. The legacy
+// `/demo/jon-snow/runs/:runId` URL is preserved for backward
+// compatibility as a stateless redirect to the same generic route,
+// carrying the same runId, fetching/rendering nothing of its own.
+describe("Legacy Jon Snow run URL (M14 presentation-routing correction)", () => {
+  it("redirects /demo/jon-snow/runs/:runId to the generic /runs/:runId, rendering the ordinary RunPage with no Jon Snow banner", async () => {
     renderWithAppProviders(<AppRoutes />, `/demo/jon-snow/runs/${RUN_ID}`);
 
-    expect(
-      await screen.findByRole("heading", { name: "The Realm v. Jon Snow" })
-    ).toBeVisible();
     expect(await screen.findByText(/deliberation in progress/i)).toBeVisible();
+    // The removed JonSnowRunPage banner must never appear -- the run's
+    // Jon Snow identity already lives in the case/run data itself, not
+    // in a page-level presentation wrapper.
+    expect(
+      screen.queryByRole("heading", { name: "The Realm v. Jon Snow" })
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/featured demo/i)).not.toBeInTheDocument();
   });
 
-  it("renders the same run generically, with no theming, on /runs/:runId", async () => {
+  it("the same canonical Jon Snow run renders identically whether reached via the legacy URL or the generic URL directly", async () => {
     renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
 
     expect(await screen.findByText(/deliberation in progress/i)).toBeVisible();
-    expect(screen.queryByRole("heading", { name: "The Realm v. Jon Snow" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "The Realm v. Jon Snow" })
+    ).not.toBeInTheDocument();
   });
 });

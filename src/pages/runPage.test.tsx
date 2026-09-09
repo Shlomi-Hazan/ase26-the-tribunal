@@ -12,6 +12,17 @@ import type { AttemptAudit, StoredRun } from "../services/runApi";
 
 const RUN_ID = "11111111-1111-4111-8111-111111111111";
 
+// Milestone 14 (COMPLETED-result PDF export) -- the real
+// @react-pdf/renderer document/blob/download pipeline is dynamically
+// imported by RunPage only when the button is clicked; mocked here so
+// these tests exercise the WIRING (correct data passed, no extra
+// network call, visible error on failure) without invoking the actual
+// PDF layout engine or a real browser download, per this task's own
+// "do not require a real browser download in unit tests" guidance.
+vi.mock("../features/tribunal-run/tribunalProtocolPdf", () => ({
+  downloadTribunalProtocolPdf: vi.fn()
+}));
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -209,7 +220,13 @@ describe("RunPage Result UX affordances (post-M9 follow-up)", () => {
 
     renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
 
-    expect(await screen.findByRole("heading", { name: "NOT_GUILTY" })).toBeVisible();
+    // Milestone 14 (COMPLETED-state visual reference pass, human product
+    // decision): human-facing verdict copy is display-formatted to drop
+    // the stored enum's underscore ("NOT GUILTY", not "NOT_GUILTY") --
+    // the underlying stored `run.majorityVerdict` value is still the
+    // literal "NOT_GUILTY" (see the fixture above), only its rendered
+    // text changed.
+    expect(await screen.findByRole("heading", { name: "NOT GUILTY" })).toBeVisible();
   });
 
   it("B: a GUILTY overall verdict receives the theme's error semantics", async () => {
@@ -227,7 +244,9 @@ describe("RunPage Result UX affordances (post-M9 follow-up)", () => {
 
     renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
 
-    const heading = await screen.findByRole("heading", { name: "NOT_GUILTY" });
+    // Milestone 14: display-formatted to "NOT GUILTY" (no underscore) --
+    // see test A's comment above.
+    const heading = await screen.findByRole("heading", { name: "NOT GUILTY" });
 
     expect(getComputedStyle(heading).color).toBe(hexToRgb(theme.palette.success.main));
   });
@@ -1795,5 +1814,159 @@ describe("RunPage READY pre-execution state (Milestone 13, final pre-merge corre
     expect(await screen.findByText("This run cannot be executed")).toBeVisible();
     expect(screen.queryByText("Waiting for execution to start")).not.toBeInTheDocument();
     expect(screen.queryByText("The Tribunal is in session")).not.toBeInTheDocument();
+  });
+});
+
+// Milestone 14 (COMPLETED-result PDF export) -- the export module itself
+// is mocked at the top of this file; these tests verify the WIRING only:
+// the button's conditional visibility, that it hands the export the real
+// persisted run/votes/speeches (never re-derived independently), that no
+// extra network/model call happens, and that a failure surfaces visibly
+// without crashing the page.
+describe("RunPage COMPLETED-result PDF export (Milestone 14)", () => {
+  // `vi.restoreAllMocks()` (the file-wide afterEach above) only restores
+  // spies created via `vi.spyOn()` -- it does not clear call
+  // history/queued resolved-once values on a plain `vi.fn()` returned by
+  // a `vi.mock()` factory, so that must be done explicitly here.
+  beforeEach(async () => {
+    const { downloadTribunalProtocolPdf } = await import("../features/tribunal-run/tribunalProtocolPdf");
+
+    vi.mocked(downloadTribunalProtocolPdf).mockClear();
+  });
+
+  it("shows the Download Tribunal Report (PDF) action for a valid COMPLETED result", async () => {
+    mockRunFetch(baseRun());
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    await screen.findByRole("heading", { name: "GUILTY" });
+
+    expect(screen.getByRole("button", { name: /Download Tribunal Report \(PDF\)/ })).toBeVisible();
+  });
+
+  it("does not show the PDF action on a READY run", async () => {
+    mockRunFetch(
+      baseRun({
+        status: "READY",
+        majorityVerdict: null,
+        startedAt: null,
+        completedAt: null,
+        attempts: [],
+        protocol: null
+      })
+    );
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+
+    await screen.findByText("Waiting for execution to start");
+    expect(screen.queryByRole("button", { name: /Download Tribunal Report \(PDF\)/ })).not.toBeInTheDocument();
+  });
+
+  it("does not show the PDF action on a FAILED run", async () => {
+    mockRunFetch(
+      baseRun({
+        status: "FAILED",
+        majorityVerdict: null,
+        failureCode: "ADVOCATE_TERMINAL_FAILURE",
+        failureMessage: "Advocate advocate-pro-1 did not produce a valid speech after the permitted retry.",
+        protocol: null
+      })
+    );
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+
+    await screen.findByText(/The Tribunal could not complete/i);
+    expect(screen.queryByRole("button", { name: /Download Tribunal Report \(PDF\)/ })).not.toBeInTheDocument();
+  });
+
+  it("does not show the PDF action when the result fails integrity checks", async () => {
+    const run = baseRun();
+
+    run.participants = run.participants.map((entry) =>
+      entry.participantId === "judge-3" ? { ...entry, verdict: null, reasoning: null } : entry
+    );
+    mockRunFetch(run);
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+
+    await screen.findByText(/result cannot be safely displayed/i);
+    expect(screen.queryByRole("button", { name: /Download Tribunal Report \(PDF\)/ })).not.toBeInTheDocument();
+  });
+
+  it("exports using the real persisted run id, majority verdict, votes, and speeches -- never re-derived or fabricated data", async () => {
+    const user = userEvent.setup();
+    const { downloadTribunalProtocolPdf } = await import("../features/tribunal-run/tribunalProtocolPdf");
+
+    vi.mocked(downloadTribunalProtocolPdf).mockResolvedValueOnce(undefined);
+    mockRunFetch(baseRun());
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    await screen.findByRole("heading", { name: "GUILTY" });
+
+    await user.click(screen.getByRole("button", { name: /Download Tribunal Report \(PDF\)/ }));
+
+    await waitFor(() => {
+      expect(downloadTribunalProtocolPdf).toHaveBeenCalledTimes(1);
+    });
+
+    const exported = vi.mocked(downloadTribunalProtocolPdf).mock.calls[0][0];
+
+    expect(exported.run.id).toBe(RUN_ID);
+    expect(exported.majorityVerdict).toBe("GUILTY");
+    expect(exported.votes).toHaveLength(3);
+    expect(exported.votes.map((vote) => vote.reasoning)).toEqual([
+      "Judge I reasoning.",
+      "Judge II reasoning.",
+      "Judge III reasoning."
+    ]);
+    expect(exported.speeches).toHaveLength(4);
+    expect(exported.speeches.map((speech) => speech.speech)).toEqual([
+      "PRO I speech.",
+      "PRO II speech.",
+      "CON I speech.",
+      "CON II speech."
+    ]);
+  });
+
+  it("triggers no additional network/model call when exporting (structural -- no fetch beyond the initial run poll)", async () => {
+    const user = userEvent.setup();
+    const { downloadTribunalProtocolPdf } = await import("../features/tribunal-run/tribunalProtocolPdf");
+
+    vi.mocked(downloadTribunalProtocolPdf).mockResolvedValueOnce(undefined);
+    mockRunFetch(baseRun());
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    await screen.findByRole("heading", { name: "GUILTY" });
+
+    const fetchSpy = vi.mocked(globalThis.fetch);
+    const callsBeforeExport = fetchSpy.mock.calls.length;
+
+    await user.click(screen.getByRole("button", { name: /Download Tribunal Report \(PDF\)/ }));
+
+    await waitFor(() => {
+      expect(downloadTribunalProtocolPdf).toHaveBeenCalledTimes(1);
+    });
+
+    expect(fetchSpy.mock.calls.length).toBe(callsBeforeExport);
+  });
+
+  it("surfaces a visible, concise error when PDF generation fails, and leaves the page usable", async () => {
+    const user = userEvent.setup();
+    const { downloadTribunalProtocolPdf } = await import("../features/tribunal-run/tribunalProtocolPdf");
+
+    vi.mocked(downloadTribunalProtocolPdf).mockRejectedValueOnce(new Error("layout engine failure"));
+    mockRunFetch(baseRun());
+
+    renderWithAppProviders(<AppRoutes />, `/runs/${RUN_ID}`);
+    await screen.findByRole("heading", { name: "GUILTY" });
+
+    const button = screen.getByRole("button", { name: /Download Tribunal Report \(PDF\)/ });
+
+    await user.click(button);
+
+    expect(await screen.findByText(/could not be generated/i)).toBeVisible();
+    // The page is not crashed -- the verdict and the action itself are
+    // both still present and the button is not left permanently disabled.
+    expect(screen.getByRole("heading", { name: "GUILTY" })).toBeVisible();
+    expect(screen.getByRole("button", { name: /Download Tribunal Report \(PDF\)/ })).toBeEnabled();
   });
 });

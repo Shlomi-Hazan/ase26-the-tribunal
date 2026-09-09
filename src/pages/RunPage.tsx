@@ -3,18 +3,34 @@
 // state the M4-era DeliberationPage/ResultPage still use (left
 // unmodified -- they remain a valid UI-shell demonstration independent
 // of real execution) with GET /api/runs/:id polling against a real run.
-
+//
+// Milestone 14 (Ivory & Iron, live/completed Run high-fidelity
+// redesign): restyle only. Every hook, the poll loop (POLL_INTERVAL_MS,
+// terminal-status stop condition, cancellation/timeout cleanup, the
+// server-authoritative startedAt-based staleness computation),
+// checkResultIntegrity, the exact STATUS_MAP/RUN status semantics, and
+// every existing text string this file's own test suite locks in are
+// unchanged -- only the surrounding composition/presentation changed,
+// so the page reads as a live proceeding record / final judicial
+// record rather than generic cards and status chips. PageHeader.tsx
+// itself is untouched (still shared, unmodified, by SmartImportPage/
+// DeliberationPage/JonSnowSettingsPage, all out of scope this pass) --
+// this page hand-rolls its own eyebrow/title/description block
+// (RunHeader below), matching the same gold editorial hierarchy already
+// approved on Review/Past Cases/Case Detail. StatusBadge, JudgeVoteGroup
+// and describeHistoricalAdvocateSide/AdvocateSideMeaning are rendered
+// with their existing real data/behavior, unmodified.
 import {
   Accordion,
   AccordionDetails,
   AccordionSummary,
   Alert,
   Box,
-  Card,
-  CardContent,
+  Button,
   CircularProgress,
   Collapse,
   IconButton,
+  Paper,
   Stack,
   Table,
   TableBody,
@@ -24,14 +40,21 @@ import {
   TableRow,
   Typography
 } from "@mui/material";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useParams } from "react-router-dom";
 import {
   describeAdvocateSide,
   type AdvocateSide
 } from "../components/describeHistoricalAdvocateSide";
+import {
+  BarChartIcon,
+  ClockHistoryIcon,
+  CounselIcon,
+  DocumentIcon,
+  GavelIcon,
+  ScaleIcon
+} from "../components/icons/LineIcons";
 import { JudgeVoteGroup } from "../components/JudgeVoteGroup";
-import { PageHeader } from "../components/PageHeader";
 import { getSeatLabel, resolveParticipantIdentity } from "../components/participantIdentity";
 import { PublicDemoRetentionNotice } from "../components/PublicDemoRetentionNotice";
 import { StatusBadge } from "../components/StatusBadge";
@@ -41,6 +64,7 @@ import { verdictColor } from "../components/verdictColor";
 // locally re-derived threshold and never an import of execution.ts
 // itself (server-only).
 import { computeStalenessThresholdMs } from "../features/tribunal-run/executionTimingPolicy";
+import { monoFontStack } from "../theme/theme";
 import {
   advocateParticipants,
   judgeParticipants,
@@ -79,6 +103,140 @@ function AccordionExpandIcon() {
       <path d="M6 9l6 6 6-6" />
     </svg>
   );
+}
+
+// Milestone 14 (COMPLETED-state visual reference pass) -- a small,
+// hand-authored checkmark glyph (same convention as AccordionExpandIcon
+// above: no icon-pack dependency, aria-hidden, purely decorative next to
+// the verdict hero's existing, unchanged explanatory sentence).
+function CheckIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      fill="none"
+      height="16"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2.25"
+      viewBox="0 0 24 24"
+      width="16"
+    >
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  );
+}
+
+// Milestone 14 (COMPLETED-result PDF export) -- a small, hand-authored
+// download glyph, same convention as AccordionExpandIcon/CheckIcon above
+// (no icon-pack dependency, aria-hidden, purely decorative next to the
+// button's own accessible text).
+function DownloadIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      fill="none"
+      height="16"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="1.8"
+      viewBox="0 0 24 24"
+      width="16"
+    >
+      <path d="M12 3v12" />
+      <path d="m7 10 5 5 5-5" />
+      <path d="M4 19h16" />
+    </svg>
+  );
+}
+
+// Milestone 14 -- the page's own hand-rolled eyebrow/title/description
+// block, matching the exact gold editorial hierarchy already approved
+// on Review/Past Cases/Case Detail (title stays a real <h1>, so every
+// existing `getByRole("heading", { name: ... })` assertion in this
+// page's own test suite continues to match unchanged).
+function RunHeader({
+  eyebrow,
+  title,
+  description
+}: {
+  eyebrow: string;
+  title: string;
+  description: string;
+}) {
+  return (
+    <Stack spacing={1}>
+      <Typography
+        color="#8C6423"
+        sx={{ fontWeight: 800, letterSpacing: "0.12em", textTransform: "uppercase" }}
+        variant="caption"
+      >
+        {eyebrow}
+      </Typography>
+      <Typography component="h1" variant="h3">
+        {title}
+      </Typography>
+      <Typography color="text.secondary" sx={{ maxWidth: "65ch" }}>
+        {description}
+      </Typography>
+    </Stack>
+  );
+}
+
+// A small gold icon-circle badge, reused ahead of each chamber/section
+// heading -- the same visual mark already approved on Review's Case
+// Docket / Tribunal Configuration panels and Case Detail's Case
+// Dossier, carried over here for continuity.
+function SectionIcon({ icon: Icon }: { icon: typeof ScaleIcon }) {
+  return (
+    <Box
+      sx={{
+        alignItems: "center",
+        bgcolor: "rgba(184,137,43,0.12)",
+        borderRadius: "50%",
+        color: "#8C6423",
+        display: "flex",
+        height: 36,
+        justifyContent: "center",
+        width: 36
+      }}
+    >
+      <Icon size={18} />
+    </Box>
+  );
+}
+
+// Milestone 14 (COMPLETED-state visual reference pass) -- a single
+// icon + value row for the Tribunal Record panel's metadata, replacing
+// the earlier bare mono-font lines that read like raw debug output.
+// Every value passed in remains a real, already-computed StoredRun
+// field/format-helper result -- this only changes presentation.
+function MetaRow({ icon: Icon, children }: { icon: typeof ScaleIcon; children: ReactNode }) {
+  return (
+    <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+      <Box aria-hidden="true" sx={{ alignItems: "center", color: "#8C6423", display: "flex", flexShrink: 0, opacity: 0.85 }}>
+        <Icon size={14} />
+      </Box>
+      <Typography color="text.secondary" sx={{ fontFamily: monoFontStack, wordBreak: "break-all" }} variant="caption">
+        {children}
+      </Typography>
+    </Stack>
+  );
+}
+
+// Milestone 14 (COMPLETED-state visual reference pass, human product
+// decision) -- human-facing verdict copy must never show the stored
+// enum's underscore ("NOT_GUILTY"). This is a pure display formatter
+// only: it is called AFTER checkResultIntegrity has already validated
+// the real stored `run.majorityVerdict`/`participant.verdict`, never
+// touches those values, never recalculates anything, and is applied
+// only at the specific render sites below -- the Protocol accordion's
+// own technical/audit text (built from a different data path,
+// `protocol.judges[].verdict`) is deliberately left as the raw enum,
+// consistent with the rest of that section's technical presentation.
+function formatVerdictDisplay(verdict: "GUILTY" | "NOT_GUILTY"): string {
+  return verdict === "NOT_GUILTY" ? "NOT GUILTY" : "GUILTY";
 }
 
 const STATUS_MAP: Record<ParticipantAttemptStatus, ParticipantStatus> = {
@@ -160,7 +318,7 @@ export function RunPage() {
   if (!run) {
     return (
       <Stack spacing={2} sx={{ alignItems: "center", py: 8 }}>
-        <CircularProgress />
+        <CircularProgress sx={{ color: "#8C6423" }} />
         <Typography color="text.secondary">Loading run...</Typography>
       </Stack>
     );
@@ -170,16 +328,29 @@ export function RunPage() {
     return (
       <Stack spacing={4}>
         <PublicDemoRetentionNotice />
-        <PageHeader
+        <RunHeader
           description="Budget blocking happens before model execution and is not a participant failure."
           eyebrow="Budget Gate"
           title="This run cannot be executed"
         />
-        <Card>
-          <CardContent>
-            <Typography>{run.failureMessage ?? "Conservative preflight exceeded the $5.00 policy limit."}</Typography>
-          </CardContent>
-        </Card>
+        <Box
+          sx={{
+            border: "1px solid",
+            borderColor: "divider",
+            borderLeft: "3px solid",
+            borderLeftColor: "#8C6423",
+            borderRadius: "10px",
+            p: { xs: 2, md: 3 }
+          }}
+        >
+          <Typography sx={{ fontWeight: 700 }}>
+            {run.failureMessage ?? "Conservative preflight exceeded the $5.00 policy limit."}
+          </Typography>
+          <Typography color="text.secondary" sx={{ mt: 1 }} variant="body2">
+            Execution was blocked before inference -- no provider or model calls were made for
+            this run.
+          </Typography>
+        </Box>
       </Stack>
     );
   }
@@ -188,7 +359,7 @@ export function RunPage() {
     return (
       <Stack spacing={4}>
         <PublicDemoRetentionNotice />
-        <PageHeader
+        <RunHeader
           description={run.failureMessage ?? "The run could not complete."}
           eyebrow="Run Failed"
           title="The Tribunal could not complete"
@@ -226,7 +397,7 @@ export function RunPage() {
     return (
       <Stack spacing={4}>
         <PublicDemoRetentionNotice />
-        <PageHeader
+        <RunHeader
           description="Status: READY"
           eyebrow="Preparing the Tribunal"
           title="Waiting for execution to start"
@@ -256,14 +427,39 @@ export function RunPage() {
     !TERMINAL_STATUSES.has(run.status) &&
     nowMs - Date.parse(run.startedAt) > computeStalenessThresholdMs();
 
+  // Milestone 14 -- a truthful, real-status-derived phase label (never a
+  // guessed percentage/ETA/current-participant ordering): the engine
+  // runs all four advocates concurrently, then judges only after that
+  // barrier -- this label names which of those two real phases is
+  // currently active, nothing more.
+  const phaseLabel = run.status === "ADVOCATES_RUNNING" ? "Advocate Phase" : "Judicial Phase";
+
   return (
     <Stack spacing={4}>
       <PublicDemoRetentionNotice />
-      <PageHeader
+      <RunHeader
         description={`Status: ${run.status}`}
         eyebrow="The Tribunal is in session"
         title="Deliberation in progress"
       />
+      <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+        <Box
+          aria-hidden="true"
+          sx={{
+            bgcolor: "#4A6670",
+            borderRadius: "50%",
+            flexShrink: 0,
+            height: 8,
+            width: 8
+          }}
+        />
+        <Typography
+          sx={{ color: "#4A6670", fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase" }}
+          variant="caption"
+        >
+          {phaseLabel}
+        </Typography>
+      </Stack>
       {isTakingLongerThanExpected ? (
         <Alert severity="warning">
           This run is taking longer than expected. It has not failed or completed -- the Tribunal
@@ -275,6 +471,14 @@ export function RunPage() {
   );
 }
 
+// Milestone 14 -- the execution roster, organized into its true
+// structure (ADVOCATES split into PRO -- Defense / CON -- Opposition,
+// then THE BENCH) instead of one flat 4-column grid, echoing the same
+// grouping already approved on the Advocates/Judges/Review setup
+// screens but in a compact, read-only, run-time form. `judgesActive`'s
+// exact gate condition, the per-participant attemptStatus -> UI-label
+// mapping (STATUS_MAP), and the version-aware AdvocateSideMeaning
+// helper are all unchanged.
 function ParticipantGrid({ run }: { run: StoredRun }) {
   const statusById = new Map(run.participants.map((participant) => [participant.participantId, participant.attemptStatus]));
   // PRO/CON semantic correction (Issue #30): the real per-run
@@ -294,36 +498,80 @@ function ParticipantGrid({ run }: { run: StoredRun }) {
     run.participants.map((participant) => [participant.participantId, participant.profileName])
   );
   const judgesActive = run.status === "JUDGES_RUNNING" || run.status === "COMPLETED" || run.status === "FAILED";
+  const proAdvocates = advocateParticipants.filter((p) => p.side === "PRO");
+  const conAdvocates = advocateParticipants.filter((p) => p.side === "CON");
 
   return (
     <Stack spacing={3}>
-      <Card component="section">
-        <CardContent>
-          <Typography component="h2" variant="h5">
-            Advocates
-          </Typography>
-          <ParticipantRow
-            participants={advocateParticipants}
-            profileNameById={profileNameById}
-            promptVersionById={promptVersionById}
-            statuses={advocateParticipants.map((p) => STATUS_MAP[statusById.get(p.id) ?? "PENDING"])}
-          />
-        </CardContent>
-      </Card>
-      {judgesActive ? (
-        <Card component="section">
-          <CardContent>
-            <Typography component="h2" variant="h5">
-              Judges
+      <Paper sx={{ borderRadius: "14px", p: { xs: 2, md: 3 } }}>
+        <Stack spacing={2}>
+          <Stack direction="row" spacing={1.5} sx={{ alignItems: "center" }}>
+            <SectionIcon icon={CounselIcon} />
+            <Typography component="h2" sx={{ fontWeight: 700 }} variant="subtitle1">
+              Advocates
             </Typography>
-            <ParticipantRow
-              participants={judgeParticipants}
-              profileNameById={profileNameById}
-              promptVersionById={promptVersionById}
-              statuses={judgeParticipants.map((p) => STATUS_MAP[statusById.get(p.id) ?? "PENDING"])}
-            />
-          </CardContent>
-        </Card>
+          </Stack>
+          <Box sx={{ display: "grid", gap: 2, gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" } }}>
+            <Stack spacing={1.5}>
+              <Typography color="text.secondary" sx={{ fontWeight: 700 }} variant="caption">
+                PRO — DEFENSE
+              </Typography>
+              <Box sx={{ display: "grid", gap: 1.5, gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)" } }}>
+                {proAdvocates.map((participant) => (
+                  <ParticipantCardLive
+                    accentColor="#8C6423"
+                    key={participant.id}
+                    participant={participant}
+                    profileName={profileNameById.get(participant.id)}
+                    promptVersion={promptVersionById.get(participant.id) ?? ""}
+                    status={STATUS_MAP[statusById.get(participant.id) ?? "PENDING"]}
+                  />
+                ))}
+              </Box>
+            </Stack>
+            <Stack spacing={1.5}>
+              <Typography color="text.secondary" sx={{ fontWeight: 700 }} variant="caption">
+                CON — OPPOSITION
+              </Typography>
+              <Box sx={{ display: "grid", gap: 1.5, gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)" } }}>
+                {conAdvocates.map((participant) => (
+                  <ParticipantCardLive
+                    accentColor="#6B6355"
+                    key={participant.id}
+                    participant={participant}
+                    profileName={profileNameById.get(participant.id)}
+                    promptVersion={promptVersionById.get(participant.id) ?? ""}
+                    status={STATUS_MAP[statusById.get(participant.id) ?? "PENDING"]}
+                  />
+                ))}
+              </Box>
+            </Stack>
+          </Box>
+        </Stack>
+      </Paper>
+      {judgesActive ? (
+        <Paper sx={{ borderRadius: "14px", p: { xs: 2, md: 3 } }}>
+          <Stack spacing={2}>
+            <Stack direction="row" spacing={1.5} sx={{ alignItems: "center" }}>
+              <SectionIcon icon={ScaleIcon} />
+              <Typography component="h2" sx={{ fontWeight: 700 }} variant="subtitle1">
+                The Bench
+              </Typography>
+            </Stack>
+            <Box sx={{ display: "grid", gap: 1.5, gridTemplateColumns: { xs: "1fr", md: "repeat(3, 1fr)" } }}>
+              {judgeParticipants.map((participant) => (
+                <ParticipantCardLive
+                  accentColor="#8C6423"
+                  key={participant.id}
+                  participant={participant}
+                  profileName={profileNameById.get(participant.id)}
+                  promptVersion={promptVersionById.get(participant.id) ?? ""}
+                  status={STATUS_MAP[statusById.get(participant.id) ?? "PENDING"]}
+                />
+              ))}
+            </Box>
+          </Stack>
+        </Paper>
       ) : (
         <Alert severity="info">Judges begin only after all four advocate speeches validate.</Alert>
       )}
@@ -331,59 +579,52 @@ function ParticipantGrid({ run }: { run: StoredRun }) {
   );
 }
 
-function ParticipantRow({
-  participants,
-  profileNameById,
-  promptVersionById,
-  statuses
+// One compact execution-roster card. The outer element is a real MUI
+// `<Stack>` (relied on by this page's own test suite, which scopes
+// several assertions via `.closest(".MuiStack-root")`) and every text
+// node below (identity.primary, identity.secondarySeatLabel,
+// AdvocateSideMeaning, StatusBadge) is rendered exactly as before --
+// only the container's border/spacing changed, plus a side-accent
+// color that is always paired with the same real status text (never a
+// color-only signal).
+function ParticipantCardLive({
+  participant,
+  accentColor,
+  status,
+  profileName,
+  promptVersion
 }: {
-  participants: Array<{ id: string; label: string; side?: string }>;
-  profileNameById: Map<string, string | null>;
-  promptVersionById: Map<string, string>;
-  statuses: ParticipantStatus[];
+  participant: { id: string; label: string; side?: string };
+  accentColor: string;
+  status: ParticipantStatus;
+  profileName: string | null | undefined;
+  promptVersion: string;
 }) {
+  const identity = resolveParticipantIdentity(profileName, participant.label);
+
   return (
-    <Box
+    <Stack
+      spacing={1}
       sx={{
-        display: "grid",
-        gap: 2,
-        gridTemplateColumns: { xs: "1fr", md: "repeat(4, 1fr)" },
-        mt: 2
+        border: "1px solid",
+        borderColor: "divider",
+        borderLeft: "3px solid",
+        borderLeftColor: accentColor,
+        borderRadius: "10px",
+        p: 1.5
       }}
     >
-      {participants.map((participant, index) => {
-        // Human product decision (PR #34): profileName primary, seat
-        // secondary, generic seat alone when no meaningful name exists
-        // -- the single centralized rule, no ad hoc `profileName ||
-        // label` logic here.
-        const identity = resolveParticipantIdentity(
-          profileNameById.get(participant.id),
-          participant.label
-        );
-
-        return (
-          <Stack
-            key={participant.id}
-            spacing={1}
-            sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2, p: 2 }}
-          >
-            <Typography sx={{ fontWeight: 800 }}>{identity.primary}</Typography>
-            {identity.secondarySeatLabel ? (
-              <Typography color="text.secondary" variant="body2">
-                {identity.secondarySeatLabel}
-              </Typography>
-            ) : null}
-            {participant.side === "PRO" || participant.side === "CON" ? (
-              <AdvocateSideMeaning
-                promptVersion={promptVersionById.get(participant.id) ?? ""}
-                side={participant.side}
-              />
-            ) : null}
-            <StatusBadge status={statuses[index]} />
-          </Stack>
-        );
-      })}
-    </Box>
+      <Typography sx={{ fontWeight: 800 }}>{identity.primary}</Typography>
+      {identity.secondarySeatLabel ? (
+        <Typography color="text.secondary" variant="body2">
+          {identity.secondarySeatLabel}
+        </Typography>
+      ) : null}
+      {participant.side === "PRO" || participant.side === "CON" ? (
+        <AdvocateSideMeaning promptVersion={promptVersion} side={participant.side} />
+      ) : null}
+      <StatusBadge status={status} />
+    </Stack>
   );
 }
 
@@ -430,6 +671,30 @@ function checkResultIntegrity(run: StoredRun): ResultIntegrityCheck {
   return { valid: true };
 }
 
+// Milestone 14 (COMPLETED-result PDF export) -- the exact shapes
+// CompletedResult below already builds via resolveParticipantIdentity;
+// named here only so CompletedResultView/the PDF handoff can be typed
+// without re-deriving the values.
+type CompletedJudgeVote = {
+  judge: string;
+  displayName?: string;
+  verdict: "GUILTY" | "NOT_GUILTY";
+  model: string;
+  personality: string;
+  reasoning: string;
+};
+
+type CompletedAdvocateSpeech = {
+  participantId: string;
+  displayName: string;
+  seatLabel: string | null;
+  side: "PRO" | "CON";
+  model: string;
+  personality: string;
+  speech: string;
+  promptVersion: string;
+};
+
 function CompletedResult({ run }: { run: StoredRun }) {
   const integrity = checkResultIntegrity(run);
 
@@ -437,7 +702,7 @@ function CompletedResult({ run }: { run: StoredRun }) {
     return (
       <Stack spacing={4}>
         <PublicDemoRetentionNotice />
-        <PageHeader
+        <RunHeader
           description="This completed run's stored result is incomplete or corrupted -- it is not displayed as a verdict."
           eyebrow="Result Data Integrity Error"
           title="This result cannot be safely displayed"
@@ -489,85 +754,321 @@ function CompletedResult({ run }: { run: StoredRun }) {
     };
   });
 
+  return <CompletedResultView majorityVerdict={majorityVerdict} run={run} speeches={speeches} votes={votes} />;
+}
+
+// Milestone 14 (COMPLETED-result PDF export) -- split from CompletedResult
+// only so the export handler's local state (isExportingPdf/pdfError)
+// lives beside the exact `run`/`majorityVerdict`/`votes`/`speeches`
+// values it exports, without changing any of the JSX/behavior above.
+// The PDF module itself is dynamically imported only when the button is
+// actually clicked, so every other run state's bundle is unaffected.
+function CompletedResultView({
+  run,
+  majorityVerdict,
+  votes,
+  speeches
+}: {
+  run: StoredRun;
+  majorityVerdict: "GUILTY" | "NOT_GUILTY";
+  votes: CompletedJudgeVote[];
+  speeches: CompletedAdvocateSpeech[];
+}) {
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [pdfError, setPdfError] = useState("");
+
+  async function handleDownloadPdf() {
+    setPdfError("");
+    setIsExportingPdf(true);
+
+    try {
+      const { downloadTribunalProtocolPdf } = await import("../features/tribunal-run/tribunalProtocolPdf");
+
+      await downloadTribunalProtocolPdf({ majorityVerdict, run, speeches, votes });
+    } catch {
+      setPdfError("The PDF could not be generated. You can try the download again.");
+    } finally {
+      setIsExportingPdf(false);
+    }
+  }
+
   return (
     <Stack spacing={4}>
       <PublicDemoRetentionNotice />
-      <Card component="section">
-        <CardContent>
-          <Typography color="text.secondary" sx={{ fontWeight: 800 }}>
-            TRIBUNAL VERDICT
+      {/* RESULT HEADER -- a two-part band: a compact Tribunal Record
+         context card (~37%) beside a large verdict hero (~63%), so the
+         page opens by immediately answering "what case, what verdict,
+         what kind of result" instead of one long stacked article. Every
+         value shown is a real StoredRun field already present on every
+         valid COMPLETED run (id/executionMode/completedAt/wallClockMs/
+         totalCostUsd) or the resolved protocol's own defendant name
+         when a protocol happens to be available -- nothing invented.
+         The verdict heading's VISIBLE text goes through
+         formatVerdictDisplay (a pure display formatter, see above) so
+         human-facing copy never shows the stored enum's underscore;
+         `run.majorityVerdict`/checkResultIntegrity are never touched.
+         The watermark scale icon is aria-hidden/decorative only. */}
+      <Box sx={{ display: "grid", gap: 3, gridTemplateColumns: { xs: "1fr", lg: "1fr 1.7fr" } }}>
+        <Paper sx={{ borderRadius: "14px", display: "flex", flexDirection: "column", justifyContent: "center", p: { xs: 2.5, md: 3 } }}>
+          <Stack spacing={1.5}>
+            <Typography
+              color="#8C6423"
+              sx={{ fontWeight: 800, letterSpacing: "0.12em", textTransform: "uppercase" }}
+              variant="caption"
+            >
+              Tribunal Record
+            </Typography>
+            <Typography component="h2" sx={{ fontFamily: '"Fraunces", Georgia, serif' }} variant="h5">
+              {run.protocol?.chargeSheet.defendant ?? "Completed Tribunal Run"}
+            </Typography>
+            <Stack spacing={1} sx={{ borderTop: "1px solid", borderColor: "divider", pt: 1.5 }}>
+              {run.completedAt ? (
+                <MetaRow icon={ClockHistoryIcon}>Completed {formatTimestamp(run.completedAt)}</MetaRow>
+              ) : null}
+              <MetaRow icon={GavelIcon}>
+                {run.executionMode === "shared" ? "Shared Model execution" : "Separate Models execution"}
+              </MetaRow>
+              <MetaRow icon={ClockHistoryIcon}>Runtime {formatWallClockSeconds(run.wallClockMs)}</MetaRow>
+              <MetaRow icon={DocumentIcon}>Run {run.id}</MetaRow>
+            </Stack>
+          </Stack>
+        </Paper>
+        <Paper
+          sx={{
+            background: "linear-gradient(160deg, #FFFFFF 0%, #FDF8ED 55%, #F8EDD3 100%)",
+            border: "1px solid rgba(184,137,43,0.4)",
+            borderRadius: "14px",
+            boxShadow: "inset 0 1px 0 rgba(255,255,255,0.7), 0 10px 28px rgba(140,100,35,0.1)",
+            overflow: "hidden",
+            p: { xs: 2.5, md: 4 },
+            position: "relative"
+          }}
+        >
+          <Box
+            aria-hidden="true"
+            sx={{
+              background: "linear-gradient(90deg, #B8892B 0%, #E8BE73 50%, #B8892B 100%)",
+              height: 4,
+              left: 0,
+              position: "absolute",
+              right: 0,
+              top: 0
+            }}
+          />
+          <Box
+            aria-hidden="true"
+            sx={{
+              bottom: -56,
+              color: "#8C6423",
+              opacity: 0.07,
+              pointerEvents: "none",
+              position: "absolute",
+              right: -40
+            }}
+          >
+            <ScaleIcon size={280} />
+          </Box>
+          <Typography
+            color="text.secondary"
+            sx={{ fontWeight: 800, letterSpacing: "0.16em", position: "relative", textTransform: "uppercase" }}
+            variant="caption"
+          >
+            Verdict
           </Typography>
           <Typography
             color={verdictColor(majorityVerdict)}
             component="h1"
-            sx={{ mt: 1 }}
+            sx={{ mt: 1, position: "relative" }}
             variant="h2"
           >
-            {majorityVerdict}
+            {formatVerdictDisplay(majorityVerdict)}
           </Typography>
-          <Typography color="text.secondary">
-            {/* Human product decision (PR #34): the generic Tribunal is
-               BYOK/user-funded, but the operator-funded Jon Snow demo
-               (Issue #32 Sec 21) is not -- this line must be true for
-               every run regardless of which funded it, with no route
-               sniffing to pick a wording. */}
-            Deterministic majority of the three judge votes — real model execution.
-          </Typography>
+          <Stack direction="row" spacing={0.75} sx={{ alignItems: "center", mt: 1, position: "relative" }}>
+            <Box aria-hidden="true" sx={{ color: verdictColor(majorityVerdict) === "success" ? "success.main" : "error.main" }}>
+              <CheckIcon />
+            </Box>
+            <Typography color="text.secondary">
+              {/* Human product decision (PR #34): the generic Tribunal is
+                 BYOK/user-funded, but the operator-funded Jon Snow demo
+                 (Issue #32 Sec 21) is not -- this line must be true for
+                 every run regardless of which funded it, with no route
+                 sniffing to pick a wording. */}
+              Deterministic majority of the three judge votes — real model execution.
+            </Typography>
+          </Stack>
           {run.totalCostUsd ? (
-            <Typography color="text.secondary" sx={{ mt: 1 }} variant="body2">
+            <Typography color="text.secondary" sx={{ mt: 1, position: "relative" }} variant="body2">
               Total model cost: ${run.totalCostUsd}
             </Typography>
           ) : null}
-        </CardContent>
-      </Card>
-      <JudgeVoteGroup votes={votes} />
-      {votes.map((vote) => (
-        <Accordion key={vote.judge}>
-          <AccordionSummary expandIcon={<AccordionExpandIcon />}>
-            <Stack spacing={0.25}>
-              <Typography sx={{ fontWeight: 800 }}>
-                {vote.displayName ?? vote.judge} --{" "}
-                <Typography color={verdictColor(vote.verdict)} component="span" sx={{ fontWeight: 800 }}>
-                  {vote.verdict}
-                </Typography>
-              </Typography>
-              {vote.displayName ? (
-                <Typography color="text.secondary" variant="body2">
-                  {vote.judge}
-                </Typography>
-              ) : null}
-              <Typography color="text.secondary" variant="caption">
-                View reasoning
-              </Typography>
-            </Stack>
-          </AccordionSummary>
-          <AccordionDetails>
-            <Typography>{vote.reasoning}</Typography>
-          </AccordionDetails>
-        </Accordion>
-      ))}
-      {speeches.map((speech) => (
-        <Accordion key={speech.participantId}>
-          <AccordionSummary expandIcon={<AccordionExpandIcon />}>
-            <Stack spacing={0.25}>
-              <Typography sx={{ fontWeight: 800 }}>{speech.displayName}</Typography>
-              <Typography color="text.secondary" variant="body2">
-                {speech.seatLabel ? `${speech.seatLabel} -- ${speech.side}` : speech.side}
-              </Typography>
-              <AdvocateSideMeaning promptVersion={speech.promptVersion} side={speech.side} />
-              <Typography color="text.secondary" variant="caption">
-                View argument
-              </Typography>
-            </Stack>
-          </AccordionSummary>
-          <AccordionDetails>
-            <Typography>{speech.speech}</Typography>
-          </AccordionDetails>
-        </Accordion>
-      ))}
+        </Paper>
+      </Box>
+      {/* THREE JUDGE VOTES -- kept directly below the result header.
+         JudgeVoteGroup itself is unmodified/shared with ResultPage; only
+         the new, optional `verdictLabel` prop is supplied here (see the
+         component's own file) so this real completed run's cards read
+         "NOT GUILTY" instead of "NOT_GUILTY" without touching the
+         component's default (raw-enum) behavior any other caller or its
+         own test suite relies on. */}
+      <JudgeVoteGroup presentation="premium" verdictLabel={formatVerdictDisplay} votes={votes} />
+      {/* Restored to a clear full-width vertical narrative (the earlier
+         3-column dashboard rail attempt is rejected): Advocate Speeches,
+         then Judicial Reasoning, then Economics summary/audit, then
+         Protocol -- each its own full-width section below the previous
+         one. Every accordion's internal markup (the exact Typography
+         nesting the identity/side-meaning/status tests rely on) is
+         unchanged. */}
+      <Stack spacing={1.5}>
+        <Stack direction="row" spacing={1.5} sx={{ alignItems: "center" }}>
+          <SectionIcon icon={CounselIcon} />
+          <Typography component="h2" sx={{ fontWeight: 700 }} variant="subtitle1">
+            Advocate Speeches
+          </Typography>
+        </Stack>
+        <Stack spacing={1.5}>
+          {speeches.map((speech) => (
+            <Accordion
+              key={speech.participantId}
+              sx={{
+                borderLeft: "3px solid",
+                borderLeftColor: speech.side === "PRO" ? "#8C6423" : "#6B6355",
+                borderRadius: "10px"
+              }}
+            >
+              <AccordionSummary expandIcon={<AccordionExpandIcon />}>
+                <Stack direction="row" spacing={1.25} sx={{ alignItems: "flex-start" }}>
+                  <Box
+                    aria-hidden="true"
+                    sx={{
+                      alignItems: "center",
+                      bgcolor: speech.side === "PRO" ? "rgba(184,137,43,0.12)" : "rgba(107,99,85,0.12)",
+                      borderRadius: "50%",
+                      color: speech.side === "PRO" ? "#8C6423" : "#6B6355",
+                      display: "flex",
+                      flexShrink: 0,
+                      height: 32,
+                      justifyContent: "center",
+                      mt: 0.25,
+                      width: 32
+                    }}
+                  >
+                    <CounselIcon size={16} />
+                  </Box>
+                  <Stack spacing={0.25}>
+                    <Typography sx={{ fontWeight: 800 }}>{speech.displayName}</Typography>
+                    {/* NOTE (limitation, reported per task instructions):
+                       this exact "SEAT -- SIDE" string (double-hyphen) is
+                       locked by runPage.test.tsx's
+                       `/PRO I -- PRO/` regex assertion (test D, "a
+                       completed advocate's argument is attributed to the
+                       persisted profileName..."). Left unchanged rather
+                       than "corrected" to an em dash for aesthetics. */}
+                    <Typography
+                      color="text.secondary"
+                      sx={{
+                        bgcolor: speech.side === "PRO" ? "rgba(184,137,43,0.1)" : "rgba(107,99,85,0.1)",
+                        borderRadius: "999px",
+                        display: "inline-block",
+                        px: 1,
+                        py: 0.125,
+                        width: "fit-content"
+                      }}
+                      variant="body2"
+                    >
+                      {speech.seatLabel ? `${speech.seatLabel} -- ${speech.side}` : speech.side}
+                    </Typography>
+                    <AdvocateSideMeaning promptVersion={speech.promptVersion} side={speech.side} />
+                    <Typography color="text.secondary" variant="caption">
+                      View argument
+                    </Typography>
+                  </Stack>
+                </Stack>
+              </AccordionSummary>
+              <AccordionDetails>
+                <Typography>{speech.speech}</Typography>
+              </AccordionDetails>
+            </Accordion>
+          ))}
+        </Stack>
+      </Stack>
+      <Stack spacing={1.5}>
+        <Stack direction="row" spacing={1.5} sx={{ alignItems: "center" }}>
+          <SectionIcon icon={ScaleIcon} />
+          <Typography component="h2" sx={{ fontWeight: 700 }} variant="subtitle1">
+            Judicial Reasoning
+          </Typography>
+        </Stack>
+        <Stack spacing={1.5}>
+          {votes.map((vote) => (
+            <Accordion key={vote.judge} sx={{ borderLeft: "3px solid", borderLeftColor: "#8C6423", borderRadius: "10px" }}>
+              <AccordionSummary expandIcon={<AccordionExpandIcon />}>
+                <Stack direction="row" spacing={1.25} sx={{ alignItems: "flex-start" }}>
+                  <Box
+                    aria-hidden="true"
+                    sx={{
+                      alignItems: "center",
+                      bgcolor: "rgba(184,137,43,0.12)",
+                      borderRadius: "50%",
+                      color: "#8C6423",
+                      display: "flex",
+                      flexShrink: 0,
+                      height: 32,
+                      justifyContent: "center",
+                      mt: 0.25,
+                      width: 32
+                    }}
+                  >
+                    <ScaleIcon size={16} />
+                  </Box>
+                  <Stack spacing={0.25}>
+                    <Typography sx={{ fontWeight: 800 }}>
+                      {vote.displayName ?? vote.judge} —{" "}
+                      <Typography color={verdictColor(vote.verdict)} component="span" sx={{ fontWeight: 800 }}>
+                        {formatVerdictDisplay(vote.verdict)}
+                      </Typography>
+                    </Typography>
+                    {vote.displayName ? (
+                      <Typography color="text.secondary" variant="body2">
+                        {vote.judge}
+                      </Typography>
+                    ) : null}
+                    <Typography color="text.secondary" variant="caption">
+                      View reasoning
+                    </Typography>
+                  </Stack>
+                </Stack>
+              </AccordionSummary>
+              <AccordionDetails>
+                <Typography>{vote.reasoning}</Typography>
+              </AccordionDetails>
+            </Accordion>
+          ))}
+        </Stack>
+      </Stack>
       <EconomicsSummaryLine run={run} />
       <EconomicsAuditAccordion run={run} />
       <ProtocolAccordion protocol={run.protocol} />
+      {/* FINAL-RESULT ACTION ROW -- a real, client-side PDF export of
+         this exact completed run's own data (see
+         features/tribunal-run/tribunalProtocolPdf.tsx). No model/
+         network call; only ever rendered for a valid, integrity-checked
+         COMPLETED result. */}
+      <Stack spacing={1} sx={{ borderTop: "1px solid", borderColor: "divider", pt: 2 }}>
+        <Box>
+          <Button
+            disabled={isExportingPdf}
+            onClick={() => {
+              void handleDownloadPdf();
+            }}
+            startIcon={<DownloadIcon />}
+            sx={{ borderRadius: "8px" }}
+            variant="outlined"
+          >
+            {isExportingPdf ? "Preparing PDF…" : "Download Tribunal Report (PDF)"}
+          </Button>
+        </Box>
+        {pdfError ? <Alert severity="error">{pdfError}</Alert> : null}
+      </Stack>
     </Stack>
   );
 }
@@ -589,6 +1090,19 @@ function formatWallClockSeconds(ms: number | null): string {
 
 function formatCostUsd(value: string | null): string {
   return value === null ? "Unavailable" : `$${value}`;
+}
+
+// Milestone 14 -- display-only formatting for the new COMPLETED-state
+// result header's compact metadata row (Completed <timestamp>). Never
+// used anywhere a test already locks the raw ISO string (e.g. the
+// attempt audit's "Pricing observed at"/"Started at"/"Completed at"
+// fields, which keep their existing raw-value AttemptDetailField
+// rendering untouched).
+function formatTimestamp(value: string): string {
+  return new Intl.DateTimeFormat("en", {
+    dateStyle: "medium",
+    timeStyle: "short"
+  }).format(new Date(value));
 }
 
 // Milestone 10 (Issue #23, "Actual vs Derived Cost Presentation"): the
@@ -632,23 +1146,27 @@ function AdmissionBudgetSafety({ admission }: { admission: StoredRun["admission"
   }
 
   return (
-    <Box sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2, p: 2 }}>
+    <Box sx={{ border: "1px solid", borderColor: "divider", borderRadius: "10px", p: 2 }}>
       <Typography sx={{ fontWeight: 800 }} variant="body2">
         Admission / Budget Safety
       </Typography>
       {admission.available ? (
         <Stack spacing={0.5} sx={{ mt: 1 }}>
-          <Typography variant="body2">
+          <Typography sx={{ fontFamily: monoFontStack, fontVariantNumeric: "tabular-nums" }} variant="body2">
             Economics policy:{" "}
             {admission.economicsPolicyVersion === "tribunal-economics-policy-v1"
               ? "V1"
               : admission.economicsPolicyVersion}
           </Typography>
-          <Typography variant="body2">
+          <Typography sx={{ fontFamily: monoFontStack, fontVariantNumeric: "tabular-nums" }} variant="body2">
             Conservative authorized maximum: ${admission.authoritativeHistoricalBound}
           </Typography>
-          <Typography variant="body2">Safety factor: {admission.budgetSafetyFactor}&times;</Typography>
-          <Typography variant="body2">Hard run ceiling: ${admission.hardBudgetUsd}</Typography>
+          <Typography sx={{ fontFamily: monoFontStack, fontVariantNumeric: "tabular-nums" }} variant="body2">
+            Safety factor: {admission.budgetSafetyFactor}&times;
+          </Typography>
+          <Typography sx={{ fontFamily: monoFontStack, fontVariantNumeric: "tabular-nums" }} variant="body2">
+            Hard run ceiling: ${admission.hardBudgetUsd}
+          </Typography>
           <Typography color={admission.withinBudget ? "success" : "error"} variant="body2">
             Admission result: {admission.withinBudget ? "Within budget" : "Budget anomaly"}
           </Typography>
@@ -685,8 +1203,15 @@ function attemptDetailId(attempt: AttemptAudit): string {
 }
 
 function AttemptDetailField({ label, value }: { label: string; value: string | null }) {
+  // Milestone 14 (Ivory & Iron): mono/tabular-nums applied to the WHOLE
+  // line (label + value together), not a nested span around the value
+  // alone -- a nested element would introduce a second, separately
+  // text-matchable node whose bare content happens to coincide with the
+  // same value shown elsewhere (e.g. the main audit row), breaking
+  // several existing "this raw value is not shown here" assertions.
+  // Same visual ledger effect, zero DOM-structure change.
   return (
-    <Typography variant="body2">
+    <Typography sx={{ fontFamily: monoFontStack, fontVariantNumeric: "tabular-nums" }} variant="body2">
       {label}: {value ?? "Unavailable"}
     </Typography>
   );
@@ -716,7 +1241,7 @@ function AttemptDetailRow({
 
   return (
     <>
-      <TableRow>
+      <TableRow sx={{ "&:nth-of-type(odd)": { bgcolor: "rgba(184,137,43,0.03)" } }}>
         <TableCell sx={{ pr: 0 }}>
           <IconButton
             aria-controls={detailId}
@@ -746,20 +1271,28 @@ function AttemptDetailRow({
             ) : null}
           </Stack>
         </TableCell>
-        <TableCell>{attempt.attemptNumber}</TableCell>
-        <TableCell>{attempt.configuredModelId}</TableCell>
-        <TableCell>{formatTokenCount(attempt.inputTokens)}</TableCell>
-        <TableCell>{formatTokenCount(attempt.outputTokens)}</TableCell>
-        <TableCell>{formatTokenCount(attempt.totalTokens)}</TableCell>
-        <TableCell>
+        <TableCell sx={{ fontFamily: monoFontStack }}>{attempt.attemptNumber}</TableCell>
+        <TableCell sx={{ fontFamily: monoFontStack }}>{attempt.configuredModelId}</TableCell>
+        <TableCell sx={{ fontFamily: monoFontStack, fontVariantNumeric: "tabular-nums" }}>
+          {formatTokenCount(attempt.inputTokens)}
+        </TableCell>
+        <TableCell sx={{ fontFamily: monoFontStack, fontVariantNumeric: "tabular-nums" }}>
+          {formatTokenCount(attempt.outputTokens)}
+        </TableCell>
+        <TableCell sx={{ fontFamily: monoFontStack, fontVariantNumeric: "tabular-nums" }}>
+          {formatTokenCount(attempt.totalTokens)}
+        </TableCell>
+        <TableCell sx={{ fontFamily: monoFontStack, fontVariantNumeric: "tabular-nums" }}>
           {cost.text}
           {cost.source ? (
-            <Typography color="text.secondary" component="span" sx={{ ml: 0.5 }} variant="caption">
+            <Typography color="text.secondary" component="span" sx={{ fontFamily: "inherit", ml: 0.5 }} variant="caption">
               ({cost.source})
             </Typography>
           ) : null}
         </TableCell>
-        <TableCell>{formatLatency(attempt.latencyMs)}</TableCell>
+        <TableCell sx={{ fontFamily: monoFontStack, fontVariantNumeric: "tabular-nums" }}>
+          {formatLatency(attempt.latencyMs)}
+        </TableCell>
         <TableCell>{attempt.status}</TableCell>
       </TableRow>
       <TableRow>
@@ -833,13 +1366,16 @@ function EconomicsAuditAccordion({ run }: { run: StoredRun }) {
   );
 
   return (
-    <Accordion>
+    <Accordion sx={{ borderRadius: "10px" }}>
       <AccordionSummary expandIcon={<AccordionExpandIcon />}>
-        <Stack spacing={0.25}>
-          <Typography sx={{ fontWeight: 800 }}>Economics / Audit details</Typography>
-          <Typography color="text.secondary" variant="caption">
-            View attempt-level detail
-          </Typography>
+        <Stack direction="row" spacing={1.5} sx={{ alignItems: "center" }}>
+          <SectionIcon icon={BarChartIcon} />
+          <Stack spacing={0.25}>
+            <Typography sx={{ fontWeight: 800 }}>Economics / Audit details</Typography>
+            <Typography color="text.secondary" variant="caption">
+              View attempt-level detail
+            </Typography>
+          </Stack>
         </Stack>
       </AccordionSummary>
       <AccordionDetails>
@@ -849,15 +1385,15 @@ function EconomicsAuditAccordion({ run }: { run: StoredRun }) {
               <TableHead>
                 <TableRow>
                   <TableCell aria-label="Detail" />
-                  <TableCell>Participant</TableCell>
-                  <TableCell>Attempt</TableCell>
-                  <TableCell>Model</TableCell>
-                  <TableCell>Input</TableCell>
-                  <TableCell>Output</TableCell>
-                  <TableCell>Total</TableCell>
-                  <TableCell>Cost</TableCell>
-                  <TableCell>Latency</TableCell>
-                  <TableCell>Status</TableCell>
+                  <TableCell sx={{ fontWeight: 700 }}>Participant</TableCell>
+                  <TableCell sx={{ fontWeight: 700 }}>Attempt</TableCell>
+                  <TableCell sx={{ fontWeight: 700 }}>Model</TableCell>
+                  <TableCell sx={{ fontWeight: 700 }}>Input</TableCell>
+                  <TableCell sx={{ fontWeight: 700 }}>Output</TableCell>
+                  <TableCell sx={{ fontWeight: 700 }}>Total</TableCell>
+                  <TableCell sx={{ fontWeight: 700 }}>Cost</TableCell>
+                  <TableCell sx={{ fontWeight: 700 }}>Latency</TableCell>
+                  <TableCell sx={{ fontWeight: 700 }}>Status</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -941,7 +1477,7 @@ function ProtocolAccordion({ protocol }: { protocol: StoredRun["protocol"] }) {
   );
 
   return (
-    <Accordion>
+    <Accordion sx={{ borderRadius: "10px" }}>
       <AccordionSummary expandIcon={<AccordionExpandIcon />}>
         <Stack spacing={0.25}>
           <Typography sx={{ fontWeight: 800 }}>Protocol</Typography>

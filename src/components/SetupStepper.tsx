@@ -32,8 +32,30 @@ export function SetupStepper() {
   validByIndex[SETUP_STEP_INDEX.REVIEW] = false;
 
   return (
-    <Box aria-label="Case setup progress" component="nav">
-      <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+    <Box aria-label="Case setup progress" component="nav" sx={{ position: "relative" }}>
+      {/* Milestone 14 (Charge Sheet high-fidelity redesign): an
+          institutional, less "four rounded buttons" treatment -- plain
+          text steps with a small numbered marker, a restrained gold
+          underline on the active step, and a thin connecting rule
+          behind the whole row (echoing Home's "How it works" motif).
+          Every step remains the SAME interactive element (a real
+          RouterLink Button) with the SAME accessible name, aria-current,
+          and "Complete" text as before -- no step is made interactive
+          or non-interactive beyond what it already was. */}
+      <Box
+        aria-hidden="true"
+        sx={{
+          bgcolor: "divider",
+          display: { xs: "none", sm: "block" },
+          height: "1px",
+          left: 4,
+          position: "absolute",
+          right: 4,
+          top: 20,
+          zIndex: 0
+        }}
+      />
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={{ xs: 0.5, sm: 3 }} sx={{ position: "relative", zIndex: 1 }}>
         {steps.map((step, index) => {
           const active = index === activeIndex;
           // A step shows Complete only once it has genuinely been LEFT --
@@ -57,18 +79,58 @@ export function SetupStepper() {
           return (
             <Button
               aria-current={active ? "step" : undefined}
-              color={active ? "primary" : "inherit"}
               component={RouterLink}
+              disableRipple
               key={step.path}
+              sx={{
+                alignItems: "center",
+                // Refinement pass: a soft gold-tinted wash behind the
+                // active step, connecting visually to its underline
+                // (same element, same bottom border) so the current
+                // step reads clearly at a glance -- still a flat tint,
+                // never a filled "button" pill.
+                bgcolor: active ? "rgba(184,137,43,0.1)" : "transparent",
+                borderBottom: "2px solid",
+                borderBottomColor: active ? "#B8892B" : "transparent",
+                borderRadius: "8px",
+                color: active ? "text.primary" : "text.secondary",
+                display: "inline-flex",
+                fontWeight: active ? 700 : 600,
+                justifyContent: "flex-start",
+                minWidth: 0,
+                px: active ? 1.25 : 1,
+                py: 0.75,
+                "&:hover": {
+                  bgcolor: active ? "rgba(184,137,43,0.16)" : "action.hover",
+                  color: "text.primary"
+                }
+              }}
               to={step.path}
-              variant={active ? "contained" : "outlined"}
+              variant="text"
             >
-              <Typography component="span" sx={{ fontWeight: 800, mr: 1 }}>
+              <Typography
+                component="span"
+                sx={{
+                  alignItems: "center",
+                  border: "1px solid",
+                  borderColor: active ? "#8C6423" : complete ? "#B8892B" : "divider",
+                  borderRadius: "50%",
+                  color: active ? "#8C6423" : complete ? "#8C6423" : "text.secondary",
+                  display: "inline-flex",
+                  flexShrink: 0,
+                  fontWeight: 800,
+                  height: 20,
+                  justifyContent: "center",
+                  mr: 1,
+                  width: 20
+                }}
+                variant="caption"
+              >
                 {index + 1}
               </Typography>
               {step.label}
               {complete ? (
-                <Typography component="span" sx={{ ml: 1 }} variant="caption">
+                <Typography component="span" sx={{ color: "#8C6423", fontWeight: 700, ml: 1 }} variant="caption">
                   Complete
                 </Typography>
               ) : null}

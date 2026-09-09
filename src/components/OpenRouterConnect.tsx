@@ -21,9 +21,20 @@ import {
 export type OpenRouterConnectProps = {
   connected: boolean;
   onConnectedChange: (connected: boolean) => void;
+  // M14 Review-page visual refinement: additive/opt-in, defaults to true --
+  // every existing caller (SmartImportPage) is unaffected. Review passes
+  // `false` only because it already renders its own "OpenRouter Connection"
+  // section heading immediately above this card, making this inner
+  // heading a redundant duplicate; the rest of the panel (copy, key input,
+  // Connect/Disconnect, credential/gating behavior) is unchanged either way.
+  showHeading?: boolean;
 };
 
-export function OpenRouterConnect({ connected, onConnectedChange }: OpenRouterConnectProps) {
+export function OpenRouterConnect({
+  connected,
+  onConnectedChange,
+  showHeading = true
+}: OpenRouterConnectProps) {
   const [draftKey, setDraftKey] = useState("");
   const [error, setError] = useState("");
 
@@ -57,7 +68,7 @@ export function OpenRouterConnect({ connected, onConnectedChange }: OpenRouterCo
   return (
     <Paper sx={{ p: { xs: 2, md: 3 } }} variant="outlined">
       <Stack spacing={1.5}>
-        <Typography variant="subtitle1">OpenRouter connection</Typography>
+        {showHeading ? <Typography variant="subtitle1">OpenRouter connection</Typography> : null}
         <Typography color="text.secondary" variant="body2">
           Extraction inference is charged to <strong>your own</strong> OpenRouter account, never
           ours. Get a key at{" "}
