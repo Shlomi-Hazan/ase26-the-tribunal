@@ -88,6 +88,30 @@ describe("extractDynamicPathSegment", () => {
     ).toBeNull();
   });
 
+  // Independent-review correction (Section 8): a doubled/interior slash
+  // must never be silently collapsed into a differently-shaped, valid
+  // route -- confirmed reachable live in production (Netlify's own
+  // redirect engine does not reject a doubled-slash path before it
+  // reaches the Function).
+  it("returns null for a doubled slash before the id (/api/cases//<uuid>) -- never silently normalized to /api/cases/<uuid>", () => {
+    expect(extractDynamicPathSegment(`/api/cases//${CASE_ID}`, CASE_BY_ID_ROUTE_SHAPE)).toBeNull();
+  });
+
+  it("returns null for a doubled slash before /runs (/api/cases/<uuid>//runs)", () => {
+    expect(
+      extractDynamicPathSegment(`/api/cases/${CASE_ID}//runs`, CASE_RUNS_ROUTE_SHAPE)
+    ).toBeNull();
+  });
+
+  it("returns null for a doubled slash before the id (/api/runs//<uuid>)", () => {
+    expect(extractDynamicPathSegment(`/api/runs//${RUN_ID}`, RUN_BY_ID_ROUTE_SHAPE)).toBeNull();
+  });
+
+  it("returns null for a triple slash producing an empty id AND wrong segment count (/api/cases///runs) -- never misread as /api/cases/runs", () => {
+    expect(extractDynamicPathSegment("/api/cases///runs", CASE_BY_ID_ROUTE_SHAPE)).toBeNull();
+    expect(extractDynamicPathSegment("/api/cases///runs", CASE_RUNS_ROUTE_SHAPE)).toBeNull();
+  });
+
   it("returns null for an unexpected trailing segment (/api/setup-extractions/:id/retry/extra)", () => {
     expect(
       extractDynamicPathSegment(
@@ -139,7 +163,7 @@ describe("resolveRouteId", () => {
     expect(id).toBe(CASE_ID);
   });
 
-  it("prefers a real, non-placeholder query id for direct Function invocation compatibility", () => {
+  it("falls back to a real, non-placeholder query id ONLY when the path does not match any friendly route shape (direct Function invocation compatibility)", () => {
     const id = resolveRouteId(
       { path: "/.netlify/functions/case-by-id", queryStringParameters: { id: CASE_ID } },
       CASE_BY_ID_ROUTE_SHAPE
@@ -148,13 +172,13 @@ describe("resolveRouteId", () => {
     expect(id).toBe(CASE_ID);
   });
 
-  it("a literal query id of ':id' is never used -- falls through to path extraction instead", () => {
+  it("a literal query id of ':id' on a non-matching path resolves to null, never the literal text", () => {
     const id = resolveRouteId(
-      { path: `/api/cases/${CASE_ID}`, queryStringParameters: { id: ":id" } },
+      { path: "/.netlify/functions/case-by-id", queryStringParameters: { id: ":id" } },
       CASE_BY_ID_ROUTE_SHAPE
     );
 
-    expect(id).toBe(CASE_ID);
+    expect(id).toBeNull();
   });
 
   it("returns null when neither a real query id nor a matching path is present", () => {
@@ -164,5 +188,65 @@ describe("resolveRouteId", () => {
     );
 
     expect(id).toBeNull();
+  });
+
+  // Independent-review correction (Sections 3/4/6): the FRIENDLY PUBLIC
+  // PATH must be authoritative -- a caller-supplied ?id=<other-value>
+  // must never override a valid path id. This matters most for the
+  // billable-capable setup-extractions retry route.
+  const conflictCases: Array<{
+    label: string;
+    path: string;
+    shape: RouteShape;
+    expectedId: string;
+  }> = [
+    {
+      label: "/api/cases/:id",
+      path: `/api/cases/${CASE_ID}`,
+      shape: CASE_BY_ID_ROUTE_SHAPE,
+      expectedId: CASE_ID
+    },
+    {
+      label: "/api/cases/:id/runs",
+      path: `/api/cases/${CASE_ID}/runs`,
+      shape: CASE_RUNS_ROUTE_SHAPE,
+      expectedId: CASE_ID
+    },
+    {
+      label: "/api/runs/:id",
+      path: `/api/runs/${RUN_ID}`,
+      shape: RUN_BY_ID_ROUTE_SHAPE,
+      expectedId: RUN_ID
+    },
+    {
+      label: "/api/setup-extractions/:id/retry",
+      path: `/api/setup-extractions/${EXTRACTION_ID}/retry`,
+      shape: SETUP_EXTRACTION_RETRY_ROUTE_SHAPE,
+      expectedId: EXTRACTION_ID
+    }
+  ];
+
+  it.each(conflictCases)(
+    "$label: the friendly path id wins over a conflicting query ?id= on the same request",
+    ({ path, shape, expectedId }) => {
+      const conflictingQueryId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
+      const id = resolveRouteId(
+        { path, queryStringParameters: { id: conflictingQueryId } },
+        shape
+      );
+
+      expect(id).toBe(expectedId);
+      expect(id).not.toBe(conflictingQueryId);
+    }
+  );
+
+  it("a literal ':id' query value never overrides a valid friendly path id (path still wins)", () => {
+    const id = resolveRouteId(
+      { path: `/api/cases/${CASE_ID}`, queryStringParameters: { id: ":id" } },
+      CASE_BY_ID_ROUTE_SHAPE
+    );
+
+    expect(id).toBe(CASE_ID);
   });
 });

@@ -20,13 +20,23 @@
 // a 301/302 redirect), and Netlify's documented rewrite contract keeps
 // the original client-visible path -- `HandlerEvent.path` is the
 // Function-side reflection of that same original path, distinct from the
-// internal `/.netlify/functions/<name>` target. Direct Function
-// invocation with an explicit `?id=<value>` query parameter remains
-// supported for diagnostics and takes precedence over path extraction
-// when present and not itself a literal placeholder; the existing UUID/
-// domain validation layer in each caller remains the sole authority over
-// whether the resolved value is actually a well-formed identifier -- this
-// module only ever resolves a string or null, never validates one.
+// internal `/.netlify/functions/<name>` target.
+//
+// Independent-review correction: the FRIENDLY PUBLIC PATH is
+// authoritative, not merely a fallback -- when `event.path` matches a
+// route's expected shape, its own dynamic segment always wins, even if a
+// caller also supplies a conflicting `?id=<other-value>` alongside it
+// (e.g. `/api/setup-extractions/A/retry?id=B` always resolves `A`; this
+// matters most for that endpoint since it is billable-capable). Direct
+// Function invocation with an explicit `?id=<value>` query parameter
+// remains supported for diagnostics, but only applies when the incoming
+// path does NOT match any supported friendly route shape at all (e.g. a
+// bare `/.netlify/functions/<name>?id=<value>` call). A literal
+// un-substituted placeholder (e.g. a stray ":id") is never treated as a
+// meaningful query value either way. The existing UUID/domain validation
+// layer in each caller remains the sole authority over whether the
+// resolved value is actually a well-formed identifier -- this module
+// only ever resolves a string or null, never validates one.
 
 /** Sentinel marking the single dynamic segment in a `RouteShape`. */
 export const DYNAMIC_SEGMENT: unique symbol = Symbol("dynamic-path-segment");
@@ -43,21 +53,48 @@ export const SETUP_EXTRACTION_RETRY_ROUTE_SHAPE: RouteShape = [
   "retry"
 ];
 
-// Splits a path into non-empty segments and percent-decodes each segment
-// individually, so a reserved character encoded inside one segment (e.g.
-// a literal "/" sent as %2F) is treated as content of that single
-// segment, never re-interpreted as an extra path separator.
+// Splits a path into segments and percent-decodes each one individually,
+// so a reserved character encoded inside one segment (e.g. a literal "/"
+// sent as %2F) is treated as content of that single segment, never
+// re-interpreted as an extra path separator.
+//
+// Independent-review correction: only ONE leading "/" (every real path
+// has exactly one) and ONE optional trailing "/" are tolerated here --
+// this does NOT unconditionally filter out every empty segment. A
+// doubled/interior "/" (e.g. "/api/cases//runs", "/api/cases/<id>//runs")
+// now produces a real empty segment that fails this route's exact
+// non-empty-segment match, rather than being silently discarded. A
+// looser "filter out every empty segment" implementation would have let
+// a malformed doubled-slash path like "/api/cases///runs" (no id at all)
+// collapse into the WRONG route shape and be misread as
+// "/api/cases/runs" with id "runs" -- confirmed reachable, not merely
+// theoretical: Netlify's own redirect engine does not reject a
+// doubled-slash path before it reaches the Function (verified live
+// against production: GET /api/cases//test reached the Function exactly
+// like GET /api/cases/test, both producing the same handler-level
+// response).
 function splitPathSegments(path: string): string[] {
-  return path
-    .split("/")
-    .filter((segment) => segment.length > 0)
-    .map((segment) => {
-      try {
-        return decodeURIComponent(segment);
-      } catch {
-        return segment;
-      }
-    });
+  let working = path;
+
+  if (working.startsWith("/")) {
+    working = working.slice(1);
+  }
+
+  if (working.endsWith("/")) {
+    working = working.slice(0, -1);
+  }
+
+  if (working.length === 0) {
+    return [];
+  }
+
+  return working.split("/").map((segment) => {
+    try {
+      return decodeURIComponent(segment);
+    } catch {
+      return segment;
+    }
+  });
 }
 
 // Matches `path` against `shape` exactly -- identical segment count,
@@ -123,19 +160,34 @@ export type RouteIdEvent = {
 };
 
 // Resolves the single dynamic route identifier for a Function reachable
-// both through its friendly public rewrite (no query string involved) and
-// through direct diagnostic invocation with an explicit `?id=<value>`
-// query parameter. An explicit, real query value takes precedence when
-// present; otherwise the identifier is extracted from the original
-// incoming request path. A literal un-substituted placeholder value in
-// the query string is never treated as meaningful and falls through to
-// path extraction instead.
+// both through its friendly public rewrite and, for direct diagnostic
+// invocation, through an explicit `?id=<value>` query parameter.
+//
+// The FRIENDLY PUBLIC PATH is authoritative: when `event.path` matches
+// `shape`, its own dynamic segment is returned unconditionally -- a
+// caller-supplied `?id=<other-value>` can never override it. This
+// matters most for the billable-capable POST /api/setup-extractions/:id/
+// retry: the identifier a client sees named in the public URL is always
+// the one this resolves, never a query parameter smuggled alongside it
+// (e.g. `/api/setup-extractions/A/retry?id=B` always resolves `A`).
+//
+// Only when the incoming path does NOT match any supported friendly
+// route shape (e.g. a direct `/.netlify/functions/<name>?id=<value>`
+// diagnostic call) does an explicit, real, non-placeholder query `id`
+// apply. A literal un-substituted placeholder value (e.g. a stray
+// ":id") is never treated as meaningful in either case.
 export function resolveRouteId(event: RouteIdEvent, shape: RouteShape): string | null {
+  const pathId = extractDynamicPathSegment(event.path, shape);
+
+  if (pathId !== null) {
+    return pathId;
+  }
+
   const rawQueryId = event.queryStringParameters?.id;
 
   if (typeof rawQueryId === "string" && rawQueryId.length > 0 && !isLiteralPlaceholder(rawQueryId)) {
     return rawQueryId;
   }
 
-  return extractDynamicPathSegment(event.path, shape);
+  return null;
 }

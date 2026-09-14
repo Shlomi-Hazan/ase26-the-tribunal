@@ -82,6 +82,29 @@ describe("GET /api/cases/:id (Milestone 15 routing correction)", () => {
     expect(payload.case).toEqual(persistedCase());
   });
 
+  it("A: a conflicting real query ?id=<other-uuid> never overrides the friendly path id -- the repository receives the PATH id", async () => {
+    const OTHER_CASE_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const repository = new FakeCaseRepository(
+      new Map([
+        [CASE_ID, persistedCase()],
+        [OTHER_CASE_ID, persistedCase({ id: OTHER_CASE_ID, defendant: "Wrong Case" })]
+      ])
+    );
+    const response = await handleCaseByIdRequest(
+      {
+        httpMethod: "GET",
+        path: `/api/cases/${CASE_ID}`,
+        queryStringParameters: { id: OTHER_CASE_ID }
+      } as unknown as HandlerEvent,
+      repository as unknown as CaseRepository
+    );
+    const payload = JSON.parse(response.body ?? "");
+
+    expect(response.statusCode).toBe(200);
+    expect(payload.case.id).toBe(CASE_ID);
+    expect(payload.case.id).not.toBe(OTHER_CASE_ID);
+  });
+
   it("a literal, un-substituted ':id' query value never overrides a valid friendly path id", async () => {
     const repository = new FakeCaseRepository(new Map([[CASE_ID, persistedCase()]]));
     const response = await handleCaseByIdRequest(

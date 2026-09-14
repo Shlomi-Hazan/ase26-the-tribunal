@@ -161,6 +161,28 @@ describe("GET /api/cases/:id/runs (Milestone 11, Issue #27)", () => {
     expect(payload.runs).toEqual([runSummary()]);
   });
 
+  it("B: a conflicting real query ?id=<other-uuid> never overrides the friendly path id -- runs are listed for the PATH case", async () => {
+    const OTHER_CASE_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const repository = new FakeRunRepository(
+      new Map([
+        [CASE_ID, [runSummary()]],
+        [OTHER_CASE_ID, [runSummary({ runId: "99999999-9999-4999-8999-999999999999", caseId: OTHER_CASE_ID })]]
+      ])
+    );
+    const response = await handleCaseRunsRequest(
+      {
+        httpMethod: "GET",
+        path: `/api/cases/${CASE_ID}/runs`,
+        queryStringParameters: { id: OTHER_CASE_ID }
+      } as unknown as HandlerEvent,
+      repository as unknown as RunRepository
+    );
+    const payload = JSON.parse(response.body ?? "");
+
+    expect(response.statusCode).toBe(200);
+    expect(payload.runs).toEqual([runSummary()]);
+  });
+
   it("a literal, un-substituted ':id' query value never overrides a valid friendly path id", async () => {
     const repository = new FakeRunRepository(
       new Map([[CASE_ID, [runSummary()]]])

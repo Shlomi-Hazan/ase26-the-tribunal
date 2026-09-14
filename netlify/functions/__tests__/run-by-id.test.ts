@@ -94,6 +94,29 @@ describe("GET /api/runs/:id (Milestone 15 routing correction)", () => {
     expect(response.statusCode).toBe(200);
   });
 
+  it("C: a conflicting real query ?id=<other-uuid> never overrides the friendly path id -- the repository receives the PATH id", async () => {
+    const OTHER_RUN_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const repository = new FakeRunRepository(
+      new Map([
+        [RUN_ID, baseRun()],
+        [OTHER_RUN_ID, baseRun({ id: OTHER_RUN_ID })]
+      ])
+    );
+    const response = await handleRunByIdRequest(
+      {
+        httpMethod: "GET",
+        path: `/api/runs/${RUN_ID}`,
+        queryStringParameters: { id: OTHER_RUN_ID }
+      } as unknown as HandlerEvent,
+      repository as unknown as RunRepository
+    );
+    const payload = JSON.parse(response.body ?? "");
+
+    expect(response.statusCode).toBe(200);
+    expect(payload.run.id).toBe(RUN_ID);
+    expect(payload.run.id).not.toBe(OTHER_RUN_ID);
+  });
+
   it("a literal, un-substituted ':id' query value never overrides a valid friendly path id", async () => {
     const repository = new FakeRunRepository(new Map([[RUN_ID, baseRun()]]));
     const response = await handleRunByIdRequest(
