@@ -123,12 +123,18 @@ npm audit --omit=dev       → 0 vulnerabilities
 
 ### Pull request gate
 
-**PR:** [#44 — M16: Final verification and course audit](https://github.com/Shlomi-Hazan/ase26-the-tribunal/pull/44)
+**PR:** [#44 — M16: Final verification and course audit](https://github.com/Shlomi-Hazan/ase26-the-tribunal/pull/44) — **MERGED**
 **Pre-closeout PR head:** `bf7352629c649e6c525b5a7805d2f826757fcc4c`
 **Initial PR CI:** [34902139480](https://github.com/Shlomi-Hazan/ase26-the-tribunal/actions/runs/34902139480), `PASS`
 **Independent final PR review:** `PASS` — no P0/P1/P2/P3 findings requiring correction
+**Final pre-merge head:** `233efe9324e5978c3db7eff05ef19092b64c5aba`
+**Final pre-merge CI:** [34903012318](https://github.com/Shlomi-Hazan/ase26-the-tribunal/actions/runs/34903012318), `PASS`
+**Explicit human merge authorization:** OBTAINED
+**Merge commit:** `5f1dcee810ae11e935d21c9cf61beb398b5745ce` — normal two-parent merge (parents `193e89ab77e46cc04a1b90e616f579764b80ef14`, `233efe9324e5978c3db7eff05ef19092b64c5aba`)
+**Post-merge CI:** [34903795790](https://github.com/Shlomi-Hazan/ase26-the-tribunal/actions/runs/34903795790), event `push`, head `5f1dcee810ae11e935d21c9cf61beb398b5745ce`, `PASS`
+**Post-merge verification:** PASS — 74/74 test files, 1111/1111 tests, lint/typecheck/build clean, client-bundle secret-boundary and Netlify Functions packaging checks passed; production reachability and the existing read-only completed run re-confirmed live.
 
-This closeout commit itself changes the PR head; a new exact-head CI run is still required after it lands, and is tracked below.
+Production writes during M16 merge verification: 0. Additional Tribunal runs: 0. Additional Smart Extractions: 0. Additional OpenRouter completions: 0. Additional intentional spend: $0.
 
 ## 10. Known limitations
 
@@ -136,13 +142,17 @@ This closeout commit itself changes the PR head; a new exact-head CI run is stil
 - The residual dependency-security chain (`@netlify/dev`/`@netlify/images`/`ipx`/`sharp`, dev-only, zero deployed-runtime exposure) has no accepted safe forward fix as of this pass (`SECURITY.md` §17.2).
 - V1 has no accounts/authentication and no private per-user data ownership, by design (`SPEC.md` §18, `SECURITY.md` §15).
 
-## 11. Remaining M16 gates
+## 11. M16 final gate status
 
 - **Human final production UI acceptance** — PASS.
 - **Final hostile/independent audit** — PASS, after one correction cycle.
 - **Independent final PR review** — PASS.
-- **Final exact-head CI after this closeout commit** — pending.
-- **Explicit human merge authorization** — pending.
-- **Merge/post-merge verification** — pending.
+- **Final exact-head pre-merge CI** — PASS.
+- **Explicit human merge authorization** — COMPLETE.
+- **PR #44 merge** — COMPLETE.
+- **Post-merge main CI** — PASS.
+- **Post-merge verification** — PASS.
 
-PR #44 is not yet merged. Milestone 16's repository state is complete and merge-ready; it is not authoritative on `main` until the remaining gates above complete.
+**Milestone 16: COMPLETE.**
+
+This does not itself close [Issue #43](https://github.com/Shlomi-Hazan/ase26-the-tribunal/issues/43) — Issue closure is a separate, later archival action requiring its own explicit authorization.
