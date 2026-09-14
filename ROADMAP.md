@@ -53,7 +53,7 @@ Do not begin later milestones by destabilizing incomplete earlier work.
 | 13 | Failure & Security Hardening | ✅ Complete |
 | 14 | UI Polish & Accessibility | ✅ Complete |
 | 15 | Production Deployment | ✅ Complete |
-| 16 | Final Verification & Course Audit | ⬜ Planned |
+| 16 | Final Verification & Course Audit | ✅ Complete |
 
 Milestone 2 becomes complete only after the engineering-contract PR containing all required documents is independently reviewed and merged.
 
@@ -745,13 +745,19 @@ chevron + "View reasoning" / "View argument" affordance on every Judge
 and Advocate Accordion, and semantic GUILTY (error) / NOT_GUILTY
 (success) verdict coloring on the large verdict, the judge vote cards,
 and each Judge Accordion summary, with the literal verdict text always
-retained. The rest of M14's scope (typography, spacing, responsive
-behaviour, card density, motion, contrast, reduced-motion, etc.) remains
-future work -- M14 as a whole is still Planned, not Current or Complete.
+retained.
 
 ## Exit condition
 
 The application feels intentionally designed on desktop and mobile while preserving the simple interaction model.
+
+### Closeout (2026-09-09)
+
+Complete. Planning/tracking: Issue #39 (closed, COMPLETED). Implementation: [PR #40](https://github.com/Shlomi-Hazan/ase26-the-tribunal/pull/40) ("M14: Ivory & Iron UI polish, Jon Snow demo, and Tribunal PDF"), approved head `ebb71841d8d394741bf6c90cf053e0bb60af846a`, merged into `main` at `b0afd0299ffe4bd8030c6e382304eb2f9c45aa63` (2026-09-09, two-parent merge of `a379f7e8b0a350451f978e5e6566eb3e4acea4b0`/`ebb71841d8d394741bf6c90cf053e0bb60af846a`). Final exact-head CI: run [34372832642](https://github.com/Shlomi-Hazan/ase26-the-tribunal/actions/runs/34372832642), SUCCESS -- 71 test files / 1048 tests, lint/typecheck/build clean, client-bundle secret-boundary check passed, Netlify Functions packaging directive verified.
+
+Delivered: the Ivory & Iron visual system and UI/accessibility polish across setup, review, deliberation, result, and history screens; the Jon Snow demo/settings presentation; the final generic `/runs/:runId` run/result experience; Tribunal PDF report export; and scoped test-timeout hardening. No database/schema migration.
+
+**Real runtime verification during this milestone:** PR #40 records one successful, real, end-to-end Jon Snow Tribunal run exercised as part of this milestone's own verification -- status `COMPLETED`, 4/4 advocate speeches, 3/3 judge decisions, 7 logical model calls, 7 provider attempts, 0 retries, 14,475 input tokens, 2,451 output tokens, 16,926 total tokens, actual model cost `$0.004006035`, protocol available. A subsequent manual check confirmed the resulting run rendered correctly through the generic `/runs/:runId` experience. M14 is therefore not a zero-model-call milestone.
 
 ---
 
@@ -821,3 +827,19 @@ Final question:
 ## Exit condition
 
 The project is functionally demonstrable, secure enough for its stated demo scope, reproducible, documented, and supported by repository evidence rather than verbal claims.
+
+## Evidence index
+
+[`docs/verification/m16-final-audit.md`](docs/verification/m16-final-audit.md) is the M16 final verification/evidence index — a pointer into the genuine historical audit trail (Git/Issues/PRs/CI), not a historical log and not a replacement for that trail. It tracks this milestone's current state and remaining gates in real time; consult it for the up-to-date status rather than assuming this section reflects the latest evidence.
+
+### Closeout (2026-09-15)
+
+Tracking: [Issue #43](https://github.com/Shlomi-Hazan/ase26-the-tribunal/issues/43). [PR #44](https://github.com/Shlomi-Hazan/ase26-the-tribunal/pull/44) ("M16: Final verification and course audit") against base `193e89ab77e46cc04a1b90e616f579764b80ef14`, pre-closeout reviewed head `bf7352629c649e6c525b5a7805d2f826757fcc4c`, initial PR CI run [34902139480](https://github.com/Shlomi-Hazan/ase26-the-tribunal/actions/runs/34902139480) SUCCESS. Closeout evidence is complete and PR #44 is merge-ready; the final merge remains gated on explicit human authorization.
+
+An exhaustive, audit-only, multi-pass repository and production review preceded any correction: `INTENT.md` 26/26 sections audited and its 17 original decision topics individually reconciled, `SPEC.md` 108/108 normative requirements mapped, `ARCHITECTURE.md` 32/32 invariants/domains mapped, `AGENTS.md`/`CLAUDE.md` audited under a repository-evidence-only standard, and 20/20 milestones individually forensically reconstructed against Git/GitHub — zero unmapped authoritative requirements. Initial classification: **M16 AUDIT — SMALL CORRECTIONS REQUIRED**, all documentation-only (no application/schema/production change required or made at any point in this milestone).
+
+Corrections delivered: `INTENT.md`'s living source-of-truth status reconciled (stale "unresolved/later/future" wording replaced with the settled current truth, all 17 original decision topics preserved and traceable, none deleted); the stale, self-contradicting M14 closeout sentence removed and replaced with accurate evidence, including the real end-to-end Jon Snow Tribunal run PR #40 itself records; `README.md` and this file's own M16 section now link the new [M16 evidence index](docs/verification/m16-final-audit.md); a compatible, in-range dependency-security refresh (`netlify-cli` `27.3.0` → `27.6.0`, `package.json` unchanged) reduced `npm audit` from 12 to 6 advisories (1 moderate, 5 high; `npm audit --omit=dev` remained 0 throughout), documented precisely in `SECURITY.md` §17.2 alongside the still-preserved Milestone 13 historical record.
+
+**Human Final Production UI Acceptance:** PASS — human manual verification against `https://ase26-the-tribunal.netlify.app`, explicitly not automated browser verification. **Hostile independent audit:** first pass `CORRECTION REQUIRED` (2 P2 findings, both genuinely resolved and independently re-verified), final hostile re-audit **PASS** (P0=0, P1=0, P2=0, P3=0). **Independent final PR review:** PASS.
+
+Zero application source, schema, or production changes at any point in this milestone. Zero new Tribunal runs, zero new OpenRouter completions, zero additional spend. Production remains the M15-verified runtime; no deployment was required for M16.

@@ -6,7 +6,7 @@ The Tribunal is a cognified web application in which AI advocates argue a case a
 
 ## Status
 
-A working, production-deployed application with persistent Tribunal cases and runs, real OpenRouter-backed advocate/judge execution in both Shared-Model and Separate-Model modes, deterministic majority and protocol assembly, economics/audit evidence, Past Cases with historical reopen, Smart Tribunal Package extraction, a canonical operator-funded Jon Snow demo, failure/security hardening, and a polished Ivory & Iron UI. Milestone 15 (Production Deployment) is complete, verified by a real human-operated production Tribunal run. Milestone 16 (Final Verification & Course Audit) is the current remaining milestone.
+A working, production-deployed application with persistent Tribunal cases and runs, real OpenRouter-backed advocate/judge execution in both Shared-Model and Separate-Model modes, deterministic majority and protocol assembly, economics/audit evidence, Past Cases with historical reopen, Smart Tribunal Package extraction, a canonical operator-funded Jon Snow demo, failure/security hardening, and a polished Ivory & Iron UI. Milestone 15 (Production Deployment) is complete, verified by a real human-operated production Tribunal run. Milestone 16 (Final Verification & Course Audit) is complete and is awaiting the final human-authorized merge of [PR #44](https://github.com/Shlomi-Hazan/ase26-the-tribunal/pull/44).
 
 ## Production
 
@@ -77,3 +77,10 @@ npm run verify
 - [Specification](SPEC.md)
 - [Architecture](ARCHITECTURE.md)
 - [Roadmap](ROADMAP.md)
+- [Agent Contract](AGENTS.md)
+- [Claude Code Guidance](CLAUDE.md)
+- [Security](SECURITY.md)
+- [Economics](docs/economics.md)
+- [UI Specification](docs/ui-spec.md)
+- [Architecture Decision Records](docs/adr/)
+- [M16 Final Verification Evidence Index](docs/verification/m16-final-audit.md)
