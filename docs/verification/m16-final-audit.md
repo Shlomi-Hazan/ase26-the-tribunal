@@ -107,12 +107,19 @@ npm audit --omit=dev       → 0 vulnerabilities
 
 ### Final hostile/independent audit
 
-**First pass: `CORRECTION REQUIRED`** — audited HEAD `3581b774850252c62bd9d43415632b66c6684c21`. Two P2 findings, recorded in Issue #43 and not minimized here:
+**First pass: `CORRECTION REQUIRED`** — audited HEAD `3581b774850252c62bd9d43415632b66c6684c21`. Two P2 findings, recorded in Issue #43 and preserved here rather than erased:
 
-- residual Agent-Mode-adjacent temporal/source-truth wording in `INTENT.md` (addressed by this correction pass — see Sec 5 above and the Git history for the exact commit)
-- the M16 evidence index (this file) was not discoverable from `README.md`/`ROADMAP.md` (addressed by this correction pass)
+- residual Agent-Mode-adjacent temporal/source-truth wording in `INTENT.md`
+- the M16 evidence index (this file) was not discoverable from `README.md`/`ROADMAP.md`
 
-A hostile re-audit at the new HEAD is still required before this gate can be marked PASS. This document intentionally does not yet claim a passed hostile audit.
+**Correction commit:** `912d541d1f06face144c26e8edd71e2bae49ca6a` — `docs: close M16 hostile-audit gaps` (an exhaustive `INTENT.md` temporal-language sweep, not merely the two originally-reported sentences, plus the two evidence-index links).
+
+**Final re-audit: `PASS`** — independently re-audited at HEAD `912d541d1f06face144c26e8edd71e2bae49ca6a`, without assuming the correction commit worked merely because it said so.
+
+- Original P2 #1 (INTENT drift): **RESOLVED** — full `INTENT.md` re-read and temporal-language re-sweep; 8 remaining hits individually reviewed, all legitimate; full agreement confirmed among `INTENT.md` §4.6/§8/§18/§25, `SPEC.md` §7.3, `ARCHITECTURE.md` §17, `ROADMAP.md` M12, `AGENTS.md`, `CLAUDE.md`.
+- Original P2 #2 (discoverability): **RESOLVED** — both links independently confirmed to resolve.
+- Results: **P0 = 0, P1 = 0, P2 = 0, P3 = 0.**
+- Evidence: [Issue #43 hostile re-audit PASS comment](https://github.com/Shlomi-Hazan/ase26-the-tribunal/issues/43).
 
 ## 10. Known limitations
 
@@ -122,8 +129,8 @@ A hostile re-audit at the new HEAD is still required before this gate can be mar
 
 ## 11. Remaining M16 gates
 
-- **Human final production UI acceptance** — PASS (see Sec 9 above).
-- **Final hostile/independent audit** — first pass `CORRECTION REQUIRED`, findings addressed by this correction pass; a **hostile re-audit at the new HEAD is still pending**.
-- **PR / CI / human merge gate** — pending; no pull request has been opened for this branch yet.
+- **Human final production UI acceptance** — PASS.
+- **Final hostile/independent audit** — PASS, after one correction cycle (see Sec 9 above).
+- **PR / CI / human merge gate** — pending.
 
-Milestone 16 is not complete until the hostile re-audit passes and the PR/CI/human merge gate completes.
+Milestone 16 is not complete until the PR/CI/human merge gate completes.
