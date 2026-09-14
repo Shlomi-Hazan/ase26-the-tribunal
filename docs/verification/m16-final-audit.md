@@ -121,6 +121,15 @@ npm audit --omit=dev       → 0 vulnerabilities
 - Results: **P0 = 0, P1 = 0, P2 = 0, P3 = 0.**
 - Evidence: [Issue #43 hostile re-audit PASS comment](https://github.com/Shlomi-Hazan/ase26-the-tribunal/issues/43).
 
+### Pull request gate
+
+**PR:** [#44 — M16: Final verification and course audit](https://github.com/Shlomi-Hazan/ase26-the-tribunal/pull/44)
+**Pre-closeout PR head:** `bf7352629c649e6c525b5a7805d2f826757fcc4c`
+**Initial PR CI:** [34902139480](https://github.com/Shlomi-Hazan/ase26-the-tribunal/actions/runs/34902139480), `PASS`
+**Independent final PR review:** `PASS` — no P0/P1/P2/P3 findings requiring correction
+
+This closeout commit itself changes the PR head; a new exact-head CI run is still required after it lands, and is tracked below.
+
 ## 10. Known limitations
 
 - A catastrophic (process-crash) Background Function failure between claiming a run and its terminal write has no automatic reconciliation (`ARCHITECTURE.md` §7.4, documented as an accepted, out-of-scope-for-M8 limitation, narrowed at M13 to exclude ordinary thrown exceptions).
@@ -130,7 +139,10 @@ npm audit --omit=dev       → 0 vulnerabilities
 ## 11. Remaining M16 gates
 
 - **Human final production UI acceptance** — PASS.
-- **Final hostile/independent audit** — PASS, after one correction cycle (see Sec 9 above).
-- **PR / CI / human merge gate** — pending.
+- **Final hostile/independent audit** — PASS, after one correction cycle.
+- **Independent final PR review** — PASS.
+- **Final exact-head CI after this closeout commit** — pending.
+- **Explicit human merge authorization** — pending.
+- **Merge/post-merge verification** — pending.
 
-Milestone 16 is not complete until the PR/CI/human merge gate completes.
+PR #44 is not yet merged. Milestone 16's repository state is complete and merge-ready; it is not authoritative on `main` until the remaining gates above complete.
