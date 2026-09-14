@@ -83,3 +83,4 @@ npm run verify
 - [Economics](docs/economics.md)
 - [UI Specification](docs/ui-spec.md)
 - [Architecture Decision Records](docs/adr/)
+- [M16 Final Verification Evidence Index](docs/verification/m16-final-audit.md)

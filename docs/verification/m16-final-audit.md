@@ -95,6 +95,25 @@ npm audit                  → 6 vulnerabilities (1 moderate, 5 high), dev-only 
 npm audit --omit=dev       → 0 vulnerabilities
 ```
 
+### Human final production UI acceptance
+
+**PASS.** Recorded in [Issue #43](https://github.com/Shlomi-Hazan/ase26-the-tribunal/issues/43). Nature: **HUMAN MANUAL** verification against the live production deployment — **not** automated browser verification.
+
+- Production URL: `https://ase26-the-tribunal.netlify.app`
+- Existing read-only completed run used for result verification: `ee671c6a-3002-420f-81e7-d457370718e9`
+- Additional Tribunal runs: 0
+- Additional OpenRouter completions: 0
+- Additional spend: $0
+
+### Final hostile/independent audit
+
+**First pass: `CORRECTION REQUIRED`** — audited HEAD `3581b774850252c62bd9d43415632b66c6684c21`. Two P2 findings, recorded in Issue #43 and not minimized here:
+
+- residual Agent-Mode-adjacent temporal/source-truth wording in `INTENT.md` (addressed by this correction pass — see Sec 5 above and the Git history for the exact commit)
+- the M16 evidence index (this file) was not discoverable from `README.md`/`ROADMAP.md` (addressed by this correction pass)
+
+A hostile re-audit at the new HEAD is still required before this gate can be marked PASS. This document intentionally does not yet claim a passed hostile audit.
+
 ## 10. Known limitations
 
 - A catastrophic (process-crash) Background Function failure between claiming a run and its terminal write has no automatic reconciliation (`ARCHITECTURE.md` §7.4, documented as an accepted, out-of-scope-for-M8 limitation, narrowed at M13 to exclude ordinary thrown exceptions).
@@ -103,10 +122,8 @@ npm audit --omit=dev       → 0 vulnerabilities
 
 ## 11. Remaining M16 gates
 
-The following are **not yet complete** as of this document's creation:
-
-- **Human final production UI acceptance** — pending.
-- **Final hostile/independent audit** — pending.
+- **Human final production UI acceptance** — PASS (see Sec 9 above).
+- **Final hostile/independent audit** — first pass `CORRECTION REQUIRED`, findings addressed by this correction pass; a **hostile re-audit at the new HEAD is still pending**.
 - **PR / CI / human merge gate** — pending; no pull request has been opened for this branch yet.
 
-Milestone 16 is not complete until all three gates above have passed.
+Milestone 16 is not complete until the hostile re-audit passes and the PR/CI/human merge gate completes.

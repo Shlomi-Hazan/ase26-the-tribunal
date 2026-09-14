@@ -827,3 +827,7 @@ Final question:
 ## Exit condition
 
 The project is functionally demonstrable, secure enough for its stated demo scope, reproducible, documented, and supported by repository evidence rather than verbal claims.
+
+## Evidence index
+
+[`docs/verification/m16-final-audit.md`](docs/verification/m16-final-audit.md) is the M16 final verification/evidence index — a pointer into the genuine historical audit trail (Git/Issues/PRs/CI), not a historical log and not a replacement for that trail. It tracks this milestone's current state and remaining gates in real time; consult it for the up-to-date status rather than assuming this section reflects the latest evidence.

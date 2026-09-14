@@ -8,7 +8,7 @@ It records human-approved product direction and must not be silently reinterpret
 
 The repository should demonstrate Agentic Software Engineering through explicit specifications, plans, verification, Git history, and auditability.
 
-This document is not the detailed implementation specification. Detailed checkable requirements belong in future specification documents.
+This document is not the detailed implementation specification. Detailed checkable requirements are maintained in `SPEC.md` and the focused engineering specifications rather than duplicated in this intent document.
 
 ## 1. Working Project Name
 
@@ -95,7 +95,7 @@ Token use, pricing, cost, and latency are part of the Tribunal result, not hidde
 
 ### 4.6 Avoid Fake Complexity
 
-Do not call ordinary model calls "agents" merely for appearance. A future true agent configuration should only be implemented if course requirements are clarified and the design genuinely adds agent behavior.
+Do not call ordinary model calls "agents" merely for appearance. A true agent-execution configuration was considered and cancelled for V1 at Milestone 12 (see §8, §18, `ROADMAP.md` M12) and is not currently planned. A hypothetical future reintroduction would require a new, explicit, human-approved intent/specification/architecture decision, not a mere naming change.
 
 ## 5. Core Tribunal Experience
 
@@ -111,7 +111,7 @@ The intended high-level experience is:
 8. The user inspects arguments, verdicts, reasoning, protocol, and economics.
 9. The user can later reopen persisted completed cases.
 
-This is a product-level description. Exact pages, components, and flows belong to later specification and design work.
+This is a product-level description. Exact pages, components, and flows are defined by `SPEC.md` and `docs/ui-spec.md` rather than duplicated in this intent document.
 
 ## 6. Participants and Roles
 
@@ -237,7 +237,7 @@ No automatic fallback may silently break the cost ceiling. Cost is an architectu
 
 The system must assume models can fail.
 
-At intent level, the future design must account for:
+At intent level, the system design must account for:
 
 - model timeout
 - provider failure
@@ -249,7 +249,7 @@ At intent level, the future design must account for:
 
 Structured model outputs should be validated before being treated as valid application data.
 
-Retries, exact schemas, and timeout values remain specification and architecture decisions.
+Retries, exact schemas, and timeout values are defined by `SPEC.md` and `ARCHITECTURE.md` and are intentionally not duplicated at intent level.
 
 ## 13. Protocol and Result Philosophy
 
@@ -300,7 +300,7 @@ Do not specify colors, exact typography, component libraries, pixels, or final l
 
 ## 15. Persistence and Auditability
 
-Completed cases should ultimately be persistable and reopenable.
+Completed cases should be persistable and reopenable.
 
 A past completed run should retain enough data to understand:
 
@@ -425,13 +425,13 @@ High-level project rules:
 - meaningful branches for non-trivial work
 - no secret commits
 - prompts version controlled
-- schema/migration changes version controlled when they later exist
+- schema/migration changes are version controlled
 - tests evolve with behavior
 - no merge merely because an agent reports "done"
 - verification precedes trust
 - preserve project evolution clearly
 
-Do not add CI or GitHub configuration until a later milestone authorizes it.
+CI or GitHub configuration must only be introduced or materially changed through an authorized milestone/plan.
 
 ## 22. Prompt Management
 
@@ -443,7 +443,7 @@ Intent-level prompt principles:
 - machine-consumed outputs should prefer structured forms
 - prompt changes are real behavioral changes and should be reviewed accordingly
 
-Detailed prompt design belongs later.
+Detailed prompt design belongs in the relevant specification and the version-controlled runtime prompt artifacts (`src/prompts/`) rather than this intent document.
 
 ## 23. Non-Negotiable Rules for Coding Agents
 
@@ -471,4 +471,4 @@ The result should feel like one coherent product, not seven unrelated chatbot ca
 
 ## 25. Course Alignment Note
 
-The project intentionally demonstrates course principles including problem framing before implementation, explicit specification, browser/backend/database/deployment separation, cognified runtime behavior, cost and latency awareness, context engineering, version control, verification before trust, auditability, and appropriate use of multi-model or future multi-agent orchestration.
+The project intentionally demonstrates course principles including problem framing before implementation, explicit specification, browser/backend/database/deployment separation, cognified runtime behavior, cost and latency awareness, context engineering, version control, verification before trust, auditability, appropriate multi-model orchestration, an explicit model-versus-agent boundary, and rejection of fake agent complexity (see §8, §18).
