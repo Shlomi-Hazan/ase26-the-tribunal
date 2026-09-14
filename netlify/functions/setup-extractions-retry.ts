@@ -13,6 +13,7 @@ import {
   OPENROUTER_NOT_CONNECTED,
   readUserOpenRouterKey
 } from "../server/extraction/userOpenRouterKey";
+import { SETUP_EXTRACTION_RETRY_ROUTE_SHAPE, resolveRouteId } from "../server/routing";
 
 function jsonResponse(statusCode: number, body: unknown) {
   return {
@@ -42,7 +43,7 @@ export async function handleSetupExtractionsRetryRequest(
     });
   }
 
-  const extractionRequestId = event.queryStringParameters?.id;
+  const extractionRequestId = resolveRouteId(event, SETUP_EXTRACTION_RETRY_ROUTE_SHAPE);
 
   if (typeof extractionRequestId !== "string" || extractionRequestId.length === 0) {
     return jsonResponse(400, {

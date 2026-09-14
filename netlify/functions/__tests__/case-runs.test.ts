@@ -3,6 +3,15 @@
 // (this codebase's established convention -- the Supabase query builder
 // is never mocked), plus a structural source-boundary proof that this
 // read path never imports execution/OpenRouter modules.
+//
+// Milestone 15 (M15 production routing correction) -- this route
+// previously relied on netlify.toml substituting the `:id` placeholder
+// into the rewrite target's query string (`?id=:id`), which Netlify's
+// own documented redirect contract never supports and which was
+// confirmed broken live in production. `getEvent`'s existing
+// query-parameter shape below is preserved unchanged (it now exercises
+// resolveRouteId's direct-Function-invocation compatibility path); the
+// new tests below prove the corrected friendly-path contract.
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -132,6 +141,78 @@ describe("GET /api/cases/:id/runs (Milestone 11, Issue #27)", () => {
     expect(bodyText).not.toMatch(/request_fingerprint|requestFingerprint/i);
     expect(bodyText).not.toMatch(/majorityVerdict|majority_verdict/i);
     expect(bodyText).not.toMatch(/totalCostUsd|total_cost_usd/i);
+  });
+
+  it("B: a friendly production-style request (real path, no query id) resolves the correct case's runs", async () => {
+    const repository = new FakeRunRepository(
+      new Map([[CASE_ID, [runSummary()]]])
+    );
+    const response = await handleCaseRunsRequest(
+      {
+        httpMethod: "GET",
+        path: `/api/cases/${CASE_ID}/runs`,
+        queryStringParameters: {}
+      } as unknown as HandlerEvent,
+      repository as unknown as RunRepository
+    );
+    const payload = JSON.parse(response.body ?? "");
+
+    expect(response.statusCode).toBe(200);
+    expect(payload.runs).toEqual([runSummary()]);
+  });
+
+  it("B: a conflicting real query ?id=<other-uuid> never overrides the friendly path id -- runs are listed for the PATH case", async () => {
+    const OTHER_CASE_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const repository = new FakeRunRepository(
+      new Map([
+        [CASE_ID, [runSummary()]],
+        [OTHER_CASE_ID, [runSummary({ runId: "99999999-9999-4999-8999-999999999999", caseId: OTHER_CASE_ID })]]
+      ])
+    );
+    const response = await handleCaseRunsRequest(
+      {
+        httpMethod: "GET",
+        path: `/api/cases/${CASE_ID}/runs`,
+        queryStringParameters: { id: OTHER_CASE_ID }
+      } as unknown as HandlerEvent,
+      repository as unknown as RunRepository
+    );
+    const payload = JSON.parse(response.body ?? "");
+
+    expect(response.statusCode).toBe(200);
+    expect(payload.runs).toEqual([runSummary()]);
+  });
+
+  it("a literal, un-substituted ':id' query value never overrides a valid friendly path id", async () => {
+    const repository = new FakeRunRepository(
+      new Map([[CASE_ID, [runSummary()]]])
+    );
+    const response = await handleCaseRunsRequest(
+      {
+        httpMethod: "GET",
+        path: `/api/cases/${CASE_ID}/runs`,
+        queryStringParameters: { id: ":id" }
+      } as unknown as HandlerEvent,
+      repository as unknown as RunRepository
+    );
+    const payload = JSON.parse(response.body ?? "");
+
+    expect(response.statusCode).toBe(200);
+    expect(payload.runs).toEqual([runSummary()]);
+  });
+
+  it("rejects an unexpected extra path segment (/api/cases/:id/runs/extra) with 400", async () => {
+    const repository = new FakeRunRepository();
+    const response = await handleCaseRunsRequest(
+      {
+        httpMethod: "GET",
+        path: `/api/cases/${CASE_ID}/runs/extra`,
+        queryStringParameters: {}
+      } as unknown as HandlerEvent,
+      repository as unknown as RunRepository
+    );
+
+    expect(response.statusCode).toBe(400);
   });
 
   it("source-boundary proof: this read path never imports the execution/OpenRouter boundary", () => {

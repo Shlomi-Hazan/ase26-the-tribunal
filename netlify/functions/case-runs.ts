@@ -8,6 +8,7 @@ import {
   createSupabaseRunRepository,
   type RunRepository
 } from "../server/runs";
+import { CASE_RUNS_ROUTE_SHAPE, resolveRouteId } from "../server/routing";
 
 // Milestone 11 (Issue #27) -- GET /api/cases/:id/runs, the narrow
 // Case-to-Run discovery read bridge. Read-only by construction: this
@@ -30,7 +31,7 @@ export async function handleCaseRunsRequest(
     // endpoint performs no case-existence check of its own and simply
     // returns an empty array. GET /api/cases/:id remains the sole
     // authority for whether the parent Case itself exists.
-    const caseId = validateCaseId(event.queryStringParameters?.id ?? "");
+    const caseId = validateCaseId(resolveRouteId(event, CASE_RUNS_ROUTE_SHAPE) ?? "");
     const runs = await repository.listByCaseId(caseId);
 
     return caseRunsJsonResponse(200, { runs });

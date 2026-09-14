@@ -9,6 +9,7 @@ import {
   validateRunId,
   type RunRepository
 } from "../server/runs";
+import { RUN_BY_ID_ROUTE_SHAPE, resolveRouteId } from "../server/routing";
 
 export async function handleRunByIdRequest(
   event: HandlerEvent,
@@ -23,7 +24,7 @@ export async function handleRunByIdRequest(
     // UUID is a safe 404 run_not_found -- validateRunId throws
     // RunValidationError, mapped to 400 by runErrorResponse, before any
     // repository call for the malformed case.
-    const runId = validateRunId(event.queryStringParameters?.id ?? "");
+    const runId = validateRunId(resolveRouteId(event, RUN_BY_ID_ROUTE_SHAPE) ?? "");
     const run = await repository.getById(runId);
 
     if (!run) {

@@ -2,11 +2,21 @@
 
 Course project for **Agentic Software Engineering (ASE-26)**.
 
-The Tribunal is a cognified web application in which AI advocates argue a case and AI judges deliberate and return reasoned verdicts. The current repository includes a complete mock UI shell for reviewing the Tribunal interaction model; real Tribunal execution and persistence begin in later milestones.
+The Tribunal is a cognified web application in which AI advocates argue a case and AI judges deliberate and return reasoned verdicts.
 
 ## Status
 
-Mock UI shell with in-memory demo data.
+A working, production-deployed application with persistent Tribunal cases and runs, real OpenRouter-backed advocate/judge execution in both Shared-Model and Separate-Model modes, deterministic majority and protocol assembly, economics/audit evidence, Past Cases with historical reopen, Smart Tribunal Package extraction, a canonical operator-funded Jon Snow demo, failure/security hardening, and a polished Ivory & Iron UI. Milestone 15 (Production Deployment) is complete, verified by a real human-operated production Tribunal run. Milestone 16 (Final Verification & Course Audit) is the current remaining milestone.
+
+## Production
+
+The Tribunal is deployed and publicly reachable at:
+
+```text
+https://ase26-the-tribunal.netlify.app
+```
+
+Production runs against a dedicated Supabase project, separate from the development database used during earlier milestones. See [Roadmap](ROADMAP.md) for the full M15 closeout record.
 
 ## Stack
 

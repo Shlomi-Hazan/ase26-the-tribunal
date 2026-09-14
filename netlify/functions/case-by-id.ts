@@ -8,6 +8,7 @@ import {
   caseErrorResponse,
   caseJsonResponse
 } from "../server/caseResponses";
+import { CASE_BY_ID_ROUTE_SHAPE, resolveRouteId } from "../server/routing";
 
 export async function handleCaseByIdRequest(
   event: HandlerEvent,
@@ -18,7 +19,7 @@ export async function handleCaseByIdRequest(
       return caseJsonResponse(405, { error: "method_not_allowed" });
     }
 
-    const caseId = validateCaseId(event.queryStringParameters?.id ?? "");
+    const caseId = validateCaseId(resolveRouteId(event, CASE_BY_ID_ROUTE_SHAPE) ?? "");
     const storedCase = await repository.getById(caseId);
 
     if (!storedCase) {

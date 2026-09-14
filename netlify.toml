@@ -69,14 +69,28 @@
   to = "/.netlify/functions/import-tribunal-package"
   status = 200
 
+# Milestone 15 (M15 production routing correction) -- Netlify's own
+# documented redirect contract: a path placeholder ("A placeholder either
+# matches a path segment from one `/` to the next `/`... but excluding a
+# query string" -- https://docs.netlify.com/manage/routing/redirects/
+# redirect-options/) is never substituted into a rewrite target's QUERY
+# STRING. The previous `to = ".../case-runs?id=:id"` shape relied on
+# exactly that unsupported behavior -- confirmed broken live in
+# production (GET /api/cases/<uuid>/runs returned 400 "must be a valid
+# UUID" through this friendly route, while the identical request against
+# the underlying Function's own `?id=<uuid>` query parameter succeeded).
+# The corrected rewrite carries no query string at all; the Function
+# itself now extracts the dynamic id from the original request path
+# (netlify/server/routing.ts's resolveRouteId), which every status = 200
+# rewrite/proxy rule preserves.
 [[redirects]]
   from = "/api/cases/:id/runs"
-  to = "/.netlify/functions/case-runs?id=:id"
+  to = "/.netlify/functions/case-runs"
   status = 200
 
 [[redirects]]
   from = "/api/cases/:id"
-  to = "/.netlify/functions/case-by-id?id=:id"
+  to = "/.netlify/functions/case-by-id"
   status = 200
 
 [[redirects]]
@@ -84,9 +98,11 @@
   to = "/.netlify/functions/cases"
   status = 200
 
+# Milestone 15 (M15 production routing correction) -- see the identical
+# correction/rationale above the /api/cases/:id rule.
 [[redirects]]
   from = "/api/runs/:id"
-  to = "/.netlify/functions/run-by-id?id=:id"
+  to = "/.netlify/functions/run-by-id"
   status = 200
 
 [[redirects]]
@@ -118,9 +134,11 @@
   to = "/.netlify/functions/setup-extractions-preflight"
   status = 200
 
+# Milestone 15 (M15 production routing correction) -- see the identical
+# correction/rationale above the /api/cases/:id rule.
 [[redirects]]
   from = "/api/setup-extractions/:id/retry"
-  to = "/.netlify/functions/setup-extractions-retry?id=:id"
+  to = "/.netlify/functions/setup-extractions-retry"
   status = 200
 
 [[redirects]]

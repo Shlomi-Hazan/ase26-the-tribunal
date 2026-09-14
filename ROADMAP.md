@@ -51,8 +51,8 @@ Do not begin later milestones by destabilizing incomplete earlier work.
 | 11 | Past Cases & Auditability | ✅ Complete |
 | 12 | Canonical Jon Snow Demo | ✅ Complete |
 | 13 | Failure & Security Hardening | ✅ Complete |
-| 14 | UI Polish & Accessibility | ⬜ Planned |
-| 15 | Production Deployment | ⬜ Planned |
+| 14 | UI Polish & Accessibility | ✅ Complete |
+| 15 | Production Deployment | ✅ Complete |
 | 16 | Final Verification & Course Audit | ⬜ Planned |
 
 Milestone 2 becomes complete only after the engineering-contract PR containing all required documents is independently reviewed and merged.
@@ -782,6 +782,10 @@ Prove the system works outside the developer machine.
 ## Exit condition
 
 A reviewer can open a public URL and complete the demonstrated flow safely.
+
+### Closeout (2026-09-14)
+
+Complete. Planning/evidence: [Issue #41](https://github.com/Shlomi-Hazan/ase26-the-tribunal/issues/41). Production is deployed and publicly reachable at `https://ase26-the-tribunal.netlify.app`, running production application source commit `d19ff9b5b6d7fe182e099a50e4942ac6d5cb6b36` (verified production deploy `6aa82d04e33177c6f357e07e`) against a dedicated production Supabase project (ref `jzwopusclanttfpwaggo`), separate from the `the-tribunal-dev` project used through M5–M14 (preserved, paused, untouched). Migration parity confirmed 7/7 local == remote, no schema change, no new migration. Staged verification: Phase A (zero-completion smoke: HTTPS/Home, SPA deep links, `/api/health`, `/api/models` metadata discovery, Jon Snow missing-access fail-closed, deployed-client secret-boundary scan) PASS; Phase B (one intentional production case created and reopened through the public API, proving database-backed persistence with zero model spend) PASS — this real production smoke testing discovered a genuine dynamic-routing defect (Netlify path placeholders cannot be interpolated into a Function rewrite's query string; the four affected routes were corrected to resolve the id from the original request path instead, with the friendly public path made authoritative over any caller-supplied query id, and regression coverage added) before the live run; Phase C (one human-authorized, human-operated real Jon Snow production Tribunal) PASS. Live run [`ee671c6a-3002-420f-81e7-d457370718e9`](https://ase26-the-tribunal.netlify.app/runs/ee671c6a-3002-420f-81e7-d457370718e9) on canonical case `d9b4a0a3-f0bc-4e18-82f9-7a2fda40c091`: status COMPLETED, SHARED mode, `openai/gpt-4o-mini`, 7 participants (4 advocates, 3 judges), exactly 7 logical calls / 7 provider attempts / 0 retries / no eighth model call, 4 advocate speeches, 3 judge verdicts (2 GUILTY, 1 NOT_GUILTY), deterministic majority GUILTY, 1 protocol, 14,895 input tokens, 2,679 output tokens, actual cost `$0.004225815` (well under the $0.13 demo conservative-estimate gate and the generic $5.00 hard runtime ceiling). One admission event consumed; zero Smart Extraction rows. Human manual verification after completion — browser refresh, History reopen, and PDF export/download/open — each PASS. No secret exposed at any stage; zero additional Tribunal starts, completions, or spend caused by post-run auditing.
 
 ---
 
