@@ -163,7 +163,7 @@ This applies to:
 - advocate personalities
 - judge personalities
 
-Exact supported file formats remain a later specification decision.
+Exact supported file formats are defined by the current system specification rather than duplicated in this intent document. See `SPEC.md` §3.2-3.3 and §19.
 
 ## 8. Execution Configurations
 
@@ -184,7 +184,7 @@ Each participant may be configured with a different LLM.
 
 ### Agent Execution
 
-Course oral guidance has referenced a model-versus-agent distinction. A true agent-execution configuration remains unresolved until that requirement is confirmed more precisely.
+Course oral guidance referenced a model-versus-agent distinction. A true agent-execution configuration was considered and **cancelled and removed from the V1 product plan at Milestone 12** (`ROADMAP.md` M12; Issue #32; `SPEC.md` §7.3; `ARCHITECTURE.md` §17). It is not deferred or conditional, and no future milestone reintroduces it without a fresh, separately confirmed and specified product decision.
 
 Do not claim agent execution is implemented. Do not silently redefine ordinary model calls as agents.
 
@@ -266,7 +266,7 @@ It should expose:
 
 The majority must not require an additional model call.
 
-For the full protocol, the current preferred direction is to assemble it from stored participant outputs rather than perform an eighth LLM call. This protocol-composition approach remains a later specification and architecture decision rather than a settled requirement.
+For the full protocol, the original preferred direction was to assemble it from stored participant outputs rather than perform an eighth LLM call. Deterministic protocol assembly is now a settled V1 requirement, resolved at Milestone 10 (`SPEC.md` §13; `ARCHITECTURE.md` §4.5).
 
 This distinction must remain consistent with `docs/conception/assumptions.md`.
 
@@ -296,7 +296,7 @@ The user should immediately understand:
 - what each judge decided
 - what the run cost was
 
-Do not specify colors, exact typography, component libraries, pixels, or final layouts here. Those belong to the future UI specification.
+Do not specify colors, exact typography, component libraries, pixels, or final layouts here. Those belong to the UI specification (`docs/ui-spec.md`).
 
 ## 15. Persistence and Auditability
 
@@ -350,29 +350,31 @@ The initial product does not aim to provide:
 
 The full out-of-scope conception is maintained in `docs/conception/out-of-scope.md`.
 
-## 18. Open Decisions
+## 18. Decision Status
 
-The following decisions remain unresolved:
+These questions were open during original project conception (Milestone 1). They are recorded here for historical traceability, with their current status and authority, rather than deleted now that specification and architecture work has addressed them.
 
-1. Exact verdict vocabulary.
-2. Exact supported upload formats.
-3. Exact frontend framework.
-4. Exact backend/runtime architecture.
-5. Exact persistence/database approach.
-6. Exact deployment platform.
-7. Exact OpenRouter models used at runtime.
-8. Whether any model pricing metadata is provider-reported versus locally derived.
-9. Exact structured output schemas.
-10. Retry and fallback strategy.
-11. Timeout limits.
-12. Maximum token limits per participant.
-13. Exact preflight budget-control strategy.
-14. Exact protocol composition implementation.
-15. Whether authentication becomes necessary.
-16. Whether a true agent-execution version is a distinct required course deliverable.
-17. What model/tool/loop behavior would qualify that version as genuinely agentic.
+| # | Original question | Status | Current authority |
+|---|---|---|---|
+| 1 | Exact verdict vocabulary | RESOLVED | `SPEC.md` §2.1 |
+| 2 | Exact supported upload formats | RESOLVED | `SPEC.md` §3.2-3.3, §19 |
+| 3 | Exact frontend framework | RESOLVED | `ARCHITECTURE.md` §1 |
+| 4 | Exact backend/runtime architecture | RESOLVED | `ARCHITECTURE.md` §1, §4 |
+| 5 | Exact persistence/database approach | RESOLVED | `ARCHITECTURE.md` §8 |
+| 6 | Exact deployment platform | RESOLVED | `ARCHITECTURE.md` §15; `ROADMAP.md` M15 |
+| 7 | Exact OpenRouter models used at runtime | DYNAMIC BY DESIGN | `docs/economics.md` §14; `docs/adr/0003-openrouter-infrastructure.md` Decisions 5, 12 — the exact model value is intentionally runtime-variable; the governing eligibility/economics policy is resolved |
+| 8 | Whether any model pricing metadata is provider-reported versus locally derived | RESOLVED | `docs/economics.md` §5.1; `docs/adr/0003-openrouter-infrastructure.md` Decisions 9-10 |
+| 9 | Exact structured output schemas | RESOLVED | `SPEC.md` §6; `ARCHITECTURE.md` §5.1 |
+| 10 | Retry and fallback strategy | RESOLVED | `SPEC.md` §10.1; `docs/adr/0003-openrouter-infrastructure.md` Decision 11 |
+| 11 | Timeout limits | RESOLVED | `SPEC.md` §10.2; `docs/economics.md` §22 |
+| 12 | Maximum token limits per participant | RESOLVED | `SPEC.md` §6.1-6.2; `docs/economics.md` §4 |
+| 13 | Exact preflight budget-control strategy | RESOLVED | `docs/economics.md` §10-11; `ARCHITECTURE.md` §7.4 |
+| 14 | Exact protocol composition implementation | RESOLVED | `SPEC.md` §13; `ARCHITECTURE.md` §4.5 |
+| 15 | Whether authentication becomes necessary | RESOLVED — not required for V1 | `SPEC.md` §18; `SECURITY.md` §1, §15, §20 |
+| 16 | Whether a true agent-execution version is a distinct required course deliverable | CANCELLED | `ROADMAP.md` M12; Issue #32; `SPEC.md` §7.3; `ARCHITECTURE.md` §17 |
+| 17 | What model/tool/loop behavior would qualify that version as genuinely agentic | NOT APPLICABLE — moot, superseded by #16's cancellation | same as #16 |
 
-Coding agents must not silently decide important unresolved product behavior. These decisions will be resolved through specification and architecture work.
+Coding agents must not silently reopen or respecify a RESOLVED or CANCELLED decision above, and must not silently decide a genuinely new, materially important product question without the same documented process (specification and architecture work, human approval) that resolved these.
 
 ## 19. Agentic Development Process
 
@@ -402,18 +404,18 @@ Coding agents are collaborators and executors, not the owners of product intent.
 
 ## 20. Repository Documentation Strategy
 
-Intended documentation roles:
+This documentation strategy was established during conception (Milestone 1). Each of the following documents now fulfills the role planned for it, created at the milestone that authorized it:
 
 - `INTENT.md` - product purpose and durable human-approved direction
 - `docs/conception/` - conception artifacts and explicit assumptions
-- future `SPEC.md` - precise testable system requirements
-- future `ARCHITECTURE.md` - technical system structure and boundaries
-- future `AGENTS.md` - repository rules for coding agents
-- future `CLAUDE.md` - Claude-specific entry guidance
-- future UI/economics/security documents - focused engineering specifications
+- `SPEC.md` - precise testable system requirements
+- `ARCHITECTURE.md` - technical system structure and boundaries
+- `AGENTS.md` - repository rules for coding agents
+- `CLAUDE.md` - Claude-specific entry guidance
+- `SECURITY.md`, `docs/economics.md`, `docs/ui-spec.md` - focused engineering specifications
 - `README.md` - public project entry point, setup, demo, and high-level overview
 
-Do not create those future files until their milestones authorize them.
+A new focused document of this kind should still only be created once its owning milestone authorizes it.
 
 ## 21. Version Control Discipline
 

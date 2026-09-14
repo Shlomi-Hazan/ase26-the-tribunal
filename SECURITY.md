@@ -727,6 +727,20 @@ High-risk or opaque packages that process untrusted content require explicit jus
 - **Disposition: accepted/deferred**, evidence-based, not silently ignored. Revisit when `netlify-cli` publishes a forward (v28+) release that resolves these transitively, or when Netlify patches `@netlify/images`/`ipx`/`sharp` forward without requiring a `netlify-cli` downgrade.
 - **Install-script warning, recorded and left open, not silently treated as resolved:** `npm install`/`npm ci` reports `5 packages have install scripts not yet covered by allowScripts` (`esbuild`, `fsevents`, `netlify-cli`, `sharp`, `unix-dgram`). No project-level `allowScripts`/lavamoat policy file exists in this repository today. This does **not** block `npm ci` in CI — status: **open, pending**, not addressed by this milestone. A future pass should either adopt an explicit install-script allowlist policy or make a documented, evidence-based decision not to.
 
+### 17.2 Re-audit and partial remediation (Milestone 16)
+
+By Milestone 16 the same `netlify-cli`-rooted advisory chain had grown from the 8 advisories (1 moderate, 7 high) recorded above to **12 advisories (1 moderate, 11 high)**, still all traced to the same `devDependencies` root and still with **zero** deployed-runtime exposure (`npm audit --omit=dev` reported 0 vulnerabilities both before and after the remediation below — confirmed independently, not merely re-asserted from §17.1). This growth is ordinary upstream advisory/dependency drift over the two months between milestones, not a regression introduced by this project's own code.
+
+**Re-verification found §17.1's "no safe forward fix" claim was no longer accurate.** A compatible, in-range lockfile refresh — `npm update netlify-cli`, taking the pinned version from `27.3.0` to `27.6.0`, both satisfying the unchanged `package.json` range `^27.3.0` — was tested in an isolated, disposable worktree before being applied here:
+
+- `package.json` — **unchanged** (no manifest edit; `27.6.0` already satisfies `^27.3.0`)
+- No major-version change to `netlify-cli` or to any application runtime dependency
+- Advisories: **12 → 6** (1 moderate, 5 high) — 6 advisory roots eliminated entirely (`@netlify/build`, `@netlify/functions-dev`, `@netlify/functions-utils`, `@netlify/zip-it-and-ship-it`, `extract-zip`, `toml`)
+- `npm audit --omit=dev`: **0 → 0** (unaffected either way — deployed-runtime exposure was already zero)
+- `npm run verify` (lint/typecheck/1111 tests/build/client-bundle/Functions-packaging): **PASS**, unchanged from before the update
+
+**Residual disposition, precisely scoped (not a blanket claim):** the remaining 6 advisories (`@netlify/dev`, `@netlify/images`, `ipx`, `netlify-cli`, `qs`, `sharp`) form one connected chain that `npm audit` itself reports can only be resolved by `npm audit fix --force`, which "Will install `netlify-cli@23.13.5`, which is a breaking change" — the same 4-major-version downgrade §17.1 already declined, for the same reason (a dev-only, no-deployed-exposure risk not worth losing a year of local dev/deploy-CLI fixes for). This downgrade **remains not accepted**. The corrected, narrower claim: a safe forward fix existed and was applied for **half** of the current findings; no safe forward fix exists for the other half, which remains **accepted/deferred** exactly as before. Revisit when `netlify-cli` publishes a further forward release that resolves the `@netlify/images`/`ipx`/`sharp` chain without a downgrade.
+
 ---
 
 ## 18. Git and Repository Security

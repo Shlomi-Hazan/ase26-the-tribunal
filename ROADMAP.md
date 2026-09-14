@@ -53,7 +53,7 @@ Do not begin later milestones by destabilizing incomplete earlier work.
 | 13 | Failure & Security Hardening | ✅ Complete |
 | 14 | UI Polish & Accessibility | ✅ Complete |
 | 15 | Production Deployment | ✅ Complete |
-| 16 | Final Verification & Course Audit | ⬜ Planned |
+| 16 | Final Verification & Course Audit | 🟡 Current |
 
 Milestone 2 becomes complete only after the engineering-contract PR containing all required documents is independently reviewed and merged.
 
@@ -745,13 +745,19 @@ chevron + "View reasoning" / "View argument" affordance on every Judge
 and Advocate Accordion, and semantic GUILTY (error) / NOT_GUILTY
 (success) verdict coloring on the large verdict, the judge vote cards,
 and each Judge Accordion summary, with the literal verdict text always
-retained. The rest of M14's scope (typography, spacing, responsive
-behaviour, card density, motion, contrast, reduced-motion, etc.) remains
-future work -- M14 as a whole is still Planned, not Current or Complete.
+retained.
 
 ## Exit condition
 
 The application feels intentionally designed on desktop and mobile while preserving the simple interaction model.
+
+### Closeout (2026-09-09)
+
+Complete. Planning/tracking: Issue #39 (closed, COMPLETED). Implementation: [PR #40](https://github.com/Shlomi-Hazan/ase26-the-tribunal/pull/40) ("M14: Ivory & Iron UI polish, Jon Snow demo, and Tribunal PDF"), approved head `ebb71841d8d394741bf6c90cf053e0bb60af846a`, merged into `main` at `b0afd0299ffe4bd8030c6e382304eb2f9c45aa63` (2026-09-09, two-parent merge of `a379f7e8b0a350451f978e5e6566eb3e4acea4b0`/`ebb71841d8d394741bf6c90cf053e0bb60af846a`). Final exact-head CI: run [34372832642](https://github.com/Shlomi-Hazan/ase26-the-tribunal/actions/runs/34372832642), SUCCESS -- 71 test files / 1048 tests, lint/typecheck/build clean, client-bundle secret-boundary check passed, Netlify Functions packaging directive verified.
+
+Delivered: the Ivory & Iron visual system and UI/accessibility polish across setup, review, deliberation, result, and history screens; the Jon Snow demo/settings presentation; the final generic `/runs/:runId` run/result experience; Tribunal PDF report export; and scoped test-timeout hardening. No database/schema migration.
+
+**Real runtime verification during this milestone:** PR #40 records one successful, real, end-to-end Jon Snow Tribunal run exercised as part of this milestone's own verification -- status `COMPLETED`, 4/4 advocate speeches, 3/3 judge decisions, 7 logical model calls, 7 provider attempts, 0 retries, 14,475 input tokens, 2,451 output tokens, 16,926 total tokens, actual model cost `$0.004006035`, protocol available. A subsequent manual check confirmed the resulting run rendered correctly through the generic `/runs/:runId` experience. M14 is therefore not a zero-model-call milestone.
 
 ---
 
