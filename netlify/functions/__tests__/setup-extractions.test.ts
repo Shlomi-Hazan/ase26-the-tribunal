@@ -160,6 +160,58 @@ describe("POST /api/setup-extractions/:id/retry handler", () => {
     const body = JSON.parse(result.body) as { errorCode: string };
     expect(body.errorCode).toBe("IDEMPOTENCY_CONFLICT");
   });
+
+  // Milestone 15 (M15 production routing correction) -- this route
+  // previously relied on netlify.toml substituting the `:id` placeholder
+  // into the rewrite target's query string (`?id=:id`), which Netlify's
+  // own documented redirect contract never supports and which was
+  // confirmed broken live in production. This proves the corrected
+  // friendly-path contract reaches the exact same real logic (the
+  // IDEMPOTENCY_CONFLICT-shaped block above) as the direct-query test --
+  // a pure routing proof, no completion/inference/persistence involved
+  // either way.
+  it("D: a friendly production-style request (real path, no query id) reaches the same real logic as a direct query id", async () => {
+    const extractionRequestId = randomUUID();
+    const result = await handleSetupExtractionsRetryRequest(
+      fakeEvent({
+        path: `/api/setup-extractions/${extractionRequestId}/retry`,
+        queryStringParameters: {},
+        body: JSON.stringify({ source: { kind: "text", text: "x" } })
+      }),
+      makeDeps()
+    );
+
+    const body = JSON.parse(result.body) as { errorCode: string };
+    expect(body.errorCode).toBe("IDEMPOTENCY_CONFLICT");
+  });
+
+  it("a literal, un-substituted ':id' query value never overrides a valid friendly path id", async () => {
+    const extractionRequestId = randomUUID();
+    const result = await handleSetupExtractionsRetryRequest(
+      fakeEvent({
+        path: `/api/setup-extractions/${extractionRequestId}/retry`,
+        queryStringParameters: { id: ":id" },
+        body: JSON.stringify({ source: { kind: "text", text: "x" } })
+      }),
+      makeDeps()
+    );
+
+    const body = JSON.parse(result.body) as { errorCode: string };
+    expect(body.errorCode).toBe("IDEMPOTENCY_CONFLICT");
+  });
+
+  it("rejects an unexpected extra path segment (/api/setup-extractions/:id/retry/extra) with 400", async () => {
+    const result = await handleSetupExtractionsRetryRequest(
+      fakeEvent({
+        path: `/api/setup-extractions/${randomUUID()}/retry/extra`,
+        queryStringParameters: {},
+        body: JSON.stringify({ source: { kind: "text", text: "x" } })
+      }),
+      makeDeps()
+    );
+
+    expect(result.statusCode).toBe(400);
+  });
 });
 
 // User-funded OpenRouter BYOK correction: every completion-capable
