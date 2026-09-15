@@ -4,33 +4,33 @@
 
 The Tribunal is a cognified web application built for **Agentic Software Engineering (ASE-26)**: a submitted case is argued by 2 PRO (Defense) and 2 CON (Opposition) advocates, judged independently by 3 judges, and resolved by a deterministic majority — with every token, dollar, and second of the deliberation recorded and inspectable afterward.
 
-**[🚀 Live Application](https://ase26-the-tribunal.netlify.app)** · **[📖 Full User Guide](docs/USER_GUIDE.md)** · **[🏗️ Architecture](ARCHITECTURE.md)** · **[📋 Specification](SPEC.md)**
+**[🚀 Live Application](https://ase26-the-tribunal.netlify.app)** · **[📖 Full User Guide](docs/USER_GUIDE.md)** · **[🔎 Visual Inspect](docs/INSPECT.md)** · **[🏗️ Architecture](ARCHITECTURE.md)** · **[📋 Specification](SPEC.md)**
 
 ![The Tribunal — Home](docs/assets/screenshots/01-home.jpg)
 
 ## 📑 Table of Contents
 
-- [What Is The Tribunal?](#-what-is-the-tribunal)
-- [Key Features](#-key-features)
-- [How a Tribunal Works](#-how-a-tribunal-works)
-- [PRO vs CON](#-pro-vs-con)
-- [Shared Model vs Separate Models](#-shared-model-vs-separate-models)
-- [Importing a Tribunal](#-importing-a-tribunal)
-- [Canonical Jon Snow Demo](#-canonical-jon-snow-demo)
-- [Economics & Auditability](#-economics--auditability)
-- [Results & Tribunal Protocol](#-results--tribunal-protocol)
-- [Past Cases](#-past-cases)
-- [Screenshots](#-screenshots)
-- [Architecture](#-architecture)
-- [Tech Stack](#-tech-stack)
-- [Live Application](#-live-application)
-- [Local Installation](#-local-installation)
-- [Running Locally](#-running-locally)
-- [Verification](#-verification)
-- [User Guide](#-user-guide)
-- [Engineering Documentation](#-engineering-documentation)
-- [Important Notes / Known Limitations](#-important-notes--known-limitations)
-- [Course Context](#-course-context)
+- [🎯 What Is The Tribunal?](#-what-is-the-tribunal)
+- [✨ Key Features](#-key-features)
+- [⚖️ How a Tribunal Works](#-how-a-tribunal-works)
+- [🛡️ PRO vs CON](#-pro-vs-con)
+- [🤖 Shared Model vs Separate Models](#-shared-model-vs-separate-models)
+- [📦 Importing a Tribunal](#-importing-a-tribunal)
+- [🐺 Canonical Jon Snow Demo](#-canonical-jon-snow-demo)
+- [📊 Economics & Auditability](#-economics--auditability)
+- [📜 Results & Tribunal Protocol](#-results--tribunal-protocol)
+- [🕘 Past Cases](#-past-cases)
+- [🖼️ Screenshots](#-screenshots)
+- [🏗️ Architecture](#-architecture)
+- [🧰 Tech Stack](#-tech-stack)
+- [🚀 Live Application](#-live-application)
+- [💻 Local Installation](#-local-installation)
+- [▶️ Running Locally](#-running-locally)
+- [🧪 Verification](#-verification)
+- [📖 User Guide](#-user-guide)
+- [📚 Engineering Documentation](#-engineering-documentation)
+- [⚠️ Important Notes / Known Limitations](#-important-notes--known-limitations)
+- [🎓 Course Context](#-course-context)
 
 ## 🎯 What Is The Tribunal?
 

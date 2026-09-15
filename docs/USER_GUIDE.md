@@ -4,42 +4,44 @@ A complete, step-by-step guide to using The Tribunal at **[ase26-the-tribunal.ne
 
 > ⚠️ **Public demo notice.** This is a shared, single-tenant course demo. There are no user accounts. Cases and runs you submit may be visible to other visitors in shared history. **Never submit sensitive, private, confidential, or personally identifying material.** See [§23](#23-privacy--public-demo).
 
-## Table of Contents
+## 📚 Table of Contents
 
-1. [Introduction](#1-introduction)
-2. [Quick Start](#2-quick-start)
-3. [Home Page](#3-home-page)
-4. [Creating a New Tribunal](#4-creating-a-new-tribunal)
-5. [Charge Sheet](#5-charge-sheet)
-6. [Import Options](#6-import-options)
-7. [Smart Import](#7-smart-import)
-8. [Advocates](#8-advocates)
-9. [Judges](#9-judges)
-10. [Shared vs Separate Models](#10-shared-vs-separate-models)
-11. [Connecting OpenRouter](#11-connecting-openrouter)
-12. [Review Screen & Cost Estimate](#12-review-screen--cost-estimate)
-13. [Convene Tribunal](#13-convene-tribunal)
-14. [Deliberation](#14-deliberation)
-15. [Results](#15-results)
-16. [Economics, Tokens & Attempts](#16-economics-tokens--attempts)
-17. [Tribunal Protocol](#17-tribunal-protocol)
-18. [PDF Export](#18-pdf-export)
-19. [Past Cases](#19-past-cases)
-20. [Case Details & Historical Runs](#20-case-details--historical-runs)
-21. [Jon Snow Demo](#21-jon-snow-demo)
-22. [Errors, Retry & Recovery](#22-errors-retry--recovery)
-23. [Privacy & Public Demo](#23-privacy--public-demo)
-24. [FAQ](#24-faq)
+1. [👋 Introduction](#1-introduction)
+2. [⚡ Quick Start](#2-quick-start)
+3. [🏠 Home Page](#3-home-page)
+4. [⚖️ Creating a New Tribunal](#4-creating-a-new-tribunal)
+5. [📝 Charge Sheet](#5-charge-sheet)
+6. [📥 Import Options](#6-import-options)
+7. [✨ Smart Import](#7-smart-import)
+8. [🛡️ Advocates](#8-advocates)
+9. [🧑‍⚖️ Judges](#9-judges)
+10. [🤖 Shared vs Separate Models](#10-shared-vs-separate-models)
+11. [🔑 Connecting OpenRouter](#11-connecting-openrouter)
+12. [🔎 Review Screen & Cost Estimate](#12-review-screen--cost-estimate)
+13. [▶️ Convene Tribunal](#13-convene-tribunal)
+14. [⏳ Deliberation](#14-deliberation)
+15. [🏛️ Results](#15-results)
+16. [📊 Economics, Tokens & Attempts](#16-economics-tokens--attempts)
+17. [📜 Tribunal Protocol](#17-tribunal-protocol)
+18. [📄 PDF Export](#18-pdf-export)
+19. [🗂️ Past Cases](#19-past-cases)
+20. [📂 Case Details & Historical Runs](#20-case-details--historical-runs)
+21. [🐺 Jon Snow Demo](#21-jon-snow-demo)
+22. [🛠️ Errors, Retry & Recovery](#22-errors-retry--recovery)
+23. [🔒 Privacy & Public Demo](#23-privacy--public-demo)
+24. [❓ FAQ](#24-faq)
 
-## 1. Introduction
+<a id="1-introduction"></a>
+## 1. 👋 Introduction
 
 The Tribunal lets you submit a disputed case and watch it argued and judged by AI participants with a fixed, transparent structure: **2 PRO (Defense) advocates**, **2 CON (Opposition) advocates**, and **3 independent judges**. A deterministic rule — not another model call — combines the three verdicts into one majority result, and every token and dollar the deliberation used is recorded alongside it.
 
-**What this means:** you are not chatting with one AI. You are configuring seven distinct participants, each with its own role and personality, and watching them disagree, argue, and rule independently.
+**💡 What this means:** you are not chatting with one AI. You are configuring seven distinct participants, each with its own role and personality, and watching them disagree, argue, and rule independently.
 
 This is an educational demo. **It has no legal authority and is not legal advice.**
 
-## 2. Quick Start
+<a id="2-quick-start"></a>
+## 2. ⚡ Quick Start
 
 The fastest path to a result:
 
@@ -52,7 +54,8 @@ The fastest path to a result:
 
 Prefer to see a finished example first without spending anything? Open the [Jon Snow Demo](#21-jon-snow-demo) settings page from Home — every seat and personality is visible with no cost or credential required to *view* it.
 
-## 3. Home Page
+<a id="3-home-page"></a>
+## 3. 🏠 Home Page
 
 ![Home](assets/screenshots/01-home.jpg)
 
@@ -64,7 +67,8 @@ Prefer to see a finished example first without spending anything? Open the [Jon 
 | **Past Cases** (card) | Goes to the case archive | Reopening a case you (or someone else) already submitted |
 | **The Realm v. Jon Snow** (card) | Goes to the Jon Snow demo settings page | Same as *Open Jon Snow Demo* |
 
-## 4. Creating a New Tribunal
+<a id="4-creating-a-new-tribunal"></a>
+## 4. ⚖️ Creating a New Tribunal
 
 Clicking **New Tribunal** starts a four-step setup flow, tracked by a stepper at the top of every setup screen:
 
@@ -72,7 +76,8 @@ Clicking **New Tribunal** starts a four-step setup flow, tracked by a stepper at
 
 You can navigate back at any point before convening. Manual entry and the structured import methods (§6) never call a model — free navigation all the way through. Smart Import (§7) is the one exception, with its own billed step. **Convene Tribunal** on the Review screen is the cost-bearing action that starts the real Tribunal run itself.
 
-## 5. Charge Sheet
+<a id="5-charge-sheet"></a>
+## 5. 📝 Charge Sheet
 
 ![Charge Sheet](assets/screenshots/02-new-case.jpg)
 
@@ -91,7 +96,8 @@ A Charge Sheet has exactly three fields:
 | **Import Full Tribunal Package** | Uploads a `.txt`/`.md` file and fills the case *and* all seven participant personalities |
 | **Smart Import (free-form dossier)** | Goes to the Smart Import screen (§7) |
 
-## 6. Import Options
+<a id="6-import-options"></a>
+## 6. 📥 Import Options
 
 | Method | Fills | Format | Model call? |
 |---|---|---|---|
@@ -102,13 +108,14 @@ A Charge Sheet has exactly three fields:
 
 **No import method ever automatically convenes a Tribunal.** Every import lands you back in the setup flow for review before anything runs.
 
-## 7. Smart Import
+<a id="7-smart-import"></a>
+## 7. ✨ Smart Import
 
 ![Smart Import](assets/screenshots/03-smart-import.jpg)
 
 Smart Import turns a free-form dossier — not structured with markers — into a complete draft, using one model call to extract the case and all seven participants.
 
-**Step by step:**
+**🧭 Step by step:**
 
 1. **Connect OpenRouter** (§11) — extraction is billed to *your* account, never the operator's. This step can wait until just before you extract.
 2. **Provide the dossier** — paste text, or click **Upload .txt / .md / .pdf**.
@@ -126,11 +133,12 @@ Smart Import turns a free-form dossier — not structured with markers — into 
 | **Apply extracted draft** | Sends the reviewed content to setup Review | Nothing is applied until you click this |
 | **Cancel** | Discards the extraction | Your prior active draft is untouched |
 
-⚠️ **Cost note:** *Confirm & Extract*, *Retry*, and *Recover* can each trigger a real, billed OpenRouter call against your connected account. *Check Eligibility & Cost* never does.
+> 💰 **Cost note:** *Confirm & Extract*, *Retry*, and *Recover* can each trigger a real, billed OpenRouter call against your connected account. *Check Eligibility & Cost* never does.
 
-The raw dossier you upload is **not retained** after extraction. The validated, structured result *may* be retained (for recovery and audit) even before you apply it — this demo has no accounts and no private-ownership guarantee for that retained result either.
+> 🔒 **Privacy note:** The raw dossier you upload is **not retained** after extraction. The validated, structured result *may* be retained (for recovery and audit) even before you apply it — this demo has no accounts and no private-ownership guarantee for that retained result either.
 
-## 8. Advocates
+<a id="8-advocates"></a>
+## 8. 🛡️ Advocates
 
 Two PRO (Defense) and two CON (Opposition) seats, each independently configurable:
 
@@ -143,7 +151,8 @@ Two PRO (Defense) and two CON (Opposition) seats, each independently configurabl
 
 Every advocate always receives the same Charge Sheet and produces exactly one speech for its assigned side — the side itself can never be changed by personality text.
 
-## 9. Judges
+<a id="9-judges"></a>
+## 9. 🧑‍⚖️ Judges
 
 Three judge seats, same personality/model controls as Advocates:
 
@@ -154,7 +163,8 @@ Three judge seats, same personality/model controls as Advocates:
 
 Every judge receives the Charge Sheet **and all four validated advocate speeches** before producing its own independent verdict and reasoning.
 
-## 10. Shared vs Separate Models
+<a id="10-shared-vs-separate-models"></a>
+## 10. 🤖 Shared vs Separate Models
 
 Set once, on the Advocates screen (it applies to the whole run):
 
@@ -166,7 +176,8 @@ Set once, on the Advocates screen (it applies to the whole run):
 
 Switching from Separate back to Shared does not silently pick an expensive model for you — you choose the shared model explicitly.
 
-## 11. Connecting OpenRouter
+<a id="11-connecting-openrouter"></a>
+## 11. 🔑 Connecting OpenRouter
 
 Normal Tribunal runs (Convene) and Smart Import's extraction are **billed to your own OpenRouter account**. The one documented exception is the canonical Jon Snow demo, which is operator-funded — see [§21](#21-jon-snow-demo).
 
@@ -178,7 +189,8 @@ Normal Tribunal runs (Convene) and Smart Import's extraction are **billed to you
 
 Your key is **never** sent anywhere except as a header on the specific request that needs it, never logged, and never saved to any database. The full key is never shown again once connected — a connected indicator may display only its last 4 characters, masked. Get a key at [openrouter.ai/keys](https://openrouter.ai/keys).
 
-## 12. Review Screen & Cost Estimate
+<a id="12-review-screen--cost-estimate"></a>
+## 12. 🔎 Review Screen & Cost Estimate
 
 Review is the last screen before anything is charged. It shows, read-only:
 
@@ -187,7 +199,7 @@ Review is the last screen before anything is charged. It shows, read-only:
 - **Economics & Preflight**: expected logical calls (always 7), the retry policy (max one retry per seat), the **$5.00 hard ceiling**, and — once a model is selected — a conservative maximum cost estimate for this exact configuration.
 - The **OpenRouter Connection** panel (§11).
 
-> The number shown here is a **conservative safety bound**, not an exact charge. The real, authoritative check runs again — using your connected credential — the moment you press Convene.
+> 💡 The number shown here is a **conservative safety bound**, not an exact charge. The real, authoritative check runs again — using your connected credential — the moment you press Convene.
 
 | Control | What it does |
 |---|---|
@@ -196,7 +208,8 @@ Review is the last screen before anything is charged. It shows, read-only:
 | **Back** | Returns to Judges |
 | **Convene Tribunal** | Freezes the configuration and starts the real run — 💰 this is the cost-bearing action |
 
-## 13. Convene Tribunal
+<a id="13-convene-tribunal"></a>
+## 13. ▶️ Convene Tribunal
 
 Clicking **Convene Tribunal**:
 
@@ -207,7 +220,8 @@ Clicking **Convene Tribunal**:
 
 Double-clicking or refreshing does not create a second paid run — the button becomes disabled once a request is in flight.
 
-## 14. Deliberation
+<a id="14-deliberation"></a>
+## 14. ⏳ Deliberation
 
 While a run is in progress, the same page shows live status for every participant, grouped Advocates (PRO/CON) then The Bench, refreshing automatically:
 
@@ -223,7 +237,8 @@ Judges do not begin until **all four** advocate speeches have validated — unti
 
 You can safely refresh the page or navigate away and come back — the run continues on the server regardless.
 
-## 15. Results
+<a id="15-results"></a>
+## 15. 🏛️ Results
 
 ![Result — verdict and judge votes](assets/screenshots/07-result-overview.jpg)
 
@@ -238,7 +253,8 @@ The result always leads with the answer:
 
 A `FAILED` or `BLOCKED_BUDGET` run is shown as a clearly distinct state — never as a verdict — with any partial spend disclosed honestly.
 
-## 16. Economics, Tokens & Attempts
+<a id="16-economics-tokens--attempts"></a>
+## 16. 📊 Economics, Tokens & Attempts
 
 Directly below the reasoning sections, a compact line summarizes the whole run — for example:
 
@@ -260,29 +276,34 @@ Click **Economics / Audit details** to expand the full per-attempt table:
 
 Expanding any row further reveals the historical pricing snapshot used for that attempt (never today's price), the conservative amount it was authorized for, and provider/audit metadata. Below the table, **Admission / Budget Safety** shows the conservative maximum the run was authorized for against the $5.00 hard ceiling — not the actual amount charged. A field that genuinely wasn't reported shows `Unavailable` — never a fabricated `$0`.
 
-## 17. Tribunal Protocol
+<a id="17-tribunal-protocol"></a>
+## 17. 📜 Tribunal Protocol
 
 Click **Protocol → View full protocol** for the complete, deterministic record of the run: the frozen case and participant configuration, model/prompt versions, all speeches and verdicts, and the majority result — assembled entirely from stored data, with **zero** additional model calls.
 
-## 18. PDF Export
+<a id="18-pdf-export"></a>
+## 18. 📄 PDF Export
 
 ![Protocol and PDF export controls](assets/screenshots/10-protocol-export.jpg)
 
 **Download Tribunal Report (PDF)** generates a document from this exact completed run's own stored data, entirely in your browser — no network or model call is involved. If generation fails, you can simply try again.
 
-## 19. Past Cases
+<a id="19-past-cases"></a>
+## 19. 🗂️ Past Cases
 
 ![Past Cases](assets/screenshots/05-history.jpg)
 
 Every case you save or convene is listed here, newest first. Click a card's **Open saved case** to reopen it.
 
-## 20. Case Details & Historical Runs
+<a id="20-case-details--historical-runs"></a>
+## 20. 📂 Case Details & Historical Runs
 
 ![Case Detail](assets/screenshots/06-case-detail.jpg)
 
 Reopening a case shows its full Case Dossier and every Tribunal run associated with it, each labeled with its status and timestamps. Click **View run** to reopen a run's complete stored result — reopening **never** re-runs any model, regardless of how long ago the run completed.
 
-## 21. Jon Snow Demo
+<a id="21-jon-snow-demo"></a>
+## 21. 🐺 Jon Snow Demo
 
 ![Jon Snow Demo](assets/screenshots/04-jon-snow-demo.jpg)
 
@@ -295,7 +316,8 @@ A fixed showcase case — *The Realm v. Jon Snow* — with a canonical, non-edit
 
 This surface is **operator-funded** — unlike every other Tribunal run, it is not charged to a visitor's own OpenRouter account, and there is no credential field on this page at all. Without the access capability, the button stays disabled with an explanation; the case, seats, and personalities remain fully visible either way. A successful run lands on the same generic result page (§15) every other run uses.
 
-## 22. Errors, Retry & Recovery
+<a id="22-errors-retry--recovery"></a>
+## 22. 🛠️ Errors, Retry & Recovery
 
 | Situation | What you'll see | What it means |
 |---|---|---|
@@ -306,7 +328,8 @@ This surface is **operator-funded** — unlike every other Tribunal run, it is n
 | Smart Import: ambiguous outcome | A **Recover** / **Check Status** button | Safely replays the exact same request — never double-charges |
 | A run "takes longer than expected" | A calm informational notice | Not a failure; the run has not stopped |
 
-## 23. Privacy & Public Demo
+<a id="23-privacy--public-demo"></a>
+## 23. 🔒 Privacy & Public Demo
 
 This is a **shared, single-tenant public demo application**:
 
@@ -317,24 +340,31 @@ This is a **shared, single-tenant public demo application**:
 
 See [`SECURITY.md`](../SECURITY.md) for the complete security and privacy model.
 
-## 24. FAQ
+<a id="24-faq"></a>
+## 24. ❓ FAQ
 
-**Does this cost me money?**
+**💰 Does this cost me money?**
+
 Browsing, manual setup, and preflight checks are always free. **Convene Tribunal** and **Confirm & Extract** are the two actions that bill your connected OpenRouter account, and both show a cost estimate first. Within Smart Import, **Retry** can also bill your account (it starts the one permitted second extraction attempt), and **Recover** / **Check Status** normally just replays or resumes the same attempt you already started — but if the server still needs to complete that attempt, that replay can itself be the call that gets billed. See [§7](#7-smart-import) for the full breakdown.
 
-**Can I add a fourth advocate or a second judge panel?**
+**🪑 Can I add a fourth advocate or a second judge panel?**
+
 No — the seven seats (2 PRO, 2 CON, 3 judges) are fixed by design; this cannot be changed from the UI.
 
-**Why can't I run the Jon Snow demo?**
+**🐺 Why can't I run the Jon Snow demo?**
+
 Running it requires a lecturer/demo access capability carried in a prepared link. Without it, the case remains fully viewable but the Run button stays disabled.
 
-**Will refreshing the page during deliberation cancel my run?**
+**🔄 Will refreshing the page during deliberation cancel my run?**
+
 No. Execution happens on the server; refreshing or navigating away and back simply resumes watching the same run.
 
-**Is this real legal advice?**
+**⚖️ Is this real legal advice?**
+
 No. The Tribunal is an educational demonstration with no legal authority of any kind.
 
-**What happens to the case I submit?**
+**🗃️ What happens to the case I submit?**
+
 It's stored in shared demo history, reachable by anyone with the application's URL — see [§23](#23-privacy--public-demo).
 
 ---
